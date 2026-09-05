@@ -183,6 +183,25 @@ optional later rows.
     exposing sub-process diagnostics (e.g. YSU's `hgamt`), which needs a fork
     of NCAR/MMM-physics (the `phys/physics_mmm` submodule) — deferred until a
     spike needs it.
+    Done 2026-09-05 (WRF fork e42a269, MMM-physics fork
+    ctessum-claude/MMM-physics@52cfbd7, branch `earthsciml-instrumented`,
+    submodule pointer updated): hooks for sfclayrev, WSM6, Dudhia SW, RRTM LW
+    and slab; sub-process diagnostics via `esm_dump_inner` (WSM6 rates
+    raw/final + evaluation state, SWPARA per-layer optics, RRTM level fluxes,
+    slab energy budget); drivers `sfclayrev_driver`, `wsm6_driver`,
+    `sw_driver`, `slab_driver` (real64; `make PREC= B=build32` gives real32
+    drivers that reproduce the in-model dumps bit-for-bit — the definitive
+    check of the dump→flat→driver chain; RRTM has no driver). Reference runs:
+    `data/eqwefic/scm_ref/` (SCM with mp=6, sfclay=1 (= sfclayrev), slab,
+    num_soil_layers=5; calls 1,120,600,1440,1800,2400,2820) and
+    `data/eqwefic/qss_ref/` (em_quarter_ss supercell, WSM6 warm-rain rows;
+    call 9983 = step 250 row 23 is the Spike C reference). Real64 replays
+    agree with the real32 dumps to 1e-5 on outputs (larger only in
+    threshold-sensitive internals). WSM6 is not rate×dt: limiters scale with
+    1/dt and pigen/pcond/freezing are adjustments, so Spike C must test the
+    dumped `<rate>_raw` rates pointwise against the dumped `*_rates` state
+    rather than replay at small dt. Note `sf_sfclay_physics=1` is sfclayrev
+    (91 = the old MM5 scheme).
 0.4 **Extraction tool (this repo, `tools/`).** A small script that reads a
     kernel JSON dump plus a hand-written test skeleton and fills in
     `parameter_overrides` and `assertions` with the selected regimes. It never
