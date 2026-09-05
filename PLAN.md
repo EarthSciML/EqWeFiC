@@ -122,8 +122,9 @@ optional later rows.
     `lib/wrf_thermo.esm` (Exner function, potential/virtual temperature,
     saturation mixing ratio, moist static quantities, factored as templates
     and reused by every scheme), `.gitignore` for the `esm` binary.
-0.2 **Column grid.** Done on the EarthSciDiscretizations branch
-    `column-nonuniform-1d` (2026-09-04, PR pending goldens): a native
+0.2 **Column grid.** Done: EarthSciDiscretizations PR #34
+    (branch `column-nonuniform-1d`, 2026-09-05; full julia/python/rust gate
+    green on all 13 new cases): a native
     `grids/column_nonuniform_1d/` (cell axis `lev`, edge axis `lev_nodes`,
     metaparameter `NLEV`, consumer-supplied interface array `ze`, grid-derived
     `zc`/`dz`; layer 1 = surface, WRF/CCPP order) rather than a rename of
@@ -141,7 +142,10 @@ optional later rows.
     green; the constant-K column problem reproduces the cartesian
     `heat_1d_nonuniform_neumann` error at N=64). Sedimentation (`upwind1_flux_D_lev`,
     downward only) is deferred to the WSM6 stage-2 work.
-    **Format gaps found (all filed/delegated to EarthSciAST, 2026-09-04):**
+    **Format gaps found (EarthSciAST PR #177 fixes (a)–(c) in all three
+    bindings — (b)/(c) turned out to be one Python bug, a multi-model cell-name
+    collision in the inline runner, not an aggregate bug; issues #174 (rename
+    gap (d)), #175 (Julia gather gap (e)), #176 (Julia dead observeds)):**
     (a) shaped state-dependent observeds (e.g. a column tendency `dudt[lev]`)
     cannot be asserted in §6.6 inline tests in the Rust or Python runners
     ("array state has no cells in var_map"); only ODE states and state-free
