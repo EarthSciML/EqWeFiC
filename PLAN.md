@@ -255,6 +255,18 @@ optional later rows.
       as pointwise observeds with WRF constants; tested against instrumented
       WSM6. Proves the sub-process factoring pattern and the constants
       library.
+      Done 2026-09-05: WSM6 warm-rain rates as pointwise observeds (unlimited
+      physics + separate `dtcld` limiters) over `lev`, saturation state as its
+      own model, shared pieces as templates (`lib/wrf_thermo.esm`
+      fpvs/qsat/L(T)/cpm, `lib/wrf_air_properties.esm` ν/Dv/ka,
+      `wsm6/microphysics_templates.esm`), constants from `wsm6_parameters.esm`
+      + `lib/wrf_constants.esm`; 4 warm-rain regimes (supercell mature, second
+      column, early storm with the `prevp` limiter active, SCM zero) + 2
+      saturation regimes, 194 assertions green in Rust and Python. Reference =
+      real64 driver replay at the WRF step, pointwise (no small dt); residual
+      ≤ 4e-7 relative from real32 constants/literals; tolerances 1e-6 rel or
+      1e-6 of column max abs. Gap (j): §6.6 tests cannot rebind a metaparameter
+      (`NLEV`), so the SCM tests are truncated to 40 layers.
     Any spike that fails on a format gap becomes an EarthSciAST/EarthSciDiscretizations
     issue before Phase 1 starts.
 

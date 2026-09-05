@@ -2,7 +2,7 @@
   "esm": "1.0.0",
   "metadata": {
     "name": "wrf_thermo",
-    "description": "WRF thermodynamic identities as pure expression templates, transcribed from the inline formulas WRF's physics schemes share (e.g. phys/physics_mmm/bl_ysu.F90, module_bl_ysu.F, module_mp_wsm6.F). Every template is a closed algebraic function of its parameters: the thermodynamic constants are passed in explicitly (bind them to lib/wrf_constants.esm names, e.g. ep_1: \"wrf.ep_1\") so a template can be applied to scalars or to shaped fields alike and never reaches into a scheme's scope. Names follow WRF: theta = potential temperature (K), exner = pi = (p/p1000mb)^(r_d/cp) the Exner function, qv/qc/qi = vapor / cloud-water / cloud-ice mixing ratios (kg/kg).",
+    "description": "WRF thermodynamic identities as pure expression templates, transcribed from the inline formulas WRF's physics schemes share (e.g. phys/physics_mmm/bl_ysu.F90, module_bl_ysu.F, phys/physics_mmm/mp_wsm6.F90). Every template is a closed algebraic function of its parameters: the thermodynamic constants are passed in explicitly (bind them to lib/wrf_constants.esm names, e.g. ep_1: \"wrf.ep_1\") so a template can be applied to scalars or to shaped fields alike and never reaches into a scheme's scope. Names follow WRF: theta = potential temperature (K), exner = pi = (p/p1000mb)^(r_d/cp) the Exner function, qv/qc/qi = vapor / cloud-water / cloud-ice mixing ratios (kg/kg).",
     "license": "MIT",
     "tags": ["wrf", "thermodynamics", "expression-templates"],
     "references": [
@@ -48,6 +48,43 @@
         "op": "/",
         "args": ["p", { "op": "*", "args": ["r_d", "T", { "op": "+", "args": [1, { "op": "*", "args": ["ep_1", "qv"] }] }] }]
       }
+    },
+    "saturation_vapor_pressure_fpvs": {
+      "params": ["T", "psat", "ttp", "xa", "xb"],
+      "description": "Saturation vapor pressure from the integrated Clausius-Clapeyron equation with a latent heat linear in temperature, es = psat (ttp/T)^xa exp(xb (1 - ttp/T)), where ttp is the triple-point temperature, psat the vapor pressure at ttp, xa = -(c_vapor - c_condensate)/r_v and xb = xa + L(ttp)/(r_v ttp) (the fpvs function of WRF's WSM microphysics, phys/physics_mmm/mp_wsm6.F90; over water bind c_condensate = cliq, L = xlv, over ice cice and xls). Pure function of T; the exponents are supplied so they are computed once per model.",
+      "body": {
+        "op": "*",
+        "args": [
+          "psat",
+          { "op": "^", "args": [{ "op": "/", "args": ["ttp", "T"] }, "xa"] },
+          { "op": "exp", "args": [{ "op": "*", "args": ["xb", { "op": "-", "args": [1, { "op": "/", "args": ["ttp", "T"] }] }] }] }
+        ]
+      }
+    },
+    "fpvs_exponent_a": {
+      "params": ["c_vapor", "c_condensate", "r_v"],
+      "description": "Power-law exponent of saturation_vapor_pressure_fpvs, xa = -(c_vapor - c_condensate)/r_v (WSM: xa = -dldt/rv with dldt = cvap - cliq, or cvap - cice over ice).",
+      "body": { "op": "-", "args": [{ "op": "/", "args": [{ "op": "-", "args": ["c_vapor", "c_condensate"] }, "r_v"] }] }
+    },
+    "fpvs_exponent_b": {
+      "params": ["xa", "L", "r_v", "ttp"],
+      "description": "Exponential coefficient of saturation_vapor_pressure_fpvs, xb = xa + L/(r_v ttp) with L the latent heat at the triple point (WSM: xb = xa + hvap/(rv ttp)).",
+      "body": { "op": "+", "args": ["xa", { "op": "/", "args": ["L", { "op": "*", "args": ["r_v", "ttp"] }] }] }
+    },
+    "saturation_mixing_ratio": {
+      "params": ["es", "p", "ep_2"],
+      "description": "Saturation mixing ratio qsat = ep_2 es / (p - es) from the saturation vapor pressure es and the total pressure p (ep_2 = r_d/r_v).",
+      "body": { "op": "/", "args": [{ "op": "*", "args": ["ep_2", "es"] }, { "op": "-", "args": ["p", "es"] }] }
+    },
+    "latent_heat_of_vaporization": {
+      "params": ["T", "xlv", "cliq", "cpv", "t0"],
+      "description": "Latent heat of vaporization linear in temperature (Kirchhoff), L(T) = xlv - (cliq - cpv)(T - t0), with xlv the value at t0 (WSM: xl = xlcal(t) = xlv0 - xlv1 (t - t0c), xlv1 = cliq - cpv).",
+      "body": { "op": "-", "args": ["xlv", { "op": "*", "args": [{ "op": "-", "args": ["cliq", "cpv"] }, { "op": "-", "args": ["T", "t0"] }] }] }
+    },
+    "moist_heat_capacity": {
+      "params": ["qv", "cp", "cpv"],
+      "description": "Specific heat of moist air at constant pressure per unit mass, cpm = cp (1 - qv) + cpv qv (WSM: cpmcal(q) = cpd (1 - q) + q cpv).",
+      "body": { "op": "+", "args": [{ "op": "*", "args": ["cp", { "op": "-", "args": [1, "qv"] }] }, { "op": "*", "args": ["qv", "cpv"] }] }
     }
   }
 }

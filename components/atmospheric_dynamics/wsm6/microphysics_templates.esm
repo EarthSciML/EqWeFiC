@@ -1,0 +1,119 @@
+{
+  "esm": "1.0.0",
+  "metadata": {
+    "name": "wsm6_microphysics_templates",
+    "description": "Bulk warm-rain microphysics building blocks of the WSM single-moment schemes as pure expression templates, transcribed from phys/physics_mmm/mp_wsm6.F90 (WRF 4.8): the inverse slope of an exponential (Marshall-Palmer) hydrometeor size distribution, the thermodynamic denominator of diffusional growth, the ventilation factor, and the three warm-rain process rates of Hong, Dudhia and Chen (2004) and Hong and Lim (2006) -- autoconversion (HDC eq. 16), accretion of cloud water by rain (HL eq. A40, Lin et al. 1983 eq. 51) and evaporation/condensation of rain (HDC eq. 14) -- together with the per-process rate limiters the kernel applies. The rates are instantaneous (kg/kg/s) functions of the local state; the limiters are kept separate because they depend on the sub-time step dtcld (a rate may not remove more than the available mixing ratio, nor drive the vapor past saturation, within one step) and are therefore time-step artefacts rather than physics (FORTRAN_BUGS.md note N3). Every parameter is passed explicitly; the scheme constants are bound from wsm6_parameters.esm and the physical constants from lib/wrf_constants.esm by the consuming model.",
+    "license": "MIT",
+    "tags": ["wrf", "microphysics", "wsm6", "warm-rain", "expression-templates"],
+    "references": [
+      { "citation": "Hong, S.-Y., J. Dudhia, and S.-H. Chen (2004). A revised approach to ice microphysical processes for the bulk parameterization of clouds and precipitation. Mon. Wea. Rev. 132, 103-120.", "doi": "10.1175/1520-0493(2004)132<0103:ARATIM>2.0.CO;2" },
+      { "citation": "Hong, S.-Y., and J.-O. J. Lim (2006). The WRF single-moment 6-class microphysics scheme (WSM6). J. Korean Meteor. Soc. 42, 129-151." },
+      { "citation": "Lin, Y.-L., R. D. Farley, and H. D. Orville (1983). Bulk parameterization of the snow field in a cloud model. J. Climate Appl. Meteor. 22, 1065-1092.", "doi": "10.1175/1520-0450(1983)022<1065:BPOTSF>2.0.CO;2" },
+      { "citation": "Rutledge, S. A., and P. V. Hobbs (1983). The mesoscale and microscale structure and organization of clouds and precipitation in midlatitude cyclones. VIII. J. Atmos. Sci. 40, 1185-1206." }
+    ]
+  },
+  "expression_templates": {
+    "marshall_palmer_inverse_slope": {
+      "params": ["q", "rho", "pidn0", "q_min", "rslope_max"],
+      "description": "Inverse slope 1/lambda of an exponential size distribution N(D) = n0 exp(-lambda D) of spheres of density rho_x: lambda = (pi rho_x n0 / (rho q))^(1/4), so 1/lambda = (rho q / pidn0)^(1/4) with pidn0 = pi rho_x n0; below the threshold q_min the distribution is undefined and the inverse slope is held at rslope_max = 1/lambda_max (WSM6 slope_wsm6: rslope = 1/lamdar(qrs, den), rslopermax when qrs <= qcrmin).",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          { "op": ">", "args": ["q", "q_min"] },
+          { "op": "^", "args": [{ "op": "/", "args": [{ "op": "*", "args": ["rho", "q"] }, "pidn0"] }, { "op": "/", "args": [1, 4] }] },
+          "rslope_max"
+        ]
+      }
+    },
+    "diffusional_growth_denominator": {
+      "params": ["L", "T", "rho", "ka", "r_v", "qsat", "Dv"],
+      "description": "Thermodynamic term of diffusional growth/evaporation, F = rho L^2 / (ka r_v T^2) + 1 / (qsat Dv), i.e. the heat-conduction plus vapor-diffusion resistance of Rutledge and Hobbs (1983) in mixing-ratio form (WSM6 diffac(xl, p, t, den, qsat) = den xl^2/(xka rv t^2) + 1/(qsat diffus(t, p)); units s/m^2).",
+      "body": {
+        "op": "+",
+        "args": [
+          { "op": "/", "args": [{ "op": "*", "args": ["rho", { "op": "^", "args": ["L", 2] }] }, { "op": "*", "args": ["ka", "r_v", { "op": "^", "args": ["T", 2] }] }] },
+          { "op": "/", "args": [1, { "op": "*", "args": ["qsat", "Dv"] }] }
+        ]
+      }
+    },
+    "ventilation_factor": {
+      "params": ["nu", "Dv", "rho", "rho0"],
+      "description": "Ventilation factor of the Reynolds-Schmidt term of a falling drop, Sc^(1/3) / nu^(1/2) (rho0/rho)^(1/4) = (nu/Dv)^(1/3) / sqrt(nu) sqrt(sqrt(rho0/rho)); multiplied by the size-distribution moment ventilation_slope_factor and the fall-speed constant it gives the Re^(1/2) Sc^(1/3) term of the evaporation rate (WSM6 venfac(p, t, den)).",
+      "body": {
+        "op": "*",
+        "args": [
+          { "op": "/", "args": [{ "op": "^", "args": [{ "op": "/", "args": ["nu", "Dv"] }, { "op": "/", "args": [1, 3] }] }, { "op": "sqrt", "args": ["nu"] }] },
+          { "op": "sqrt", "args": [{ "op": "sqrt", "args": [{ "op": "/", "args": ["rho0", "rho"] }] }] }
+        ]
+      }
+    },
+    "ventilation_slope_factor": {
+      "params": ["rslope", "rslopeb", "rslope2"],
+      "description": "Size-distribution moment of the ventilation term, lambda^-2 (lambda^-1 lambda^-b)^(1/2) = rslope2 sqrt(rslope rslopeb), the integral of D^(2 + (b + 1)/2) over the exponential distribution up to the Gamma-function constant (WSM6 coeres).",
+      "body": { "op": "*", "args": ["rslope2", { "op": "sqrt", "args": [{ "op": "*", "args": ["rslope", "rslopeb"] }] }] }
+    },
+    "hdc_autoconversion": {
+      "params": ["qc", "qc0", "qck1"],
+      "description": "Autoconversion of cloud water to rain, praut = qck1 qc^(7/3) once the cloud water exceeds the threshold qc0 (Hong, Dudhia and Chen 2004, eq. 16, after Tripoli and Cotton 1980), zero below the threshold.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          { "op": ">", "args": ["qc", "qc0"] },
+          { "op": "*", "args": ["qck1", { "op": "^", "args": ["qc", { "op": "/", "args": [7, 3] }] }] },
+          0
+        ]
+      }
+    },
+    "accretion_of_cloud_by_rain": {
+      "params": ["qc", "qr", "rslope3", "rslopeb", "pacrr", "denfac", "qr_min", "qc_min"],
+      "description": "Accretion of cloud water by falling rain, pracw = pacrr lambda^-(3 + b) qc (rho0/rho)^(1/2) with pacrr = pi n0r a Gamma(3 + b) E_rc / 4 (Hong and Lim 2006 eq. A40, Lin et al. 1983 eq. 51); evaluated only where rain exceeds qr_min and cloud water exceeds qc_min.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          { "op": "and", "args": [{ "op": ">", "args": ["qr", "qr_min"] }, { "op": ">", "args": ["qc", "qc_min"] }] },
+          { "op": "*", "args": ["pacrr", "rslope3", "rslopeb", "qc", "denfac"] },
+          0
+        ]
+      }
+    },
+    "rain_evaporation": {
+      "params": ["qr", "rh", "rslope2", "coeres", "f_vent", "f_diff", "precr1", "precr2"],
+      "description": "Evaporation (rh < 1) or condensation (rh > 1) of rain by vapor diffusion, prevp = (rh - 1) (precr1 lambda^-2 + precr2 f_vent coeres) / F with precr1 = 2 pi n0r a_v, precr2 = 2 pi n0r b_v sqrt(a) Gamma(2.5 + b/2), f_vent the ventilation_factor, coeres the ventilation_slope_factor and F the diffusional_growth_denominator (Hong, Dudhia and Chen 2004 eq. 14); zero where there is no rain.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          { "op": ">", "args": ["qr", 0] },
+          { "op": "/", "args": [
+            { "op": "*", "args": [
+              { "op": "-", "args": ["rh", 1] },
+              { "op": "+", "args": [{ "op": "*", "args": ["precr1", "rslope2"] }, { "op": "*", "args": ["precr2", "f_vent", "coeres"] }] }
+            ] },
+            "f_diff"
+          ] },
+          0
+        ]
+      }
+    },
+    "sink_rate_limiter": {
+      "params": ["rate", "q", "dt"],
+      "description": "Time-step limiter of a sink process: the rate may not remove more than the available mixing ratio q within one sub-step dt, min(rate, q/dt) (WSM6: praut = min(praut, qc/dtcld), pracw likewise). A time-step artefact, not physics.",
+      "body": { "op": "min", "args": ["rate", { "op": "/", "args": ["q", "dt"] }] }
+    },
+    "rain_evaporation_limiter": {
+      "params": ["prevp", "qr", "satdt", "dt"],
+      "description": "Time-step limiter of rain evaporation/condensation: evaporation (prevp < 0) may neither remove more rain than exists, -qr/dt, nor supply more than half the vapor deficit per step, satdt/2 = (qv - qsat)/(2 dt); condensation (prevp > 0) may not consume more than half the supersaturation, satdt/2 (WSM6 warm-rain block). Zero where there is no rain. A time-step artefact, not physics.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          { "op": ">", "args": ["qr", 0] },
+          { "op": "ifelse", "args": [
+            { "op": "<", "args": ["prevp", 0] },
+            { "op": "max", "args": ["prevp", { "op": "-", "args": [{ "op": "/", "args": ["qr", "dt"] }] }, { "op": "/", "args": ["satdt", 2] }] },
+            { "op": "min", "args": ["prevp", { "op": "/", "args": ["satdt", 2] }] }
+          ] },
+          0
+        ]
+      }
+    }
+  }
+}
