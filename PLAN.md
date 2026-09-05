@@ -260,9 +260,11 @@ optional later rows.
       PR #179 (an inline `reference` binds the field's dimension names;
       override keys resolve to the longest dotted suffix; `P.wrf.g` in a
       Rust single-model equation), independent of #177; (i) EarthSciDiscretizations
-      branch `column-diffusion-face-flux-rule` stacked on PR #34
-      (rule `varcoeff_face_flux_laplacian_lev`: `D(K·D(u,lev) − F, lev)` with
-      no free names, MMS problem `heat_column_varcoeff_faceflux_forced`).
+      PR #35 (branch `column-diffusion-face-flux-rule`, stacked on PR #34;
+      rule `varcoeff_face_flux_laplacian_lev`: `D(K·D(u,lev) − F, lev)` with
+      no free names, MMS problem `heat_column_varcoeff_faceflux_forced`,
+      observed order 2.00; Rust and Julia gates green, Python convergence
+      left to CI).
     - **Spike B — Dudhia SW as an integral.** Column optical depth via
       `integral` (cumulative) and the surface flux; tested against
       `module_ra_sw.F`. Proves the `integral` lowering end to end.
