@@ -349,6 +349,21 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     the EarthSciModels layout. They are *not* opened as EarthSciModels PRs
     until their tests pass (finding 9).
 
+
+### Phase 1 progress (2026-09-05)
+
+- **Slab done.** `SlabLandSurface` written as instantaneous tendencies: surface
+  budget from consumer-supplied `FLHC/FLQC`, soil heat equation
+  `D(K·D(T) − F, lev)/capg` with the surface flux G and the fixed deepest layer
+  as prescribed interface fluxes (`lev` = soil layer, `ze` = depth,
+  NLEV = num_soil_layers − 1). SLAB1D's small-dt replay is the exact derivative
+  (nsoil = 1 ⇒ `dthgdt` bit-identical for dt = 0.04…0.005 s; the WRF-step
+  change differs by 0.5–11 %). Residuals: real32 `svpt0` → 4e-7 in `es_g`,
+  amplified by the saturation deficit and by G = rnet − qs to 5e-5 relative in
+  `dTsk_dt`; tolerances 5–10× above, per assertion. 84 assertions green. The
+  Bolton saturation template lives in `slab_templates.esm` pending a second
+  consumer (sfclayrev) before moving to `lib/wrf_thermo.esm`.
+
 ## 4. Phase 2 — physics and subassemblies
 
 2.1 Fill in each stub so `./esm test` passes, then run the EarthSciModels
