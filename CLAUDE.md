@@ -14,5 +14,8 @@ The .esm files should be authored compositionally, with separate components, sub
 
 Always, the equations in the .esm files should like like math rather than einsum operations whenever possible. For example, if a component includes a aggregate operation that is a numerical representation of a mathematical integral, the .esm equivalent should be written as an integral instead of a aggregate operation. Likewise, PDEs that are discretized in the fortran could should be written as PDEs, with discretization templates either used from or submitted as pull requests to https://github.com/EarthSciML/EarthSciDiscretizations.
 
+Some components may already have implementations in EarthSciModels. If so, add additional tests from the instrumented FORTRAN to ensure the existing .esm implementations match their fortran counterparts.
+
+Keep a centralized list of any bugs or errors that are found in the fortran code.
 
 Do not store anything large in /tmp, as it is backed by RAM rather than hard drive and can cause an OOM.
