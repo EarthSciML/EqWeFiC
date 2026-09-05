@@ -157,18 +157,28 @@ optional later rows.
     spell such integrands as explicit gathers `aggregate(i; 1 + cos(π zc[i]))`
     until fixed. With that spelling Python also passes all five integral
     forms, so (b)/(c) may be the same root cause.
-0.3 **Fortran harness repo.** Forks under the `ctessum-claude` account
-    (done 2026-09-04): `ctessum-claude/WRF` with branch
-    `earthsciml-instrumented` (pushed; `../WRF` has it checked out with remote
-    `fork`) and `ctessum-claude/fire_behavior`. Directory `kernels/` on that
-    branch holds: one small driver per scheme that reads a JSON/namelist column
-    state, calls `<scheme>_run` once (or the legacy entry
-    `ysu/sfclayrev/mp_gt_driver/…` with 1×1 horizontal extent), and writes
-    inputs and outputs as JSON. Build with `gfortran` only, `kind_phys=real64`
-    where the module allows. Sub-process rates (autoconversion, accretion,
-    evaporation, K-profiles, φ functions, per-band fluxes) are exposed by
-    adding `intent(out)` diagnostic arrays or a `debug_dump` module rather
-    than `print` statements, so the dump is structured.
+0.3 **Fortran harness repo.** Forks under the `ctessum-claude` account:
+    `ctessum-claude/WRF` branch `earthsciml-instrumented` (pushed; `../WRF` has
+    it checked out with remote `fork`) and `ctessum-claude/fire_behavior`.
+    Done 2026-09-04 (commit cf3aed7): `phys/module_esm_dump.F` writes one
+    JSON file per dumped kernel call (`ESM_DUMP=<schemes|all>`,
+    `ESM_DUMP_CALLS=<1-based call indices>`, `ESM_DUMP_DIR`; in the SCM every
+    j-row of the tile is one call, so call 2n is step n); `module_bl_ysu.F`
+    dumps every `bl_ysu_run` input/output; `kernels/` holds the flat-input
+    reader and `ysu_driver` (built real64 with `-DDOUBLE_PRECISION`; `ESM_DT`
+    overrides the step), which replays a dump and writes the same JSON.
+    Verified: at dt = 60 s the real64 driver reproduces WRF's real32 tendencies
+    to ≈1e-5 relative (≈1e-3 for θ, single-precision cancellation in
+    (θ_new − θ_old)/dt), and the diagnostic outputs (`exch_hx`, `hpbl`,
+    `wstar`) to ≈1e-6. At dt = 0.01 s the implicit tendency differs from the
+    dt = 60 s one by up to 41 % (θ) and 33 % (u), so the small-dt replay is
+    REQUIRED for derivative tests (as §6 prescribes) and stage-3 comparisons
+    must expect the implicit-vs-explicit gap at the WRF step. Dumps and driver
+    outputs live in `data/eqwefic/dumps/<scheme>/`. Remaining: the same hook
+    for sfclayrev, WSM6, Dudhia SW, RRTM LW, slab (one driver each), and
+    exposing sub-process diagnostics (e.g. YSU's `hgamt`), which needs a fork
+    of NCAR/MMM-physics (the `phys/physics_mmm` submodule) — deferred until a
+    spike needs it.
 0.4 **Extraction tool (this repo, `tools/`).** A small script that reads a
     kernel JSON dump plus a hand-written test skeleton and fills in
     `parameter_overrides` and `assertions` with the selected regimes. It never

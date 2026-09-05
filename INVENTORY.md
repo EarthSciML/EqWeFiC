@@ -11,7 +11,7 @@ Status values: `not started` · `instrumented` · `stub` (tests written, on this
 | `lib/wrf_thermo.esm` | Exner, θ, θv, qsat, Tv | `module_model_constants.F`, per-scheme | `atmospheric_dynamics/sp_ch1/*` | not started |
 | Column grid + rules | `column_nonuniform_1d` grid, face-flux divergence, interface-K diffusion with prescribed fluxes, 5 `integral` forms (downward sedimentation flux deferred) | EarthSciDiscretizations branch `column-nonuniform-1d` | `grids/column_nonuniform_1d/` | physics (Rust green 2026-09-04; ESD PR pending goldens) |
 | Surface layer (sfclayrev) | φm/φh, bulk Richardson regimes, z0 over water, u*, exchange coefficients, 2 m/10 m diagnostics | `phys/physics_mmm/sf_sfclayrev.F90` | `local_scale/surface_layer_profile.esm` | not started |
-| PBL (YSU) | PBL height (bulk Ri), K-profile, countergradient term, entrainment flux, top-down mixing, diffusion PDE | `phys/physics_mmm/bl_ysu.F90` | `holtslag_boville/*` (related) | not started |
+| PBL (YSU) | PBL height (bulk Ri), K-profile, countergradient term, entrainment flux, top-down mixing, diffusion PDE | `phys/physics_mmm/bl_ysu.F90` | `holtslag_boville/*` (related) | instrumented (SCM dumps + real64 driver, 2026-09-04) |
 | Land surface (slab) | 5-layer soil heat diffusion, surface energy balance | `phys/module_sf_slab.F` | — | not started |
 | Land surface (Noah) | soil heat/moisture, canopy resistance, Penman, snow | `phys/module_sf_noahlsm.F` | `urban_canopy/hydro/*` (related) | not started |
 | Microphysics (WSM6) | saturation adjustment; warm rain (praut, pracw, prevp); ice processes; melting/freezing; sedimentation | `phys/physics_mmm/mp_wsm6.F90` | — | not started |
