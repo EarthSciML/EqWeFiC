@@ -12,4 +12,7 @@ All model logic should be contained in .esm files. Tests and examples should be 
 
 The .esm files should be authored compositionally, with separate components, subcomponents, and expression templates used liberally and imported by reference into other components to keep the .esm code succint, simple, and human-interpretable. Avoid repeating logic or calculations, instead factor reused pieces into their own files/components/expression templates and import them by reference. Avoid the use of scripts to mechanically generate .esm files, as they often end up producing expressios that are not properly factored or succinct.
 
+Always, the equations in the .esm files should like like math rather than einsum operations whenever possible. For example, if a component includes a aggregate operation that is a numerical representation of a mathematical integral, the .esm equivalent should be written as an integral instead of a aggregate operation. Likewise, PDEs that are discretized in the fortran could should be written as PDEs, with discretization templates either used from or submitted as pull requests to https://github.com/EarthSciML/EarthSciDiscretizations.
+
+
 Do not store anything large in /tmp, as it is backed by RAM rather than hard drive and can cause an OOM.
