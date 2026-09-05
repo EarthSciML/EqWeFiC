@@ -56,6 +56,10 @@ Facts that shape the plan (each was checked, not assumed):
 9. **EarthSciModels CI has no skip/xfail.** Every inline test runs on every
    push (`tools/run_esm_inline_tests.py`, Python runner). Stubs with red tests
    cannot be merged; they must stay on a branch until stage 2 makes them pass.
+   Decided 2026-09-05: that gate is a merge condition, not a PR-creation
+   condition, and is not run locally; local testing is the Rust CLI only
+   (Julia/Python only to debug a suspected Rust CLI fault). The Python
+   binding's slowness on array operations is a separate performance item.
 10. **Existing overlap in EarthSciModels**: Monin-Obukhov surface layer
     (`local_scale/surface_layer_profile.esm`), Holtslag-Boville PBL and surface
     flux, saturation vapor pressure and thermodynamics (`sp_ch1/*`), Wesely
@@ -248,6 +252,17 @@ optional later rows.
       follow-up rule `D(K·D(u) − F, lev)`). Repros in
       `data/eqwefic/esm-repro/spikeA/`. Not transcribed: the cloud-top
       entrainment branch (no SCM regime exercises it).
+      Upstream status 2026-09-05: (f) EarthSciAST issue #178 (array-valued
+      `default`/`parameter_overrides`/`initial_conditions`, observed-valued
+      `ic`); (g) EarthSciModels PR #2 (`run_esm_inline_tests.py` samples
+      shaped observeds; the YSU file reaches 117 pass, the other 113 files
+      are unchanged at 224 OK / 3 pre-existing load errors); (h) EarthSciAST
+      PR #179 (an inline `reference` binds the field's dimension names;
+      override keys resolve to the longest dotted suffix; `P.wrf.g` in a
+      Rust single-model equation), independent of #177; (i) EarthSciDiscretizations
+      branch `column-diffusion-face-flux-rule` stacked on PR #34
+      (rule `varcoeff_face_flux_laplacian_lev`: `D(K·D(u,lev) − F, lev)` with
+      no free names, MMS problem `heat_column_varcoeff_faceflux_forced`).
     - **Spike B — Dudhia SW as an integral.** Column optical depth via
       `integral` (cumulative) and the surface flux; tested against
       `module_ra_sw.F`. Proves the `integral` lowering end to end.
