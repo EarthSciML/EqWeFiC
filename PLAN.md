@@ -250,8 +250,16 @@ optional later rows.
       (`P.wrf.g`); (i) the ESD `varcoeff_face_laplacian_lev_flux_bc` rule's
       fixed free names `kdudz_bot/top` give one BC pair per model (proposed
       follow-up rule `D(K·D(u) − F, lev)`). Repros in
-      `data/eqwefic/esm-repro/spikeA/`. Not transcribed: the cloud-top
-      entrainment branch (no SCM regime exercises it).
+      `data/eqwefic/esm-repro/spikeA/`. Cloud-top radiative-entrainment
+      branch transcribed 2026-09-05 (`radsum` as the from-bottom cumulative
+      integral of cp ρ max(0, −rthraten·exner); `wstar3_2`, `we_rad`,
+      `hgamt2`, `wscalek2`, `wscale_c`) with a Fortran-generated cloud-topped
+      regime (qc 3e-4 and rthraten −1e-4 K/s in layers 12–14 of call 120,
+      replayed at dt 0.04/0.02/0.01): 157 assertions green; residuals
+      unchanged (K 5e-6 m²/s, scalars 4e-8 rel). Lesson: WRF's in-branch
+      `wscale` is post-diagnosis; folding it into the pre-diagnosis `wscale`
+      makes a cycle that the Rust CLI reports as an unrelated
+      `E_TREEWALK_UNBOUND_NAME` (worth an EarthSciAST issue).
       Upstream status 2026-09-05: (f) EarthSciAST issue #178 (array-valued
       `default`/`parameter_overrides`/`initial_conditions`, observed-valued
       `ic`); (g) EarthSciModels PR #2 (`run_esm_inline_tests.py` samples
@@ -281,8 +289,16 @@ optional later rows.
       calls 1, 120 (cirrus), 2400 (low sun), 2820, 600 (night, all zero) and a
       synthetic stratus deck (qc = 3e-4 inserted into the call-120 column and
       replayed through the Fortran driver) because the SCM has no liquid cloud.
-      Not transcribed: the renormalisation when a single layer would deplete
-      > 99 % of the beam (asserted inactive).
+      Renormalisation (`ff`, `tau_min`) and beam floor (`S_min`) transcribed
+      2026-09-05 with a Fortran-generated surface-fog regime (coszen 0.05,
+      swrad_scat 3, qc 8.2e-3 in layer 1: exactly the lowest layer
+      renormalised; 222 assertions green). Gap (k): below a renormalised layer
+      SWPARA's bookkeeping is a coupled 4-component nonlinear sweep (raw
+      fractions accumulated, rescaled ones applied), which esm §4.3.1.1 cannot
+      express (vector recurrence rejected; repro
+      `esm-repro/spikeB/probe_vector_recurrence.esm`), so the component is
+      exact only when no depleting layer lies below a renormalised one; the
+      floor `S_min` is therefore never reached in a valid regime.
     - **Spike C — WSM6 warm-rain process rates.** `praut`, `pracw`, `prevp`
       as pointwise observeds with WRF constants; tested against instrumented
       WSM6. Proves the sub-process factoring pattern and the constants
