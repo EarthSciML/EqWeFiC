@@ -251,6 +251,21 @@ optional later rows.
     - **Spike B — Dudhia SW as an integral.** Column optical depth via
       `integral` (cumulative) and the surface flux; tested against
       `module_ra_sw.F`. Proves the `integral` lowering end to end.
+      Done 2026-09-05: `components/atmospheric_radiation/dudhia_sw/` — column
+      vapour/aerosol/cloud paths as `integral_lev_nodes_cumulative_to_top`
+      integrals (WRF's top-down SWPARA arrays reversed onto `lev`/`lev_nodes`),
+      Lacis–Hansen vapour absorptance and the Stephens ALBTAB/ABSTAB cloud
+      tables as `function_tables` (bilinear), downward beam with the
+      cumulative depletions, `gsw`, and the heating rate as
+      `face_flux_D_lev_supplied_faces` divided by ρ cp and Exner; 66 equations,
+      174 assertions green in Rust. Reference = the real64 `sw_driver` replay
+      (diagnostic scheme, no dt); measured mismatch is binary64 roundoff
+      (≤ 1e-15 relative), tolerances at 1e-9 of column maxima. Regimes: SCM
+      calls 1, 120 (cirrus), 2400 (low sun), 2820, 600 (night, all zero) and a
+      synthetic stratus deck (qc = 3e-4 inserted into the call-120 column and
+      replayed through the Fortran driver) because the SCM has no liquid cloud.
+      Not transcribed: the renormalisation when a single layer would deplete
+      > 99 % of the beam (asserted inactive).
     - **Spike C — WSM6 warm-rain process rates.** `praut`, `pracw`, `prevp`
       as pointwise observeds with WRF constants; tested against instrumented
       WSM6. Proves the sub-process factoring pattern and the constants
