@@ -187,6 +187,12 @@ optional later rows.
     kernel JSON dump plus a hand-written test skeleton and fills in
     `parameter_overrides` and `assertions` with the selected regimes. It never
     writes equations.
+    Done 2026-09-05: `tools/fill_tests.py` (sidecar `<esm>.fill.json`; fills
+    scalar overrides, per-test input-field libraries for the `input_<x>`
+    rewrite targets, and Richardson-extrapolated reference columns as inline
+    `Linf_error` references). The input-library route is needed because
+    esm-spec §6.6 admits scalar overrides only (format gap, to be filed
+    upstream).
 0.5 **netCDF toolchain.** Done 2026-09-04. Apptainer image builds work here in
     setuid mode (never pass `--fakeroot`; same route as
     `../moves.rs/characterization/apptainer/build-sif.sh`). Recipe
@@ -205,6 +211,24 @@ optional later rows.
       ∂/∂z(K γ)` with the YSU K-profile and nonlocal term, lowered by the 0.2
       rule, tested against `bl_ysu_run` tendencies at `dt = 0.01 s`. Proves the
       "implicit Fortran vs explicit derivative" tolerance story.
+      Done 2026-09-05: `components/atmospheric_dynamics/ysu/` (YSU as a
+      density-weighted flux-form PDE on `column_nonuniform_1d`, PBL-height
+      scans as aggregates, `lib/wrf_thermo.esm` templates), 4 SCM regimes,
+      117 assertions green in Rust and Python. Measured implicit-vs-explicit
+      gap up to 9e-4 relative at dt = 0.01 s, so references are the
+      (0.04, 0.02, 0.01 s) second-order Richardson limit; residual mismatch
+      1e-7–1e-6 relative comes from real32 constants/literals inside the
+      real64 kernel. Gaps found: (f) shaped `parameter_overrides`/`initial_conditions`
+      are number-only in the schema (worked around with test-injected
+      `input_<x>` template libraries); (g) the EarthSciModels gate
+      `run_esm_inline_tests.py` has its own sampler without shaped-observed
+      support (101 errors); (h) Rust rejects the dimension name `lev` as a free
+      variable in an inline `reference` and qualified subsystem overrides
+      (`P.wrf.g`); (i) the ESD `varcoeff_face_laplacian_lev_flux_bc` rule's
+      fixed free names `kdudz_bot/top` give one BC pair per model (proposed
+      follow-up rule `D(K·D(u) − F, lev)`). Repros in
+      `data/eqwefic/esm-repro/spikeA/`. Not transcribed: the cloud-top
+      entrainment branch (no SCM regime exercises it).
     - **Spike B — Dudhia SW as an integral.** Column optical depth via
       `integral` (cumulative) and the surface flux; tested against
       `module_ra_sw.F`. Proves the `integral` lowering end to end.

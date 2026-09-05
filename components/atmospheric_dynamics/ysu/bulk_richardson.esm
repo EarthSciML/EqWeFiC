@@ -1,0 +1,76 @@
+{
+  "esm": "1.0.0",
+  "metadata": {
+    "name": "bulk_richardson",
+    "description": "Bulk-Richardson-number boundary-layer-height diagnosis of Troen and Mahrt (1986) / Hong et al. (2006) as three pure expression templates over a column (index set `lev`, layer 1 at the surface). WRF's YSU runs this search up to three times per column (first guess with the lowest-level theta_v, thermal-excess enhanced, and stable-regime with a larger critical value), so the search is factored here and applied by name. The Fortran scans levels upward and stops at the first level whose bulk Richardson number exceeds the critical value; that inherently discrete search is written as an aggregate minimum over the level index with a filter (esm-spec 4.3.1), not as a recurrence, because the result depends only on the set of stable levels and not on the order of the scan. Ri_b[k] = (theta_v[k] - theta_thermal) g z_c[k] / (theta_v,ref max(|U_k|^2, spd2_min)); level 1 carries the surface-layer bulk Richardson number br supplied by the surface-layer scheme, exactly as the Fortran seeds brup with br before the loop.",
+    "license": "MIT",
+    "tags": ["boundary-layer", "pbl-height", "bulk-richardson", "expression-templates"],
+    "references": [
+      { "citation": "Troen, I., and Mahrt, L. (1986). A simple model of the atmospheric boundary layer; sensitivity to surface evaporation. Boundary-Layer Meteorol. 37, 129-148.", "doi": "10.1007/BF00122760" },
+      { "citation": "Hong, S.-Y., Noh, Y., and Dudhia, J. (2006). A new vertical diffusion package with an explicit treatment of entrainment processes. Mon. Wea. Rev. 134, 2318-2341.", "doi": "10.1175/MWR3199.1" }
+    ]
+  },
+  "expression_templates": {
+    "bulk_richardson_profile": {
+      "params": ["thv", "thermal", "thv_ref", "spd2", "zc", "g", "br_sfc"],
+      "description": "Column of bulk Richardson numbers Ri_b[k] = (thv[k] - thermal) g zc[k] / (thv_ref spd2[k]) for k >= 2, with Ri_b[1] = br_sfc (the surface-layer value). thv is the buoyancy variable (theta_v, or theta_li for the top-down search), thermal the reference (thermal-excess enhanced) surface value, spd2 the floored squared wind speed.",
+      "body": {
+        "op": "aggregate",
+        "output_idx": ["k"],
+        "args": ["thv", "spd2", "zc"],
+        "ranges": { "k": { "from": "lev" } },
+        "expr": {
+          "op": "ifelse",
+          "args": [
+            { "op": "==", "args": ["k", 1] },
+            "br_sfc",
+            { "op": "/", "args": [
+              { "op": "*", "args": [
+                { "op": "-", "args": [{ "op": "index", "args": ["thv", "k"] }, "thermal"] },
+                "g",
+                { "op": "index", "args": ["zc", "k"] } ] },
+              { "op": "*", "args": ["thv_ref", { "op": "index", "args": ["spd2", "k"] }] } ] }
+          ]
+        }
+      }
+    },
+    "first_stable_level": {
+      "params": ["Ri", "brcr", "ktop"],
+      "description": "The lowest level k >= 2 at which Ri[k] exceeds the critical value brcr, or ktop (the top level) if no level does: kpbl = min { k in [2, ktop] : Ri[k] > brcr or k = ktop }. This is the level at which the Fortran upward scan (`do k = 2, klpbl ... stable = brup > brcr`) stops.",
+      "body": {
+        "op": "aggregate",
+        "output_idx": [],
+        "reduce": "min",
+        "args": ["Ri"],
+        "ranges": { "k": { "from": "lev" } },
+        "filter": {
+          "op": "or",
+          "args": [
+            { "op": "and", "args": [{ "op": ">=", "args": ["k", 2] }, { "op": ">", "args": [{ "op": "index", "args": ["Ri", "k"] }, "brcr"] }] },
+            { "op": "==", "args": ["k", "ktop"] }
+          ]
+        },
+        "expr": "k"
+      }
+    },
+    "pbl_height_from_bracket": {
+      "params": ["Ri_dn", "Ri_up", "brcr", "z_dn", "z_up"],
+      "description": "Boundary-layer height by linear interpolation of the bulk Richardson number between the last unstable level (Ri_dn at z_dn) and the first stable level (Ri_up at z_up): h = z_dn + brint (z_up - z_dn) with brint = (brcr - Ri_dn)/(Ri_up - Ri_dn), clipped to 0 when the lower level is already stable and to 1 when the upper level is still unstable (the top of the column was reached), exactly as bl_ysu.F90 computes brint.",
+      "body": {
+        "op": "+",
+        "args": [
+          "z_dn",
+          { "op": "*", "args": [
+            { "op": "ifelse", "args": [
+              { "op": ">=", "args": ["Ri_dn", "brcr"] },
+              0.0,
+              { "op": "ifelse", "args": [
+                { "op": "<=", "args": ["Ri_up", "brcr"] },
+                1.0,
+                { "op": "/", "args": [{ "op": "-", "args": ["brcr", "Ri_dn"] }, { "op": "-", "args": ["Ri_up", "Ri_dn"] }] } ] } ] },
+            { "op": "-", "args": ["z_up", "z_dn"] } ] }
+        ]
+      }
+    }
+  }
+}

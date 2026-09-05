@@ -8,10 +8,10 @@ Status values: `not started` · `instrumented` · `stub` (tests written, on this
 | Component | Sub-components (planned) | Fortran source | Existing in EarthSciModels | Status |
 |---|---|---|---|---|
 | `lib/wrf_constants.esm` | — | `share/module_model_constants.F` | — | physics (tests pass, 2026-09-04) |
-| `lib/wrf_thermo.esm` | Exner, θ, θv, qsat, Tv | `module_model_constants.F`, per-scheme | `atmospheric_dynamics/sp_ch1/*` | not started |
+| `lib/wrf_thermo.esm` | T↔θ, θv, θli, moist density (qsat/Exner still to add) | `module_model_constants.F`, per-scheme | `atmospheric_dynamics/sp_ch1/*` | physics (templates used by YSU, 2026-09-05) |
 | Column grid + rules | `column_nonuniform_1d` grid, face-flux divergence, interface-K diffusion with prescribed fluxes, 5 `integral` forms (downward sedimentation flux deferred) | EarthSciDiscretizations PR #34 | `grids/column_nonuniform_1d/` | physics PR (julia/python/rust gate green, 2026-09-05) |
 | Surface layer (sfclayrev) | φm/φh, bulk Richardson regimes, z0 over water, u*, exchange coefficients, 2 m/10 m diagnostics | `phys/physics_mmm/sf_sfclayrev.F90` | `local_scale/surface_layer_profile.esm` | not started |
-| PBL (YSU) | PBL height (bulk Ri), K-profile, countergradient term, entrainment flux, top-down mixing, diffusion PDE | `phys/physics_mmm/bl_ysu.F90` | `holtslag_boville/*` (related) | instrumented (SCM dumps + real64 driver, 2026-09-04) |
+| PBL (YSU) | PBL height (bulk Ri), K-profile, countergradient term, entrainment flux, top-down mixing, diffusion PDE | `phys/physics_mmm/bl_ysu.F90` | `holtslag_boville/*` (related) | physics (Spike A, 2026-09-05): `components/atmospheric_dynamics/ysu/ysu.esm`, 117/117 `./esm test` and Python binding; EarthSciModels gate blocked by its shaped-observed sampler; cloud-top (`ysu_topdown_pblmix`) branch not transcribed |
 | Land surface (slab) | 5-layer soil heat diffusion, surface energy balance | `phys/module_sf_slab.F` | — | not started |
 | Land surface (Noah) | soil heat/moisture, canopy resistance, Penman, snow | `phys/module_sf_noahlsm.F` | `urban_canopy/hydro/*` (related) | not started |
 | Microphysics (WSM6) | saturation adjustment; warm rain (praut, pracw, prevp); ice processes; melting/freezing; sedimentation | `phys/physics_mmm/mp_wsm6.F90` | — | not started |
