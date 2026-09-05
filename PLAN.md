@@ -122,14 +122,41 @@ optional later rows.
     `lib/wrf_thermo.esm` (Exner function, potential/virtual temperature,
     saturation mixing ratio, moist static quantities, factored as templates
     and reused by every scheme), `.gitignore` for the `esm` binary.
-0.2 **Column grid.** Add to EarthSciDiscretizations (PR) a
-    `grids/column_nonuniform_1d/` (or reuse `cartesian_nonuniform_1d` under a
-    `lev` rename) with: cell axis `lev` (N, metaparameter `NLEV`), edge axis
-    `lev_nodes` (N+1), consumer-supplied edge heights `z_edge` and mid-level
-    `z`, `dz`, plus rules: `varcoeff_laplacian_lev_{noflux,robin_surface}_bc`,
-    `upwind1_flux_D_lev` (sedimentation, downward only), and the first
-    `integral` lowering (whole-column and cumulative, mass-weighted). Verify
-    with MMS problems, per that repo's AGENTS.md.
+0.2 **Column grid.** Done on the EarthSciDiscretizations branch
+    `column-nonuniform-1d` (2026-09-04, PR pending goldens): a native
+    `grids/column_nonuniform_1d/` (cell axis `lev`, edge axis `lev_nodes`,
+    metaparameter `NLEV`, consumer-supplied interface array `ze`, grid-derived
+    `zc`/`dz`; layer 1 = surface, WRF/CCPP order) rather than a rename of
+    `cartesian_nonuniform_1d`, because esm-spec §9.7.7 renaming rewrites only
+    `wrt`/`dim` and not an `integral` node's `var`/bounds (verified in the Rust
+    CLI; filed upstream). Rules: `face_flux_D_lev_supplied_faces`
+    (`D(F, lev)` on an interface flux), `varcoeff_face_laplacian_lev_flux_bc`
+    (`D(K·D(u,lev),lev)` with K on interfaces exactly as YSU's `xkzh`, free names
+    `kdudz_bot`/`kdudz_top` for the surface/top values of K ∂u/∂z, so a WRF
+    surface flux enters as `kdudz_bot = -hfx/(rho cp)`), and five `integral`
+    lowerings (`integral_lev_whole`, `integral_lev_cumulative_{from_bottom,to_top}`
+    to layer centres, `integral_lev_nodes_cumulative_{from_bottom,to_top}` to
+    interfaces; the bound literal `lev`/`lev_nodes` selects the form). Verified
+    numerically in the Rust CLI (27 probe assertions, three MMS problems all
+    green; the constant-K column problem reproduces the cartesian
+    `heat_1d_nonuniform_neumann` error at N=64). Sedimentation (`upwind1_flux_D_lev`,
+    downward only) is deferred to the WSM6 stage-2 work.
+    **Format gaps found (all filed/delegated to EarthSciAST, 2026-09-04):**
+    (a) shaped state-dependent observeds (e.g. a column tendency `dudt[lev]`)
+    cannot be asserted in §6.6 inline tests in the Rust or Python runners
+    ("array state has no cells in var_map"); only ODE states and state-free
+    array observeds are supported, so the derivative-test shape of §6 needs
+    this fix before Phase 1 tests can be green; (b) the Python binding drops
+    the elementwise term of `aggregate + elementwise` array sums (breaks the
+    centre-cumulative integral rules in Python only; manifests carry
+    `blocked_upstream_bindings`); (c) Python disagrees with Rust on the
+    node-cumulative forms (cause under investigation upstream); (d) the
+    §9.7.7 rename gap above; (e) the Julia reference runner faults
+    (`E_TREEWALK_UNBOUND_VARIABLE`) on an elementwise-defined array observed
+    (`f = 1 + cos(π zc)`) that is consumed only through an aggregate gather —
+    spell such integrands as explicit gathers `aggregate(i; 1 + cos(π zc[i]))`
+    until fixed. With that spelling Python also passes all five integral
+    forms, so (b)/(c) may be the same root cause.
 0.3 **Fortran harness repo.** Forks under the `ctessum-claude` account
     (done 2026-09-04): `ctessum-claude/WRF` with branch
     `earthsciml-instrumented` (pushed; `../WRF` has it checked out with remote
@@ -146,15 +173,18 @@ optional later rows.
     kernel JSON dump plus a hand-written test skeleton and fills in
     `parameter_overrides` and `assertions` with the selected regimes. It never
     writes equations.
-0.5 **netCDF toolchain** (needed from Phase 1.4 on): apptainer (decided
-    2026-09-04). Unprivileged image *builds* fail on this cluster (no
-    subuid/subgid for fakeroot), but *pulls* work, so the approach is to pull
-    a prebuilt WRF toolchain image (DTC `dtcenter/wps_wrf`) and compile the
-    fork inside it with the source bind-mounted; image and cache live under
-    `data/eqwefic/apptainer/`. Pulled 2026-09-04: `wps_wrf_latest.sif` (1.0 GB;
-    gfortran 8 via devtoolset-8, netCDF-Fortran 4.4.6, MPI, a prebuilt WRF 4.3
-    for reference). Next: build the 4.8 fork inside it with `../WRF` bind-mounted,
-    then `em_scm_xy` (serial) and confirm the SCM case runs.
+0.5 **netCDF toolchain.** Done 2026-09-04. Apptainer image builds work here in
+    setuid mode (never pass `--fakeroot`; same route as
+    `../moves.rs/characterization/apptainer/build-sif.sh`). Recipe
+    `tools/apptainer/wrf-build.def` (Ubuntu 24.04, gfortran 13.3, netCDF-C/F
+    4.5.4, HDF5, OpenMPI, python3-netCDF4) → `data/eqwefic/apptainer/wrf-build.sif`
+    (334 MB); set `APPTAINER_CACHEDIR`/`APPTAINER_TMPDIR` under
+    `data/eqwefic/apptainer/`, never `/tmp`. The 4.8 fork compiles inside it
+    (`printf "32\n\n" | ./configure` = GNU serial, `./compile -j 8 em_scm_xy`,
+    ~25 min): `main/ideal.exe` and `main/wrf.exe` built 2026-09-04; the
+    `em_scm_xy` case (59 h, dt = 60 s, e_vert = 60, mp=2 lw=1 sw=1 sfclay=1
+    sf_surface=2 pbl=1) is the SCM reference run (ran 2026-09-04 inside the container: `ideal.exe` then `wrf.exe`, "SUCCESS COMPLETE WRF", 59 h in seconds, output `wrfout_d01_1999-10-22_19:00:00`). The DTC image pulled earlier
+    is superseded and can be deleted.
 0.6 **Three de-risking spikes**, each ending in a passing `./esm test` file
     on this repo's `main` (not yet a PR):
     - **Spike A — YSU as a PDE.** Column diffusion `∂θ/∂t = ∂/∂z(K ∂θ/∂z) −
