@@ -1,0 +1,4339 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "PhysicsColumn",
+  "description": "Full-physics column subassembly of the EqWeather reference suite (WRF em_scm_xy with ra_lw_physics = ra_sw_physics = 1, sf_sfclay_physics = 1, bl_pbl_physics = 1; cu = shcu = fdda = 0), i.e. everything WRF's first RK step does to a column except the land-surface scheme and microphysics: the RRTM longwave chain (components/atmospheric_radiation/rrtm_lw, five stages), the Dudhia shortwave scheme (components/atmospheric_radiation/dudhia_sw), the revised MM5 surface layer (components/atmospheric_dynamics/sfclayrev) and the YSU boundary layer (components/atmospheric_dynamics/ysu), mounted by reference as top-level systems and coupled in the WRF call order with variable_map/param_to_var edges (esm-spec 10.4): radiation -> rthraten -> YSU (cloud-top entrainment branch), surface layer -> u*, fm, fh, Ri_b, wind speed, 10 m wind, z0 -> YSU, and the assembly's shared scalar state into every scheme. The exposed rth_phys_sum = rthraten + dtheta/dt|PBL is WRF's RTHRATEN + RTHBLTEN. The column state enters each scheme through its input_<x> rewrite targets via template libraries injected at the mount edges (esm-spec 9.7.10; all from the same WRF step), so one document holds one regime. NOT co-mounted: the slab land-surface scheme (PLAN.md gap (n): document-scoped index sets forbid a 4-layer and a 59-layer column on the same axis) -- its fluxes are prescribed (hfx_lsm, qfx_lsm); and WSM6 (an in-place step in WRF's microphysics_driver, no condensate tendencies in this SCM regime). KNOWN BINDING LIMITATIONS (Rust CLI, EarthSciAST issue #198): the mounted components' own inline tests are re-run inside this document under the coupling and error, so run `./esm test --model PhysicsColumn <this file>`; the leaves' index sets are redeclared at document level because a top-level ref mount does not merge them; a parent test cannot set a mounted component's parameter, so the shared scalars are prescribed in this model and coupled in. Measured implicit-vs-instantaneous PBL tendency gaps at this regime (Linf, zero-tolerance run): dtheta/dt 1.94e-6 K/s (rthblten max 1.57e-4, 1.2 %), du/dt 1.48e-5 m/s^2 (rublten max 3.6e-4), dv/dt 3.50e-6 m/s^2, dqv/dt 5.3e-10 1/s (rqvblten max 6.5e-8); tolerances 3e-6, 2e-5, 2e-5, 1e-9 -- the stable nocturnal layer is far less stiff than the daytime one, so the implicit-explicit gap is 10x smaller. All other residuals (zero-tolerance run): surface-layer outputs <= 4.9e-5 relative (the real32 kernel's own floor vs its real64 replay is 5.3e-5), h 3.3e-5 relative, K_h/K_m Linf <= 8.2e-5 m^2/s, longwave fluxes Linf <= 2.0e-4 W/m^2, dthdt_lw 4.4e-9 K/s, dthdt_sw 0 K/s, gsw 1.8e-6, glw 3e-7, olr 1.7e-7 relative.",
+  "license": "MIT",
+  "tags": [
+   "wrf",
+   "eqweather",
+   "assembly",
+   "coupling",
+   "radiation",
+   "rrtm",
+   "dudhia",
+   "surface-layer",
+   "pbl",
+   "column"
+  ],
+  "references": [
+   {
+    "citation": "Skamarock, W. C., et al. (2021). A Description of the Advanced Research WRF Model Version 4.3. NCAR Tech. Note NCAR/TN-556+STR."
+   }
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {
+   "type": "integer",
+   "default": 59,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of model layers (WRF kte). Bound into the column grid at the import edge; 59 is the em_scm_xy reference column."
+  },
+  "NBUF": {
+   "type": "integer",
+   "default": 44,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of buffer layers MM5ATM adds above the model top, nint(p_top / (100 deltap)) with deltap = 4 hPa (RRTMINIT: NLAYERS = kme + nint(p_top*0.01/deltap) - 1); 44 for the reference column (p_top = 177.6 hPa)."
+  },
+  "NGPT": {
+   "type": "integer",
+   "default": 140,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of g-points after the 256-to-140 reduction."
+  },
+  "NBANDS": {
+   "type": "integer",
+   "default": 16,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of longwave bands."
+  },
+  "PLANCK_T0": {
+   "type": "integer",
+   "default": 159,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. TOTPLNK(i, band) holds the band Planck integral at T = PLANCK_T0 + i kelvin, i = 1..181 (RRTM's INDLEV = INT(T - 159.))."
+  },
+  "PLANCK_NODES": {
+   "type": "integer",
+   "default": 181,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Temperature nodes of the TOTPLNK table (160..340 K)."
+  }
+ },
+ "index_sets": {
+  "rlay": {
+   "kind": "interval",
+   "size": {
+    "op": "+",
+    "args": [
+     "NLEV",
+     "NBUF"
+    ]
+   }
+  },
+  "rlev": {
+   "kind": "interval",
+   "size": {
+    "op": "+",
+    "args": [
+     "NLEV",
+     "NBUF",
+     1
+    ]
+   }
+  },
+  "bands": {
+   "kind": "interval",
+   "size": "NBANDS"
+  },
+  "o3nodes": {
+   "kind": "interval",
+   "size": 31
+  },
+  "o3edges": {
+   "kind": "interval",
+   "size": 32
+  },
+  "gpts": {
+   "kind": "interval",
+   "size": "NGPT"
+  },
+  "gl": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     "NGPT",
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "refnodes_b02": {
+   "kind": "interval",
+   "size": 11
+  },
+  "g01": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl01": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g02": {
+   "kind": "interval",
+   "size": 14
+  },
+  "gl02": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     14,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g03": {
+   "kind": "interval",
+   "size": 16
+  },
+  "gl03": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     16,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g04": {
+   "kind": "interval",
+   "size": 14
+  },
+  "gl04": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     14,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g05": {
+   "kind": "interval",
+   "size": 16
+  },
+  "gl05": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     16,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g06": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl06": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g07": {
+   "kind": "interval",
+   "size": 12
+  },
+  "gl07": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     12,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g08": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl08": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g09": {
+   "kind": "interval",
+   "size": 12
+  },
+  "gl09": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     12,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g10": {
+   "kind": "interval",
+   "size": 6
+  },
+  "gl10": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     6,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g11": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl11": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g12": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl12": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g13": {
+   "kind": "interval",
+   "size": 4
+  },
+  "gl13": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     4,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g14": {
+   "kind": "interval",
+   "size": 2
+  },
+  "gl14": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     2,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g15": {
+   "kind": "interval",
+   "size": 2
+  },
+  "gl15": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     2,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g16": {
+   "kind": "interval",
+   "size": 2
+  },
+  "gl16": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     2,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "tnodes": {
+   "kind": "interval",
+   "size": "PLANCK_NODES"
+  },
+  "lev_down": {
+   "kind": "interval",
+   "size": "NLEV"
+  },
+  "lev_down_nodes": {
+   "kind": "interval",
+   "size": {
+    "op": "+",
+    "args": [
+     "NLEV",
+     1
+    ]
+   }
+  },
+  "secant_steps": {
+   "kind": "interval",
+   "size": 33
+  }
+ },
+ "models": {
+  "Sfc": {
+   "ref": "../components/atmospheric_dynamics/sfclayrev/sfclayrev.esm"
+  },
+  "Pbl": {
+   "ref": "../components/atmospheric_dynamics/ysu/ysu.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/physics_step300_atmos_inputs.esm"
+    },
+    {
+     "ref": "./tests/physics_couple_pbl_inputs.esm"
+    }
+   ]
+  },
+  "Col": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rrtm_column.esm",
+   "bindings": {
+    "NLEV": "NLEV",
+    "NBUF": "NBUF"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "../components/atmospheric_radiation/rrtm_lw/tests/scm_call600_ice_cloud_inputs.esm"
+    }
+   ]
+  },
+  "Setcoef": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rrtm_setcoef.esm",
+   "bindings": {
+    "NLEV": "NLEV",
+    "NBUF": "NBUF"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/rrtm_couple_setcoef_inputs.esm"
+    }
+   ]
+  },
+  "GasOpt": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rrtm_gas_optics.esm",
+   "bindings": {
+    "NLEV": "NLEV",
+    "NBUF": "NBUF",
+    "NGPT": "NGPT"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/rrtm_couple_gasopt_inputs.esm"
+    }
+   ]
+  },
+  "Rtrn": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rtrn_sweep.esm",
+   "bindings": {
+    "NLEV": "NLEV",
+    "NBUF": "NBUF",
+    "NGPT": "NGPT",
+    "NBANDS": "NBANDS",
+    "PLANCK_T0": "PLANCK_T0",
+    "PLANCK_NODES": "PLANCK_NODES"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/rrtm_couple_rtrn_inputs.esm"
+    }
+   ]
+  },
+  "Heat": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rrtm_lw_heating.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/rrtm_couple_heating_call600_inputs.esm"
+    }
+   ]
+  },
+  "Sw": {
+   "ref": "../components/atmospheric_radiation/dudhia_sw/dudhia_sw.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "../components/atmospheric_radiation/dudhia_sw/tests/scm_call600_night_zero_inputs.esm"
+    }
+   ]
+  },
+  "PhysicsColumn": {
+   "variables": {
+    "psfc0": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 97132.9453125,
+     "description": "Prescribed: Surface pressure (WRF psfc)."
+    },
+    "psfc": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Surface pressure (WRF psfc). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "tsk0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 281.521240234375,
+     "description": "Prescribed: Skin temperature entering the step (WRF tsk; the slab updates it after the fluxes are taken). Radiation and the surface layer both see this value (radiation_driver runs before surface_driver)."
+    },
+    "tsk": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Skin temperature entering the step (WRF tsk; the slab updates it after the fluxes are taken). Radiation and the surface layer both see this value (radiation_driver runs before surface_driver). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "xland0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Prescribed: Land mask (1 land, 2 water)."
+    },
+    "xland": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Land mask (1 land, 2 water). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "mavail0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.6000000238418579,
+     "description": "Prescribed: Surface moisture availability."
+    },
+    "mavail": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface moisture availability. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "pblh_prev0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 560.720947265625,
+     "description": "Prescribed: Boundary-layer height of the previous step, the value sfclayrev's convective velocity uses (WRF lags it by one step)."
+    },
+    "pblh_prev": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Boundary-layer height of the previous step, the value sfclayrev's convective velocity uses (WRF lags it by one step). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "u10": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 3.4307548999786377,
+     "description": "Prescribed: Lowest-layer zonal wind."
+    },
+    "u1": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Lowest-layer zonal wind. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "v10": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": -3.0457067489624023,
+     "description": "Prescribed: Lowest-layer meridional wind."
+    },
+    "v1": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Lowest-layer meridional wind. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "t10": {
+     "type": "parameter",
+     "units": "K",
+     "default": 283.0782775878906,
+     "description": "Prescribed: Lowest-layer temperature."
+    },
+    "t1": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Lowest-layer temperature. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "qv10": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.004520050715655088,
+     "description": "Prescribed: Lowest-layer vapour mixing ratio."
+    },
+    "qv1": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Lowest-layer vapour mixing ratio. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "p10": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 96833.9765625,
+     "description": "Prescribed: Lowest-layer pressure."
+    },
+    "p1": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Lowest-layer pressure. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "dz10": {
+     "type": "parameter",
+     "units": "m",
+     "default": 51.278831481933594,
+     "description": "Prescribed: Lowest-layer thickness."
+    },
+    "dz1": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Lowest-layer thickness. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "dx0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 4000.0,
+     "description": "Prescribed: Grid spacing (sfclayrev shallow-water/tofd options)."
+    },
+    "dx": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Grid spacing (sfclayrev shallow-water/tofd options). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "lakemask0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: Lake mask."
+    },
+    "lakemask": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Lake mask. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "water_depth0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Prescribed: Water depth (shallow-water z0 option)."
+    },
+    "water_depth": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Water depth (shallow-water z0 option). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "znt_prev0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.05000000074505806,
+     "description": "Prescribed: Roughness length of the previous step."
+    },
+    "znt_prev": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Roughness length of the previous step. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "ust_prev0": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.20791414380073547,
+     "description": "Prescribed: Friction velocity of the previous step."
+    },
+    "ust_prev": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Friction velocity of the previous step. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "mol_prev0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.07636712491512299,
+     "description": "Prescribed: theta* of the previous step."
+    },
+    "mol_prev": {
+     "type": "unknown",
+     "units": "K",
+     "description": "theta* of the previous step. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "qsfc_prev0": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.007125162519514561,
+     "description": "Prescribed: Surface mixing ratio of the previous step."
+    },
+    "qsfc_prev": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Surface mixing ratio of the previous step. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "hfx_prev0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": -19.126911163330078,
+     "description": "Prescribed: Sensible heat flux of the previous step (convective-velocity input)."
+    },
+    "hfx_prev": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Sensible heat flux of the previous step (convective-velocity input). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "qfx_prev0": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 1.0553334504947998e-05,
+     "description": "Prescribed: Moisture flux of the previous step."
+    },
+    "qfx_prev": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Moisture flux of the previous step. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "ustm_prev0": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.20791414380073547,
+     "description": "Prescribed: ustm of the previous step (kernel-level dump)."
+    },
+    "ustm_prev": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "ustm of the previous step (kernel-level dump). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "chs_prev0": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Prescribed: chs of the previous step."
+    },
+    "chs_prev": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "chs of the previous step. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "chs2_prev0": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Prescribed: chs2 of the previous step."
+    },
+    "chs2_prev": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "chs2 of the previous step. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "cqs2_prev0": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.005434092599898577,
+     "description": "Prescribed: cqs2 of the previous step."
+    },
+    "cqs2_prev": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "cqs2 of the previous step. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "isfflx0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Prescribed: Surface-flux switch (namelist isfflx)."
+    },
+    "isfflx": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface-flux switch (namelist isfflx). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "shalwater_z00": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: Shallow-water roughness option."
+    },
+    "shalwater_z0": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Shallow-water roughness option. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "scm_force_flux0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: SCM forced-flux option."
+    },
+    "scm_force_flux": {
+     "type": "unknown",
+     "units": "1",
+     "description": "SCM forced-flux option. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "isftcflx0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: Sea-surface flux option."
+    },
+    "isftcflx": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Sea-surface flux option. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "iz0tlnd0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: Land thermal-roughness option."
+    },
+    "iz0tlnd": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Land thermal-roughness option. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "topdown0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Prescribed: YSU top-down mixing switch (namelist ysu_topdown_pblmix)."
+    },
+    "topdown": {
+     "type": "unknown",
+     "units": "1",
+     "description": "YSU top-down mixing switch (namelist ysu_topdown_pblmix). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "hfx_lsm0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": -19.132362365722656,
+     "description": "Prescribed: Sensible heat flux the PBL scheme receives: in WRF the slab land-surface scheme recomputes hfx from its own energy balance after sfclayrev, so pbl_driver sees the slab value (driver-level hfx_out), not sfclayrev's. Prescribed because the slab cannot be co-mounted (gap (n), see the document description)."
+    },
+    "hfx_lsm": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Sensible heat flux the PBL scheme receives: in WRF the slab land-surface scheme recomputes hfx from its own energy balance after sfclayrev, so pbl_driver sees the slab value (driver-level hfx_out), not sfclayrev's. Prescribed because the slab cannot be co-mounted (gap (n), see the document description). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "qfx_lsm0": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 1.0494821253814735e-05,
+     "description": "Prescribed: Moisture flux the PBL scheme receives (slab value, see hfx_lsm)."
+    },
+    "qfx_lsm": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Moisture flux the PBL scheme receives (slab value, see hfx_lsm). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "co2vmr0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.00037900000461377203,
+     "description": "Prescribed: CO2 volume mixing ratio (WRF co2vmr)."
+    },
+    "co2vmr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "CO2 volume mixing ratio (WRF co2vmr). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "n2ovmr0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 3.1900000863060995e-07,
+     "description": "Prescribed: N2O volume mixing ratio (WRF n2ovmr)."
+    },
+    "n2ovmr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "N2O volume mixing ratio (WRF n2ovmr). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "ch4vmr0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.7739999975674436e-06,
+     "description": "Prescribed: CH4 volume mixing ratio (WRF ch4vmr)."
+    },
+    "ch4vmr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "CH4 volume mixing ratio (WRF ch4vmr). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "emiss0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.9200000166893005,
+     "description": "Prescribed: Surface emissivity (WRF emiss)."
+    },
+    "emiss": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface emissivity (WRF emiss). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "csza0": {
+     "type": "parameter",
+     "units": "1",
+     "default": -0.08831901103258133,
+     "description": "Prescribed: Cosine of the solar zenith angle (WRF coszen)."
+    },
+    "csza": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Cosine of the solar zenith angle (WRF coszen). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "albedo0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.20000000298023224,
+     "description": "Prescribed: Surface albedo (WRF albedo)."
+    },
+    "albedo": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface albedo (WRF albedo). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "solcon0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 1384.47900390625,
+     "description": "Prescribed: Solar constant (WRF solcon)."
+    },
+    "solcon": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Solar constant (WRF solcon). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "obscur0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: Eclipse obscuration (WRF obscur)."
+    },
+    "obscur": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Eclipse obscuration (WRF obscur). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "cssca0": {
+     "type": "parameter",
+     "units": "1/m",
+     "default": 9.999999747378752e-06,
+     "description": "Prescribed: Clear-sky scattering coefficient (WRF cssca)."
+    },
+    "cssca": {
+     "type": "unknown",
+     "units": "1/m",
+     "description": "Clear-sky scattering coefficient (WRF cssca). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "icloud0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Prescribed: Cloud switch (WRF icloud)."
+    },
+    "icloud": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Cloud switch (WRF icloud). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "sfc_hfx_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Sfc.hfx through the coupling."
+    },
+    "sfc_hfx": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Surface-layer output hfx of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_qfx_in": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 0.0,
+     "description": "Receives Sfc.qfx through the coupling."
+    },
+    "sfc_qfx": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Surface-layer output qfx of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_lh_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Sfc.lh through the coupling."
+    },
+    "sfc_lh": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Surface-layer output lh of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_ust_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Receives Sfc.ust through the coupling."
+    },
+    "sfc_ust": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Surface-layer output ust of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_znt_in": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Receives Sfc.znt through the coupling."
+    },
+    "sfc_znt": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Surface-layer output znt of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_psim_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Sfc.psim through the coupling."
+    },
+    "sfc_psim": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface-layer output psim of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_psih_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Sfc.psih through the coupling."
+    },
+    "sfc_psih": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface-layer output psih of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_fm_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Sfc.fm through the coupling."
+    },
+    "sfc_fm": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface-layer output fm of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_fh_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Sfc.fh through the coupling."
+    },
+    "sfc_fh": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface-layer output fh of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_gz1oz0_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Sfc.gz1oz0 through the coupling."
+    },
+    "sfc_gz1oz0": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface-layer output gz1oz0 of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_br_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Sfc.br through the coupling."
+    },
+    "sfc_br": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface-layer output br of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_wspd_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Receives Sfc.wspd through the coupling."
+    },
+    "sfc_wspd": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Surface-layer output wspd of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_u10_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Receives Sfc.u10 through the coupling."
+    },
+    "sfc_u10": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Surface-layer output u10 of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_v10_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Receives Sfc.v10 through the coupling."
+    },
+    "sfc_v10": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Surface-layer output v10 of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_th2_in": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.0,
+     "description": "Receives Sfc.th2 through the coupling."
+    },
+    "sfc_th2": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Surface-layer output th2 of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_t2_in": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.0,
+     "description": "Receives Sfc.t2 through the coupling."
+    },
+    "sfc_t2": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Surface-layer output t2 of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_q2_in": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.0,
+     "description": "Receives Sfc.q2 through the coupling."
+    },
+    "sfc_q2": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Surface-layer output q2 of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_flhc_in": {
+     "type": "parameter",
+     "units": "W/(m^2*K)",
+     "default": 0.0,
+     "description": "Receives Sfc.flhc through the coupling."
+    },
+    "sfc_flhc": {
+     "type": "unknown",
+     "units": "W/(m^2*K)",
+     "description": "Surface-layer output flhc of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_flqc_in": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 0.0,
+     "description": "Receives Sfc.flqc through the coupling."
+    },
+    "sfc_flqc": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Surface-layer output flqc of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_regime_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Sfc.regime through the coupling."
+    },
+    "sfc_regime": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface-layer output regime of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_rmol_in": {
+     "type": "parameter",
+     "units": "1/m",
+     "default": 0.0,
+     "description": "Receives Sfc.rmol through the coupling."
+    },
+    "sfc_rmol": {
+     "type": "unknown",
+     "units": "1/m",
+     "description": "Surface-layer output rmol of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_mol_in": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.0,
+     "description": "Receives Sfc.mol through the coupling."
+    },
+    "sfc_mol": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Surface-layer output mol of the mounted SfclayRev at the assembly state."
+    },
+    "sfc_qsfc_in": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.0,
+     "description": "Receives Sfc.qsfc through the coupling."
+    },
+    "sfc_qsfc": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Surface-layer output qsfc of the mounted SfclayRev at the assembly state."
+    },
+    "pbl_hpbl_in": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Receives Pbl.hpbl through the coupling."
+    },
+    "pbl_hpbl": {
+     "type": "unknown",
+     "units": "m",
+     "description": "PBL output hpbl of the mounted YSU at the assembly state."
+    },
+    "pbl_kpbl_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Pbl.kpbl through the coupling."
+    },
+    "pbl_kpbl": {
+     "type": "unknown",
+     "units": "1",
+     "description": "PBL output kpbl of the mounted YSU at the assembly state."
+    },
+    "pbl_wstar_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Receives Pbl.wstar through the coupling."
+    },
+    "pbl_wstar": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "PBL output wstar of the mounted YSU at the assembly state."
+    },
+    "pbl_delta_in": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Receives Pbl.delta through the coupling."
+    },
+    "pbl_delta": {
+     "type": "unknown",
+     "units": "m",
+     "description": "PBL output delta of the mounted YSU at the assembly state."
+    },
+    "pbl_K_h_in": {
+     "type": "parameter",
+     "units": "m^2/s",
+     "shape": [
+      "lev_nodes"
+     ],
+     "default": 0.0,
+     "description": "Receives Pbl.K_h through the coupling."
+    },
+    "pbl_K_h": {
+     "type": "unknown",
+     "units": "m^2/s",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "PBL column output K_h of the mounted YSU."
+    },
+    "pbl_K_m_in": {
+     "type": "parameter",
+     "units": "m^2/s",
+     "shape": [
+      "lev_nodes"
+     ],
+     "default": 0.0,
+     "description": "Receives Pbl.K_m through the coupling."
+    },
+    "pbl_K_m": {
+     "type": "unknown",
+     "units": "m^2/s",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "PBL column output K_m of the mounted YSU."
+    },
+    "pbl_dthdt_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives Pbl.dthdt through the coupling."
+    },
+    "pbl_dthdt": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "PBL column output dthdt of the mounted YSU."
+    },
+    "pbl_dudt_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives Pbl.dudt through the coupling."
+    },
+    "pbl_dudt": {
+     "type": "unknown",
+     "units": "m/s^2",
+     "shape": [
+      "lev"
+     ],
+     "description": "PBL column output dudt of the mounted YSU."
+    },
+    "pbl_dvdt_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives Pbl.dvdt through the coupling."
+    },
+    "pbl_dvdt": {
+     "type": "unknown",
+     "units": "m/s^2",
+     "shape": [
+      "lev"
+     ],
+     "description": "PBL column output dvdt of the mounted YSU."
+    },
+    "pbl_dqvdt_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives Pbl.dqvdt through the coupling."
+    },
+    "pbl_dqvdt": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "PBL column output dqvdt of the mounted YSU."
+    },
+    "F_up_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "shape": [
+      "rlev"
+     ],
+     "default": 0.0,
+     "description": "Receives Rtrn.F_up through the coupling."
+    },
+    "F_up": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "rlev"
+     ],
+     "description": "Upward longwave flux at the RRTM levels (TOTUFLUX, level 1 = surface)."
+    },
+    "F_dn_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "shape": [
+      "rlev"
+     ],
+     "default": 0.0,
+     "description": "Receives Rtrn.F_dn through the coupling."
+    },
+    "F_dn": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "rlev"
+     ],
+     "description": "Downward longwave flux at the RRTM levels (TOTDFLUX)."
+    },
+    "F_up_model": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "F_up restricted to the NLEV+1 model interfaces: RRTM levels 0..kte are the model interfaces bottom-up, with no reversal (rrtm_lw_heating.esm). Coupling source for RRTMLWHeating."
+    },
+    "F_dn_model": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "F_dn restricted to the NLEV+1 model interfaces: RRTM levels 0..kte are the model interfaces bottom-up, with no reversal (rrtm_lw_heating.esm). Coupling source for RRTMLWHeating."
+    },
+    "dthdt_lw_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives Heat.dthdt through the coupling."
+    },
+    "dthdt_lw": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Longwave potential-temperature tendency (the RTHRATENLW increment)."
+    },
+    "glw_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Heat.glw through the coupling."
+    },
+    "glw": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Downward longwave flux at the surface (WRF GLW)."
+    },
+    "olr_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Heat.olr through the coupling."
+    },
+    "olr": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Upward longwave flux at the model top (WRF OLR, FORTRAN_BUGS.md N14)."
+    },
+    "dthdt_sw_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives Sw.dthdt through the coupling."
+    },
+    "dthdt_sw": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Shortwave potential-temperature tendency (the RTHRATENSW increment)."
+    },
+    "gsw_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Sw.gsw through the coupling."
+    },
+    "gsw": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Net shortwave flux absorbed at the surface (WRF GSW)."
+    },
+    "rthraten": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Total radiative potential-temperature tendency of the column, dthdt_lw + dthdt_sw (WRF RTHRATEN after radiation_driver). Coupling source for YSU's rthraten (used by its cloud-top radiative-entrainment branch)."
+    },
+    "rth_phys_sum": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Sum of the physics potential-temperature tendencies of the step, rthraten + dtheta/dt|PBL (WRF's RTHRATEN + RTHBLTEN with cu = shcu = fdda = 0). The PBL part is the instantaneous derivative, WRF's is the implicit step's increment (see the test description)."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "psfc",
+     "rhs": "psfc0"
+    },
+    {
+     "lhs": "tsk",
+     "rhs": "tsk0"
+    },
+    {
+     "lhs": "xland",
+     "rhs": "xland0"
+    },
+    {
+     "lhs": "mavail",
+     "rhs": "mavail0"
+    },
+    {
+     "lhs": "pblh_prev",
+     "rhs": "pblh_prev0"
+    },
+    {
+     "lhs": "u1",
+     "rhs": "u10"
+    },
+    {
+     "lhs": "v1",
+     "rhs": "v10"
+    },
+    {
+     "lhs": "t1",
+     "rhs": "t10"
+    },
+    {
+     "lhs": "qv1",
+     "rhs": "qv10"
+    },
+    {
+     "lhs": "p1",
+     "rhs": "p10"
+    },
+    {
+     "lhs": "dz1",
+     "rhs": "dz10"
+    },
+    {
+     "lhs": "dx",
+     "rhs": "dx0"
+    },
+    {
+     "lhs": "lakemask",
+     "rhs": "lakemask0"
+    },
+    {
+     "lhs": "water_depth",
+     "rhs": "water_depth0"
+    },
+    {
+     "lhs": "znt_prev",
+     "rhs": "znt_prev0"
+    },
+    {
+     "lhs": "ust_prev",
+     "rhs": "ust_prev0"
+    },
+    {
+     "lhs": "mol_prev",
+     "rhs": "mol_prev0"
+    },
+    {
+     "lhs": "qsfc_prev",
+     "rhs": "qsfc_prev0"
+    },
+    {
+     "lhs": "hfx_prev",
+     "rhs": "hfx_prev0"
+    },
+    {
+     "lhs": "qfx_prev",
+     "rhs": "qfx_prev0"
+    },
+    {
+     "lhs": "ustm_prev",
+     "rhs": "ustm_prev0"
+    },
+    {
+     "lhs": "chs_prev",
+     "rhs": "chs_prev0"
+    },
+    {
+     "lhs": "chs2_prev",
+     "rhs": "chs2_prev0"
+    },
+    {
+     "lhs": "cqs2_prev",
+     "rhs": "cqs2_prev0"
+    },
+    {
+     "lhs": "isfflx",
+     "rhs": "isfflx0"
+    },
+    {
+     "lhs": "shalwater_z0",
+     "rhs": "shalwater_z00"
+    },
+    {
+     "lhs": "scm_force_flux",
+     "rhs": "scm_force_flux0"
+    },
+    {
+     "lhs": "isftcflx",
+     "rhs": "isftcflx0"
+    },
+    {
+     "lhs": "iz0tlnd",
+     "rhs": "iz0tlnd0"
+    },
+    {
+     "lhs": "topdown",
+     "rhs": "topdown0"
+    },
+    {
+     "lhs": "hfx_lsm",
+     "rhs": "hfx_lsm0"
+    },
+    {
+     "lhs": "qfx_lsm",
+     "rhs": "qfx_lsm0"
+    },
+    {
+     "lhs": "co2vmr",
+     "rhs": "co2vmr0"
+    },
+    {
+     "lhs": "n2ovmr",
+     "rhs": "n2ovmr0"
+    },
+    {
+     "lhs": "ch4vmr",
+     "rhs": "ch4vmr0"
+    },
+    {
+     "lhs": "emiss",
+     "rhs": "emiss0"
+    },
+    {
+     "lhs": "csza",
+     "rhs": "csza0"
+    },
+    {
+     "lhs": "albedo",
+     "rhs": "albedo0"
+    },
+    {
+     "lhs": "solcon",
+     "rhs": "solcon0"
+    },
+    {
+     "lhs": "obscur",
+     "rhs": "obscur0"
+    },
+    {
+     "lhs": "cssca",
+     "rhs": "cssca0"
+    },
+    {
+     "lhs": "icloud",
+     "rhs": "icloud0"
+    },
+    {
+     "lhs": "sfc_hfx",
+     "rhs": "sfc_hfx_in"
+    },
+    {
+     "lhs": "sfc_qfx",
+     "rhs": "sfc_qfx_in"
+    },
+    {
+     "lhs": "sfc_lh",
+     "rhs": "sfc_lh_in"
+    },
+    {
+     "lhs": "sfc_ust",
+     "rhs": "sfc_ust_in"
+    },
+    {
+     "lhs": "sfc_znt",
+     "rhs": "sfc_znt_in"
+    },
+    {
+     "lhs": "sfc_psim",
+     "rhs": "sfc_psim_in"
+    },
+    {
+     "lhs": "sfc_psih",
+     "rhs": "sfc_psih_in"
+    },
+    {
+     "lhs": "sfc_fm",
+     "rhs": "sfc_fm_in"
+    },
+    {
+     "lhs": "sfc_fh",
+     "rhs": "sfc_fh_in"
+    },
+    {
+     "lhs": "sfc_gz1oz0",
+     "rhs": "sfc_gz1oz0_in"
+    },
+    {
+     "lhs": "sfc_br",
+     "rhs": "sfc_br_in"
+    },
+    {
+     "lhs": "sfc_wspd",
+     "rhs": "sfc_wspd_in"
+    },
+    {
+     "lhs": "sfc_u10",
+     "rhs": "sfc_u10_in"
+    },
+    {
+     "lhs": "sfc_v10",
+     "rhs": "sfc_v10_in"
+    },
+    {
+     "lhs": "sfc_th2",
+     "rhs": "sfc_th2_in"
+    },
+    {
+     "lhs": "sfc_t2",
+     "rhs": "sfc_t2_in"
+    },
+    {
+     "lhs": "sfc_q2",
+     "rhs": "sfc_q2_in"
+    },
+    {
+     "lhs": "sfc_flhc",
+     "rhs": "sfc_flhc_in"
+    },
+    {
+     "lhs": "sfc_flqc",
+     "rhs": "sfc_flqc_in"
+    },
+    {
+     "lhs": "sfc_regime",
+     "rhs": "sfc_regime_in"
+    },
+    {
+     "lhs": "sfc_rmol",
+     "rhs": "sfc_rmol_in"
+    },
+    {
+     "lhs": "sfc_mol",
+     "rhs": "sfc_mol_in"
+    },
+    {
+     "lhs": "sfc_qsfc",
+     "rhs": "sfc_qsfc_in"
+    },
+    {
+     "lhs": "pbl_hpbl",
+     "rhs": "pbl_hpbl_in"
+    },
+    {
+     "lhs": "pbl_kpbl",
+     "rhs": "pbl_kpbl_in"
+    },
+    {
+     "lhs": "pbl_wstar",
+     "rhs": "pbl_wstar_in"
+    },
+    {
+     "lhs": "pbl_delta",
+     "rhs": "pbl_delta_in"
+    },
+    {
+     "lhs": "pbl_K_h",
+     "rhs": "pbl_K_h_in"
+    },
+    {
+     "lhs": "pbl_K_m",
+     "rhs": "pbl_K_m_in"
+    },
+    {
+     "lhs": "pbl_dthdt",
+     "rhs": "pbl_dthdt_in"
+    },
+    {
+     "lhs": "pbl_dudt",
+     "rhs": "pbl_dudt_in"
+    },
+    {
+     "lhs": "pbl_dvdt",
+     "rhs": "pbl_dvdt_in"
+    },
+    {
+     "lhs": "pbl_dqvdt",
+     "rhs": "pbl_dqvdt_in"
+    },
+    {
+     "lhs": "F_up",
+     "rhs": "F_up_in"
+    },
+    {
+     "lhs": "F_dn",
+     "rhs": "F_dn_in"
+    },
+    {
+     "lhs": "F_up_model",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "kn"
+      ],
+      "args": [],
+      "ranges": {
+       "kn": {
+        "from": "lev_nodes"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        "F_up_in",
+        "kn"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "F_dn_model",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "kn"
+      ],
+      "args": [],
+      "ranges": {
+       "kn": {
+        "from": "lev_nodes"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        "F_dn_in",
+        "kn"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "dthdt_lw",
+     "rhs": "dthdt_lw_in"
+    },
+    {
+     "lhs": "glw",
+     "rhs": "glw_in"
+    },
+    {
+     "lhs": "olr",
+     "rhs": "olr_in"
+    },
+    {
+     "lhs": "dthdt_sw",
+     "rhs": "dthdt_sw_in"
+    },
+    {
+     "lhs": "gsw",
+     "rhs": "gsw_in"
+    },
+    {
+     "lhs": "rthraten",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "dthdt_lw",
+       "dthdt_sw"
+      ]
+     }
+    },
+    {
+     "lhs": "rth_phys_sum",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "rthraten",
+       "pbl_dthdt"
+      ]
+     }
+    }
+   ],
+   "tests": [
+    {
+     "id": "scm_step300_physics_column",
+     "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, p_top = 177.6 hPa, mp=6 ra_lw=1 ra_sw=1 sf_sfclay_physics=1 (sfclayrev) sf_surface_physics=1 (slab) bl_pbl_physics=1 (YSU), data/eqwefic/scm_ref) dumped by the instrumented ctessum-claude/WRF fork: at the PHYSICS-DRIVER level (commit 592f693, module_esm_dump hooks around radiation_driver, surface_driver + pbl_driver and the physics-tendency sum in dyn_em/module_first_rk_step_part1.F; dumps subassembly_rad/_pbl/_all at step 300, column its of row jps) and at the KERNEL level for the same step (sfclayrev scm_ref_600.json, RRTM scm_ref2_600.json with the in-kernel internals, Dudhia scm_ref_600.json). All references are real32 model values, so the contract is rel 1e-5 (CLAUDE.md), widened where documented. This document runs the WHOLE column physics of the step except the land-surface scheme: RRTM longwave (RRTMColumn -> RRTMSetcoef -> RRTMGasOptics -> RTRNSweep -> RRTMLWHeating) and Dudhia shortwave give rthraten = dthdt_lw + dthdt_sw; the revised MM5 surface layer (SfclayRev) gives u*, fm, fh, Ri_b, wind speed, 10 m wind and z0; YSU receives those and rthraten and gives the boundary-layer tendencies; every stage is fed through variable_map/param_to_var edges into `<x>_in` coupling-target parameters (the mount-edge libraries lower the components' `input_<x>` rewrite targets to them), and only the column state of the step, the surface scalars and the slab's fluxes are prescribed. Tolerances: surface-layer fluxes and profile functions rel 5e-05 and the Ri_b-derived stability quantities (psim, psih, br, rmol, flhc) rel 1e-04 (1e-6 where exact) -- the references are the real32 model's own outputs, and at this regime the real32 kernel differs from its real64 replay by up to 5.3e-5 (rmol, psim; the stable regime amplifies real32 roundoff in theta_v1 - theta_vs through the bulk Richardson number), so unlike the components' own tests (real64 references, rel 2e-5) the assembly tolerances follow the real32 floor; PBL height rel 5e-05 (the surface layer's residuals propagate into YSU's bulk-Richardson height search: measured 3.3e-5), kpbl and regime exact, K_h/K_m Linf abs 5e-3 m^2/s (real32 dump), longwave fluxes Linf abs 5e-3 W/m^2 and dthdt_lw/rthraten Linf abs 2e-8 K/s (the RRTM end-to-end contract: the sweep consumes the gas optics' quantised ITR, exact up to +/-1 flips), dthdt_sw Linf 1e-9 K/s (binary64 roundoff), gsw/glw/olr rel 2e-5. The PBL TENDENCIES and rth_phys_sum are asserted only LOOSELY: WRF's rthblten/rublten/rvblten/rqvblten are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s while the assembly evaluates the instantaneous right-hand side (PLAN.md 0.3); the tolerances (3e-06 K/s for dtheta/dt and rth_phys_sum, 2e-05 m/s^2 for du/dt and dv/dt, 1e-09 1/s for dqv/dt) sit above the measured implicit-explicit gaps of this regime (given in the model description) and document that gap rather than test the physics -- the physics is pinned by the components' own small-dt tests; a stage-3 comparison at the WRF step must apply the same implicit step to the assembled tendencies. The slab land-surface scheme is NOT co-mounted (its 4-layer soil column shares the column_nonuniform_1d axis lev at a different size and esm index sets are document-scoped, PLAN.md gap (n)), so the fluxes YSU receives are the slab's driver-level values prescribed as hfx_lsm/qfx_lsm, while sfc_hfx/sfc_qfx are the surface layer's own values checked against the kernel dump; the driver-level th2/t2/q2 are overwritten by the land-surface branch of surface_driver, so those three are referenced to the kernel-level sfclayrev dump. Regime: step 300 (00:00 UTC = 17:34 LST, sunset, coszen < 0 so gsw = 0 and dthdt_sw = 0), stable land column: slab hfx = -19.1 W/m^2 (sfclayrev's own -19.13), Ri_b = 0.058 (regime 1), u* = 0.208 m/s, h = 556 m, kpbl = 10, thin cirrus (qi <= 1.7e-6), glw = 264, olr = 239 W/m^2.",
+     "parameter_overrides": {
+      "psfc0": 97132.9453125,
+      "tsk0": 281.521240234375,
+      "xland0": 1.0,
+      "mavail0": 0.6000000238418579,
+      "pblh_prev0": 560.720947265625,
+      "u10": 3.4307548999786377,
+      "v10": -3.0457067489624023,
+      "t10": 283.0782775878906,
+      "qv10": 0.004520050715655088,
+      "p10": 96833.9765625,
+      "dz10": 51.278831481933594,
+      "dx0": 4000.0,
+      "lakemask0": 0.0,
+      "water_depth0": 0.0,
+      "znt_prev0": 0.05000000074505806,
+      "ust_prev0": 0.20791414380073547,
+      "mol_prev0": 0.07636712491512299,
+      "qsfc_prev0": 0.007125162519514561,
+      "hfx_prev0": -19.126911163330078,
+      "qfx_prev0": 1.0553334504947998e-05,
+      "ustm_prev0": 0.20791414380073547,
+      "chs_prev0": 0.0,
+      "chs2_prev0": 0.0,
+      "cqs2_prev0": 0.005434092599898577,
+      "isfflx0": 1.0,
+      "shalwater_z00": 0.0,
+      "scm_force_flux0": 0.0,
+      "isftcflx0": 0.0,
+      "iz0tlnd0": 0.0,
+      "topdown0": 1.0,
+      "hfx_lsm0": -19.132362365722656,
+      "qfx_lsm0": 1.0494821253814735e-05,
+      "co2vmr0": 0.00037900000461377203,
+      "n2ovmr0": 3.1900000863060995e-07,
+      "ch4vmr0": 1.7739999975674436e-06,
+      "emiss0": 0.9200000166893005,
+      "csza0": -0.08831901103258133,
+      "albedo0": 0.20000000298023224,
+      "solcon0": 1384.47900390625,
+      "obscur0": 0.0,
+      "cssca0": 9.999999747378752e-06,
+      "icloud0": 1.0
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "assertions": [
+      {
+       "variable": "sfc_hfx",
+       "time": 0.0,
+       "expected": -19.089826583862305,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_qfx",
+       "time": 0.0,
+       "expected": 1.0526810001465492e-05,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_lh",
+       "time": 0.0,
+       "expected": 26.31702423095703,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_qsfc",
+       "time": 0.0,
+       "expected": 0.007125162519514561,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_wspd",
+       "time": 0.0,
+       "expected": 4.587636470794678,
+       "tolerance": {
+        "rel": 1e-06
+       }
+      },
+      {
+       "variable": "sfc_fm",
+       "time": 0.0,
+       "expected": 8.834497451782227,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_fh",
+       "time": 0.0,
+       "expected": 9.533971786499023,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_gz1oz0",
+       "time": 0.0,
+       "expected": 6.241811275482178,
+       "tolerance": {
+        "rel": 1e-06
+       }
+      },
+      {
+       "variable": "sfc_ust",
+       "time": 0.0,
+       "expected": 0.20781439542770386,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_znt",
+       "time": 0.0,
+       "expected": 0.05000000074505806,
+       "tolerance": {
+        "rel": 1e-06
+       }
+      },
+      {
+       "variable": "sfc_psim",
+       "time": 0.0,
+       "expected": -2.592686414718628,
+       "tolerance": {
+        "rel": 0.0001
+       }
+      },
+      {
+       "variable": "sfc_psih",
+       "time": 0.0,
+       "expected": -3.292160987854004,
+       "tolerance": {
+        "rel": 0.0001
+       }
+      },
+      {
+       "variable": "sfc_br",
+       "time": 0.0,
+       "expected": 0.05758558586239815,
+       "tolerance": {
+        "rel": 0.0001
+       }
+      },
+      {
+       "variable": "sfc_u10",
+       "time": 0.0,
+       "expected": 2.4705984592437744,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_v10",
+       "time": 0.0,
+       "expected": -2.193312883377075,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_th2",
+       "time": 0.0,
+       "expected": 284.6401062011719,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_t2",
+       "time": 0.0,
+       "expected": 282.2841796875,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_q2",
+       "time": 0.0,
+       "expected": 0.005499538965523243,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_flhc",
+       "time": 0.0,
+       "expected": 10.480087280273438,
+       "tolerance": {
+        "rel": 0.0001
+       }
+      },
+      {
+       "variable": "sfc_flqc",
+       "time": 0.0,
+       "expected": 0.004040828440338373,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "sfc_regime",
+       "time": 0.0,
+       "expected": 1.0,
+       "tolerance": {
+        "abs": 0.0
+       }
+      },
+      {
+       "variable": "sfc_rmol",
+       "time": 0.0,
+       "expected": 0.01838590018451214,
+       "tolerance": {
+        "rel": 0.0001
+       }
+      },
+      {
+       "variable": "sfc_mol",
+       "time": 0.0,
+       "expected": 0.07642285525798798,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "pbl_hpbl",
+       "time": 0.0,
+       "expected": 555.7811279296875,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "pbl_kpbl",
+       "time": 0.0,
+       "expected": 10.0,
+       "tolerance": {
+        "abs": 0.0
+       }
+      },
+      {
+       "variable": "pbl_K_h",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            0.6855605244636536,
+            0.6041337847709656,
+            0.4847923517227173,
+            0.3659568130970001,
+            0.25790706276893616,
+            0.16552205383777618,
+            0.09212779253721237,
+            0.04055037721991539,
+            0.01348758116364479,
+            0.010043120011687279,
+            0.010231221094727516,
+            0.01881967857480049,
+            0.06518971174955368,
+            0.056058257818222046,
+            0.018839050084352493,
+            0.010014468804001808,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            1.6250972747802734,
+            1.6277774572372437,
+            1.6303083896636963,
+            1.6327404975891113,
+            1.6350407600402832,
+            1.6372737884521484,
+            0.009999999776482582,
+            0.009999999776482582,
+            0.009999999776482582,
+            2.2114062309265137,
+            2.499441385269165,
+            0.009999999776482582,
+            3.256016492843628,
+            0.010000000707805157,
+            0.010000000707805157,
+            0.01000000350177288,
+            0.01000001560896635,
+            0.01000006590038538,
+            0.010000295005738735,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "pbl_K_m",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            0.7755605578422546,
+            0.6941338181495667,
+            0.5747923851013184,
+            0.4559568166732788,
+            0.34790706634521484,
+            0.2555220425128937,
+            0.18212780356407166,
+            0.13055038452148438,
+            0.10348758101463318,
+            0.1001724824309349,
+            0.10092488676309586,
+            0.13527871668338776,
+            0.3207588493824005,
+            0.284233033657074,
+            0.13535620272159576,
+            0.10005787760019302,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            1.3194892406463623,
+            1.3215129375457764,
+            1.3234238624572754,
+            1.3252602815628052,
+            1.32699716091156,
+            1.3286831378936768,
+            0.10000000149011612,
+            0.10000000149011612,
+            0.10000000149011612,
+            1.7621854543685913,
+            1.9796682596206665,
+            0.10000000149011612,
+            2.550924777984619,
+            0.10000000894069672,
+            0.10000000894069672,
+            0.10000001639127731,
+            0.10000006854534149,
+            0.10000026226043701,
+            0.10000118613243103,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "pbl_dthdt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 3e-06
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -0.00015716553025413305,
+            -9.180705092148855e-05,
+            -3.7129721022211015e-05,
+            -1.3224284884927329e-05,
+            -4.57763690064894e-06,
+            -1.5258790426742053e-06,
+            -5.086263286102621e-07,
+            -2.5431316430513107e-07,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.271565793103946e-06,
+            4.8319502639060374e-06,
+            5.086263172415784e-06,
+            -9.409586709807627e-06,
+            -2.5431316430513107e-07,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -2.5431316430513107e-07,
+            5.086263286102621e-07,
+            -2.5431316430513107e-07,
+            -2.5431316430513107e-07,
+            -2.5431316430513107e-07,
+            0.0,
+            5.086263286102621e-07,
+            -5.086263286102621e-07,
+            0.0,
+            0.0,
+            -5.086263286102621e-07,
+            -2.28881845032447e-06,
+            2.543131586207892e-06,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "pbl_dudt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 2e-05
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -0.00035916766501031816,
+            -0.00016211271577049047,
+            -6.246964767342433e-05,
+            -2.152522574760951e-05,
+            -6.862481768621365e-06,
+            -1.9391379737498937e-06,
+            -3.9339067825494567e-07,
+            7.947286384535346e-09,
+            3.973643103449831e-08,
+            -9.139379386624569e-08,
+            -2.8610230629055877e-07,
+            -1.5219053466353216e-06,
+            -9.79900414677104e-06,
+            -1.2322267139097676e-05,
+            5.066395260655554e-06,
+            1.5656154573662207e-05,
+            2.084175775962649e-06,
+            1.4503797274301178e-07,
+            3.973643192267673e-09,
+            1.9868215961338365e-09,
+            3.973643192267673e-09,
+            1.9868215961338365e-09,
+            -1.9868215961338365e-09,
+            0.0,
+            1.9868215961338365e-09,
+            -5.960465010446114e-09,
+            3.973643192267673e-09,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.9868215961338365e-09,
+            3.973643192267673e-09,
+            -1.9868215961338365e-09,
+            0.0,
+            3.973643192267673e-09,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -1.9868215961338365e-09,
+            0.0,
+            0.0,
+            -1.9868215961338365e-09,
+            1.9868215961338365e-09,
+            0.0,
+            3.973643192267673e-09,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.9868215961338365e-09,
+            1.9868215961338365e-09,
+            -1.9868215961338365e-09,
+            -1.9868215961338365e-09,
+            0.0,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "pbl_dvdt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 2e-05
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.00015943647304084152,
+            0.00016021332703530788,
+            0.00010403395572211593,
+            5.826950291520916e-05,
+            3.0231476557673886e-05,
+            1.4400482541532256e-05,
+            6.206830676092068e-06,
+            2.4199487143050646e-06,
+            8.344650836988876e-07,
+            1.5894572413799324e-07,
+            -3.894170390594809e-07,
+            -2.8491022021626122e-06,
+            -1.5366078514489345e-05,
+            -1.0780493539641611e-05,
+            1.2365977454464883e-05,
+            1.4042854672879912e-05,
+            1.6848247241796344e-06,
+            1.0331472566349476e-07,
+            7.947286384535346e-09,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -7.947286384535346e-09,
+            -7.947286384535346e-09,
+            7.947286384535346e-09,
+            0.0,
+            7.947286384535346e-09,
+            -7.947286384535346e-09,
+            0.0,
+            0.0,
+            -7.947286384535346e-09,
+            0.0,
+            0.0,
+            -7.947286384535346e-09,
+            7.947286384535346e-09,
+            0.0,
+            -7.947286384535346e-09,
+            -7.947286384535346e-09,
+            7.947286384535346e-09,
+            7.947286384535346e-09,
+            0.0,
+            0.0,
+            0.0,
+            -7.947286384535346e-09,
+            0.0,
+            0.0,
+            7.947286384535346e-09,
+            0.0,
+            0.0,
+            7.947286384535346e-09,
+            0.0,
+            7.947286384535346e-09,
+            0.0,
+            0.0,
+            7.947286384535346e-09,
+            0.0,
+            0.0,
+            -7.947286384535346e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "pbl_dqvdt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 1e-09
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            6.457946000182346e-08,
+            4.7664315161455306e-08,
+            2.7221783938102817e-08,
+            1.4317144803044357e-08,
+            7.1867063411446e-09,
+            3.3818652322992193e-09,
+            1.5114589579923177e-09,
+            6.61627086451233e-10,
+            2.5223320654355064e-10,
+            1.7462298967929613e-11,
+            -2.7163576943323164e-11,
+            -1.493996731882774e-10,
+            -1.266986848769136e-09,
+            -2.3030832796422374e-09,
+            -2.155623901600734e-09,
+            5.926510393550188e-09,
+            9.652770943668898e-11,
+            -5.335702366049411e-12,
+            -4.850638554015907e-12,
+            -5.8207666117637835e-12,
+            -5.8207666117637835e-12,
+            -4.850638554015907e-12,
+            -5.8207666117637835e-12,
+            -5.8207666117637835e-12,
+            -9.701277108031814e-12,
+            -2.502929530301401e-10,
+            -7.761021859897799e-12,
+            1.9402554649744497e-12,
+            0.0,
+            0.0,
+            0.0,
+            1.9402554649744497e-12,
+            1.9402554649744497e-12,
+            1.9402554649744497e-12,
+            0.0,
+            -1.7462298967929613e-11,
+            -2.9103833058818918e-12,
+            -2.9103833058818918e-12,
+            1.3581788471661582e-11,
+            -3.8455865158937286e-09,
+            -1.1437806257674765e-09,
+            -3.5894724692564495e-11,
+            1.8432426418524273e-10,
+            2.672701782113762e-10,
+            7.550018943369707e-10,
+            3.207242249558817e-09,
+            1.782609650169409e-11,
+            3.5167129625035543e-12,
+            5.329032770617914e-10,
+            1.2548602157380628e-09,
+            -1.7342245417495405e-09,
+            -1.109826119893853e-09,
+            1.083147571634413e-09,
+            8.488617794788489e-13,
+            5.456968427478004e-13,
+            3.3348139787808817e-13,
+            1.8947807190437815e-13,
+            9.852860037183261e-14,
+            6.252776210214153e-14
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "F_up",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "rlev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            348.82611083984375,
+            351.5693054199219,
+            352.096923828125,
+            351.92913818359375,
+            351.3439636230469,
+            350.4902648925781,
+            349.4505615234375,
+            348.2682189941406,
+            346.96978759765625,
+            345.57452392578125,
+            344.0916748046875,
+            342.53533935546875,
+            340.92340087890625,
+            339.2970275878906,
+            337.9492492675781,
+            338.8658142089844,
+            341.22686767578125,
+            341.9325866699219,
+            342.11883544921875,
+            342.04510498046875,
+            341.8037109375,
+            341.43695068359375,
+            340.9633483886719,
+            340.38958740234375,
+            339.71673583984375,
+            338.9393005371094,
+            338.0718994140625,
+            337.12872314453125,
+            336.10333251953125,
+            334.9875183105469,
+            333.7826843261719,
+            332.4928894042969,
+            331.1036376953125,
+            329.61138916015625,
+            328.0096740722656,
+            326.2861633300781,
+            324.3534851074219,
+            322.0663146972656,
+            319.5280456542969,
+            316.5846862792969,
+            313.0350646972656,
+            309.2242126464844,
+            305.3341979980469,
+            301.4821472167969,
+            297.6835021972656,
+            294.0411071777344,
+            290.673828125,
+            287.9143981933594,
+            284.9927062988281,
+            281.6458435058594,
+            277.72430419921875,
+            272.8780517578125,
+            264.00048828125,
+            256.7142639160156,
+            253.3682861328125,
+            250.24923706054688,
+            246.9840850830078,
+            244.16998291015625,
+            241.62181091308594,
+            239.18067932128906,
+            238.83111572265625,
+            238.5232696533203,
+            238.23707580566406,
+            237.96653747558594,
+            237.70616149902344,
+            237.4370574951172,
+            237.17648315429688,
+            236.92416381835938,
+            236.68014526367188,
+            236.44422912597656,
+            236.21218872070312,
+            235.9722442626953,
+            235.73570251464844,
+            235.50621032714844,
+            235.28179931640625,
+            235.0525360107422,
+            234.82766723632812,
+            234.6192626953125,
+            234.4244384765625,
+            234.2331085205078,
+            234.02978515625,
+            233.82937622070312,
+            233.65016174316406,
+            233.46046447753906,
+            233.29171752929688,
+            233.14540100097656,
+            232.98892211914062,
+            232.84957885742188,
+            232.71800231933594,
+            232.59278869628906,
+            232.47930908203125,
+            232.37196350097656,
+            232.2691650390625,
+            232.1759033203125,
+            232.08897399902344,
+            232.00926208496094,
+            231.94302368164062,
+            231.8702850341797,
+            231.814208984375,
+            231.79656982421875,
+            231.82174682617188,
+            231.9219207763672,
+            232.15985107421875,
+            232.34640502929688
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "F_dn",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "rlev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            264.3688659667969,
+            263.23297119140625,
+            261.6672058105469,
+            259.74627685546875,
+            257.66632080078125,
+            255.50318908691406,
+            253.2971649169922,
+            251.0620880126953,
+            248.80902099609375,
+            246.54734802246094,
+            244.304443359375,
+            242.11766052246094,
+            240.065185546875,
+            238.3275604248047,
+            237.62876892089844,
+            240.9173126220703,
+            241.3423309326172,
+            240.71392822265625,
+            239.8367156982422,
+            238.7857208251953,
+            237.57089233398438,
+            236.1606903076172,
+            234.52798461914062,
+            232.649169921875,
+            230.48037719726562,
+            227.94178771972656,
+            224.98727416992188,
+            221.8157196044922,
+            218.4292449951172,
+            214.80703735351562,
+            210.9050750732422,
+            206.746826171875,
+            202.26620483398438,
+            197.42724609375,
+            192.1730194091797,
+            186.40394592285156,
+            179.88751220703125,
+            172.7784881591797,
+            165.1356964111328,
+            156.80978393554688,
+            148.23629760742188,
+            139.33297729492188,
+            130.2236785888672,
+            121.05785369873047,
+            111.83368682861328,
+            102.88614654541016,
+            94.70045471191406,
+            89.27790069580078,
+            84.4638900756836,
+            79.5267333984375,
+            73.96887969970703,
+            66.13392639160156,
+            53.180213928222656,
+            41.40781784057617,
+            33.61547088623047,
+            26.662981033325195,
+            20.628341674804688,
+            16.209428787231445,
+            13.251144409179688,
+            11.51368236541748,
+            11.310155868530273,
+            11.109383583068848,
+            10.908330917358398,
+            10.706802368164062,
+            10.505855560302734,
+            10.306465148925781,
+            10.106494903564453,
+            9.90735912322998,
+            9.707226753234863,
+            9.509469032287598,
+            9.311296463012695,
+            9.112719535827637,
+            8.913742065429688,
+            8.719035148620605,
+            8.529072761535645,
+            8.346583366394043,
+            8.177145957946777,
+            8.00777816772461,
+            7.834914207458496,
+            7.661409378051758,
+            7.4731011390686035,
+            7.323272705078125,
+            7.172754287719727,
+            7.021735668182373,
+            6.87062406539917,
+            6.715531349182129,
+            6.551817893981934,
+            6.379502773284912,
+            6.197819232940674,
+            6.005823135375977,
+            5.797826290130615,
+            5.572765827178955,
+            5.326219081878662,
+            5.059614181518555,
+            4.772843360900879,
+            4.466707229614258,
+            4.143032550811768,
+            3.793062448501587,
+            3.424164056777954,
+            3.0341038703918457,
+            2.596677541732788,
+            2.084841012954712,
+            1.4432438611984253,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "dthdt_lw",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 2e-08
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -6.395125819835812e-05,
+            -3.373355866642669e-05,
+            -2.7612246412900276e-05,
+            -2.3009139113128185e-05,
+            -1.9699684344232082e-05,
+            -1.7149648556369357e-05,
+            -1.512982817075681e-05,
+            -1.3410848623607308e-05,
+            -1.1897926924575586e-05,
+            -1.0203611054748762e-05,
+            -8.27484927867772e-06,
+            -5.653732387145283e-06,
+            -1.3962071534479037e-06,
+            7.965672921272926e-06,
+            2.8484113499871455e-05,
+            -2.278477950312663e-05,
+            -1.5356008589151315e-05,
+            -1.197209712699987e-05,
+            -1.0761478733911645e-05,
+            -1.0486286555533297e-05,
+            -1.09975853774813e-05,
+            -1.1953828106925357e-05,
+            -1.3171464161132462e-05,
+            -1.4777314390812535e-05,
+            -1.7030068192980252e-05,
+            -1.9759505448746495e-05,
+            -2.066558772639837e-05,
+            -2.1452966393553652e-05,
+            -2.231610233138781e-05,
+            -2.3536800654255785e-05,
+            -2.4539496735087596e-05,
+            -2.593220051494427e-05,
+            -2.7534568289411254e-05,
+            -2.948017390735913e-05,
+            -3.2042018574429676e-05,
+            -3.563562495401129e-05,
+            -3.680930603877641e-05,
+            -3.82768630515784e-05,
+            -3.966156509704888e-05,
+            -3.638900307123549e-05,
+            -3.6271016142563894e-05,
+            -3.657244087662548e-05,
+            -3.664936593850143e-05,
+            -3.68529035768006e-05,
+            -3.550946348696016e-05,
+            -3.1800544093130156e-05,
+            -1.7343028957839124e-05,
+            -1.2167399290774483e-05,
+            -1.0104973625857383e-05,
+            -1.0284652489644941e-05,
+            -1.8600543626234867e-05,
+            -2.5155837647616863e-05,
+            -2.7494654204929247e-05,
+            -2.710855915211141e-05,
+            -2.3296392100746743e-05,
+            -1.6816633433336392e-05,
+            -9.764959031599574e-06,
+            -2.509751311663422e-06,
+            4.351114057499217e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "dthdt_sw",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 1e-09
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "rthraten",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 2e-08
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -6.395125819835812e-05,
+            -3.373355866642669e-05,
+            -2.7612246412900276e-05,
+            -2.3009139113128185e-05,
+            -1.9699684344232082e-05,
+            -1.7149648556369357e-05,
+            -1.512982817075681e-05,
+            -1.3410848623607308e-05,
+            -1.1897926924575586e-05,
+            -1.0203611054748762e-05,
+            -8.27484927867772e-06,
+            -5.653732387145283e-06,
+            -1.3962071534479037e-06,
+            7.965672921272926e-06,
+            2.8484113499871455e-05,
+            -2.278477950312663e-05,
+            -1.5356008589151315e-05,
+            -1.197209712699987e-05,
+            -1.0761478733911645e-05,
+            -1.0486286555533297e-05,
+            -1.09975853774813e-05,
+            -1.1953828106925357e-05,
+            -1.3171464161132462e-05,
+            -1.4777314390812535e-05,
+            -1.7030068192980252e-05,
+            -1.9759505448746495e-05,
+            -2.066558772639837e-05,
+            -2.1452966393553652e-05,
+            -2.231610233138781e-05,
+            -2.3536800654255785e-05,
+            -2.4539496735087596e-05,
+            -2.593220051494427e-05,
+            -2.7534568289411254e-05,
+            -2.948017390735913e-05,
+            -3.2042018574429676e-05,
+            -3.563562495401129e-05,
+            -3.680930603877641e-05,
+            -3.82768630515784e-05,
+            -3.966156509704888e-05,
+            -3.638900307123549e-05,
+            -3.6271016142563894e-05,
+            -3.657244087662548e-05,
+            -3.664936593850143e-05,
+            -3.68529035768006e-05,
+            -3.550946348696016e-05,
+            -3.1800544093130156e-05,
+            -1.7343028957839124e-05,
+            -1.2167399290774483e-05,
+            -1.0104973625857383e-05,
+            -1.0284652489644941e-05,
+            -1.8600543626234867e-05,
+            -2.5155837647616863e-05,
+            -2.7494654204929247e-05,
+            -2.710855915211141e-05,
+            -2.3296392100746743e-05,
+            -1.6816633433336392e-05,
+            -9.764959031599574e-06,
+            -2.509751311663422e-06,
+            4.351114057499217e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "rth_phys_sum",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 3e-06
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -0.00022111678845249116,
+            -0.00012554060958791524,
+            -6.474196561612189e-05,
+            -3.6233424907550216e-05,
+            -2.427732033538632e-05,
+            -1.8675527826417238e-05,
+            -1.5638453987776302e-05,
+            -1.3665161532117054e-05,
+            -1.1897926924575586e-05,
+            -1.0203611054748762e-05,
+            -8.27484927867772e-06,
+            -5.653732387145283e-06,
+            -1.2464136034395779e-07,
+            1.2797623639926314e-05,
+            3.357037712703459e-05,
+            -3.2194366212934256e-05,
+            -1.561032149766106e-05,
+            -1.197209712699987e-05,
+            -1.0761478733911645e-05,
+            -1.0486286555533297e-05,
+            -1.09975853774813e-05,
+            -1.1953828106925357e-05,
+            -1.3171464161132462e-05,
+            -1.4777314390812535e-05,
+            -1.7030068192980252e-05,
+            -1.9759505448746495e-05,
+            -2.066558772639837e-05,
+            -2.1452966393553652e-05,
+            -2.231610233138781e-05,
+            -2.3536800654255785e-05,
+            -2.4539496735087596e-05,
+            -2.593220051494427e-05,
+            -2.7534568289411254e-05,
+            -2.948017390735913e-05,
+            -3.2042018574429676e-05,
+            -3.563562495401129e-05,
+            -3.680930603877641e-05,
+            -3.82768630515784e-05,
+            -3.9915878005558625e-05,
+            -3.5880377254216e-05,
+            -3.652532905107364e-05,
+            -3.6826753785135224e-05,
+            -3.690367884701118e-05,
+            -3.68529035768006e-05,
+            -3.5000837669940665e-05,
+            -3.230916991014965e-05,
+            -1.7343028957839124e-05,
+            -1.2167399290774483e-05,
+            -1.0613600352371577e-05,
+            -1.2573471394716762e-05,
+            -1.6057412722148e-05,
+            -2.5155837647616863e-05,
+            -2.7494654204929247e-05,
+            -2.710855915211141e-05,
+            -2.3296392100746743e-05,
+            -1.6816633433336392e-05,
+            -9.764959031599574e-06,
+            -2.509751311663422e-06,
+            4.351114057499217e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "gsw",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "glw",
+       "time": 0.0,
+       "expected": 264.3688659667969,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "olr",
+       "time": 0.0,
+       "expected": 239.18067932128906,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "coupling": [
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.u1",
+   "to": "Sfc.u1",
+   "transform": "param_to_var",
+   "description": "shared state u1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.v1",
+   "to": "Sfc.v1",
+   "transform": "param_to_var",
+   "description": "shared state v1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.t1",
+   "to": "Sfc.t1",
+   "transform": "param_to_var",
+   "description": "shared state t1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.qv1",
+   "to": "Sfc.qv1",
+   "transform": "param_to_var",
+   "description": "shared state qv1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.p1",
+   "to": "Sfc.p1",
+   "transform": "param_to_var",
+   "description": "shared state p1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.dz1",
+   "to": "Sfc.dz1",
+   "transform": "param_to_var",
+   "description": "shared state dz1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.psfc",
+   "to": "Sfc.psfc",
+   "transform": "param_to_var",
+   "description": "shared state psfc into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.mavail",
+   "to": "Sfc.mavail",
+   "transform": "param_to_var",
+   "description": "shared state mavail into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.tsk",
+   "to": "Sfc.tsk",
+   "transform": "param_to_var",
+   "description": "shared state tsk into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.xland",
+   "to": "Sfc.xland",
+   "transform": "param_to_var",
+   "description": "shared state xland into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.lakemask",
+   "to": "Sfc.lakemask",
+   "transform": "param_to_var",
+   "description": "shared state lakemask into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.water_depth",
+   "to": "Sfc.water_depth",
+   "transform": "param_to_var",
+   "description": "shared state water_depth into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.dx",
+   "to": "Sfc.dx",
+   "transform": "param_to_var",
+   "description": "shared state dx into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.isfflx",
+   "to": "Sfc.isfflx",
+   "transform": "param_to_var",
+   "description": "shared state isfflx into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.shalwater_z0",
+   "to": "Sfc.shalwater_z0",
+   "transform": "param_to_var",
+   "description": "shared state shalwater_z0 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.scm_force_flux",
+   "to": "Sfc.scm_force_flux",
+   "transform": "param_to_var",
+   "description": "shared state scm_force_flux into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.isftcflx",
+   "to": "Sfc.isftcflx",
+   "transform": "param_to_var",
+   "description": "shared state isftcflx into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.iz0tlnd",
+   "to": "Sfc.iz0tlnd",
+   "transform": "param_to_var",
+   "description": "shared state iz0tlnd into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.pblh_prev",
+   "to": "Sfc.pblh",
+   "transform": "param_to_var",
+   "description": "previous-step pblh into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.znt_prev",
+   "to": "Sfc.znt_in",
+   "transform": "param_to_var",
+   "description": "previous-step znt_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.ust_prev",
+   "to": "Sfc.ust_in",
+   "transform": "param_to_var",
+   "description": "previous-step ust_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.mol_prev",
+   "to": "Sfc.mol_in",
+   "transform": "param_to_var",
+   "description": "previous-step mol_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.qsfc_prev",
+   "to": "Sfc.qsfc_in",
+   "transform": "param_to_var",
+   "description": "previous-step qsfc_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.hfx_prev",
+   "to": "Sfc.hfx_in",
+   "transform": "param_to_var",
+   "description": "previous-step hfx_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.qfx_prev",
+   "to": "Sfc.qfx_in",
+   "transform": "param_to_var",
+   "description": "previous-step qfx_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.ustm_prev",
+   "to": "Sfc.ustm_in",
+   "transform": "param_to_var",
+   "description": "previous-step ustm_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.chs_prev",
+   "to": "Sfc.chs_in",
+   "transform": "param_to_var",
+   "description": "previous-step chs_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.chs2_prev",
+   "to": "Sfc.chs2_in",
+   "transform": "param_to_var",
+   "description": "previous-step chs2_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.cqs2_prev",
+   "to": "Sfc.cqs2_in",
+   "transform": "param_to_var",
+   "description": "previous-step cqs2_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.psfc",
+   "to": "Pbl.psfc",
+   "transform": "param_to_var",
+   "description": "shared state psfc into the PBL scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.xland",
+   "to": "Pbl.xland",
+   "transform": "param_to_var",
+   "description": "shared state xland into the PBL scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.topdown",
+   "to": "Pbl.topdown",
+   "transform": "param_to_var",
+   "description": "shared state topdown into the PBL scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.hfx_lsm",
+   "to": "Pbl.hfx",
+   "transform": "param_to_var",
+   "description": "slab-recomputed sensible heat flux into the PBL scheme (WRF order: sfclayrev -> slab -> YSU)"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.qfx_lsm",
+   "to": "Pbl.qfx",
+   "transform": "param_to_var",
+   "description": "slab-recomputed moisture flux into the PBL scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.ust",
+   "to": "Pbl.ust",
+   "transform": "param_to_var",
+   "description": "surface-layer ust drives the PBL scheme (the physical coupling)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.br",
+   "to": "Pbl.br",
+   "transform": "param_to_var",
+   "description": "surface-layer br drives the PBL scheme (the physical coupling)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.wspd",
+   "to": "Pbl.wspd",
+   "transform": "param_to_var",
+   "description": "surface-layer wspd drives the PBL scheme (the physical coupling)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.u10",
+   "to": "Pbl.u10",
+   "transform": "param_to_var",
+   "description": "surface-layer u10 drives the PBL scheme (the physical coupling)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.v10",
+   "to": "Pbl.v10",
+   "transform": "param_to_var",
+   "description": "surface-layer v10 drives the PBL scheme (the physical coupling)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.znt",
+   "to": "Pbl.znt",
+   "transform": "param_to_var",
+   "description": "surface-layer znt drives the PBL scheme (the physical coupling)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.fm",
+   "to": "Pbl.psim",
+   "transform": "param_to_var",
+   "description": "YSU's psim is the full momentum profile function ln(z1/z0) - psi_m = sfclayrev's fm (bl_ysu.F90: 'psim psih are ln(z1/z0)-psim,h'); WRF passes FM as PSIM"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.fh",
+   "to": "Pbl.psih",
+   "transform": "param_to_var",
+   "description": "YSU's psih is the heat profile function ln(z1/z0) - psi_h = sfclayrev's fh"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.co2vmr",
+   "to": "Col.co2vmr",
+   "transform": "param_to_var",
+   "description": "shared state co2vmr into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.n2ovmr",
+   "to": "Col.n2ovmr",
+   "transform": "param_to_var",
+   "description": "shared state n2ovmr into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.ch4vmr",
+   "to": "Col.ch4vmr",
+   "transform": "param_to_var",
+   "description": "shared state ch4vmr into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.tsk",
+   "to": "Col.tsk",
+   "transform": "param_to_var",
+   "description": "shared state tsk into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.emiss",
+   "to": "Col.emiss",
+   "transform": "param_to_var",
+   "description": "shared state emiss into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.pavel",
+   "to": "Setcoef.pavel_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM pavel into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tavel",
+   "to": "Setcoef.tavel_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM tavel into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.coldry",
+   "to": "Setcoef.coldry_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM coldry into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colh2o",
+   "to": "Setcoef.colh2o_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM colh2o into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colco2",
+   "to": "Setcoef.colco2_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM colco2 into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.jp",
+   "to": "GasOpt.jp_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF jp into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.jt",
+   "to": "GasOpt.jt_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF jt into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.jt1",
+   "to": "GasOpt.jt1_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF jt1 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.indself",
+   "to": "GasOpt.indself_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF indself into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.fac00",
+   "to": "GasOpt.fac00_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF fac00 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.fac10",
+   "to": "GasOpt.fac10_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF fac10 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.fac01",
+   "to": "GasOpt.fac01_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF fac01 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.fac11",
+   "to": "GasOpt.fac11_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF fac11 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.forfac",
+   "to": "GasOpt.forfac_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF forfac into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.selffac",
+   "to": "GasOpt.selffac_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF selffac into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.selffrac",
+   "to": "GasOpt.selffrac_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF selffrac into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.co2mult",
+   "to": "GasOpt.co2mult_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF co2mult into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.laytrop",
+   "to": "GasOpt.laytrop",
+   "transform": "param_to_var",
+   "description": "SETCOEF layer count laytrop into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.layswtch",
+   "to": "GasOpt.layswtch",
+   "transform": "param_to_var",
+   "description": "SETCOEF layer count layswtch into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.laylow",
+   "to": "GasOpt.laylow",
+   "transform": "param_to_var",
+   "description": "SETCOEF layer count laylow into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colh2o",
+   "to": "GasOpt.colh2o_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount colh2o into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colco2",
+   "to": "GasOpt.colco2_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount colco2 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colo3",
+   "to": "GasOpt.colo3_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount colo3 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.coln2o",
+   "to": "GasOpt.coln2o_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount coln2o into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colch4",
+   "to": "GasOpt.colch4_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount colch4 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.coldry",
+   "to": "GasOpt.coldry_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount coldry into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tavel",
+   "to": "Rtrn.tavel_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM tavel into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tz",
+   "to": "Rtrn.tz_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM tz into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.pz",
+   "to": "Rtrn.pz_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM pz into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.cldfrac",
+   "to": "Rtrn.cldfrac_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM cldfrac into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.taucloud",
+   "to": "Rtrn.taucloud_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM taucloud into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.semiss",
+   "to": "Rtrn.semiss_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM semiss into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tbound",
+   "to": "Rtrn.tbound",
+   "transform": "param_to_var",
+   "description": "MM5ATM surface temperature TBOUND into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "GasOpt.pfrac_flat",
+   "to": "Rtrn.pfrac_flat_in",
+   "transform": "param_to_var",
+   "description": "gas optics pfrac_flat (g-point fastest) into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "GasOpt.itr_flat",
+   "to": "Rtrn.itr_flat_in",
+   "transform": "param_to_var",
+   "description": "gas optics itr_flat (g-point fastest) into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.csza",
+   "to": "Sw.csza",
+   "transform": "param_to_var",
+   "description": "shared state csza into the Dudhia shortwave scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.albedo",
+   "to": "Sw.albedo",
+   "transform": "param_to_var",
+   "description": "shared state albedo into the Dudhia shortwave scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.solcon",
+   "to": "Sw.solcon",
+   "transform": "param_to_var",
+   "description": "shared state solcon into the Dudhia shortwave scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.obscur",
+   "to": "Sw.obscur",
+   "transform": "param_to_var",
+   "description": "shared state obscur into the Dudhia shortwave scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.cssca",
+   "to": "Sw.cssca",
+   "transform": "param_to_var",
+   "description": "shared state cssca into the Dudhia shortwave scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.icloud",
+   "to": "Sw.icloud",
+   "transform": "param_to_var",
+   "description": "shared state icloud into the Dudhia shortwave scheme"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.hfx",
+   "to": "PhysicsColumn.sfc_hfx_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.hfx"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.qfx",
+   "to": "PhysicsColumn.sfc_qfx_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.qfx"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.lh",
+   "to": "PhysicsColumn.sfc_lh_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.lh"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.ust",
+   "to": "PhysicsColumn.sfc_ust_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.ust"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.znt",
+   "to": "PhysicsColumn.sfc_znt_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.znt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.psim",
+   "to": "PhysicsColumn.sfc_psim_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.psim"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.psih",
+   "to": "PhysicsColumn.sfc_psih_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.psih"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.fm",
+   "to": "PhysicsColumn.sfc_fm_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.fm"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.fh",
+   "to": "PhysicsColumn.sfc_fh_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.fh"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.gz1oz0",
+   "to": "PhysicsColumn.sfc_gz1oz0_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.gz1oz0"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.br",
+   "to": "PhysicsColumn.sfc_br_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.br"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.wspd",
+   "to": "PhysicsColumn.sfc_wspd_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.wspd"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.u10",
+   "to": "PhysicsColumn.sfc_u10_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.u10"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.v10",
+   "to": "PhysicsColumn.sfc_v10_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.v10"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.th2",
+   "to": "PhysicsColumn.sfc_th2_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.th2"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.t2",
+   "to": "PhysicsColumn.sfc_t2_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.t2"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.q2",
+   "to": "PhysicsColumn.sfc_q2_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.q2"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.flhc",
+   "to": "PhysicsColumn.sfc_flhc_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.flhc"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.flqc",
+   "to": "PhysicsColumn.sfc_flqc_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.flqc"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.regime",
+   "to": "PhysicsColumn.sfc_regime_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.regime"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.rmol",
+   "to": "PhysicsColumn.sfc_rmol_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.rmol"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.mol",
+   "to": "PhysicsColumn.sfc_mol_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.mol"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.qsfc",
+   "to": "PhysicsColumn.sfc_qsfc_in",
+   "transform": "param_to_var",
+   "description": "expose Sfc.qsfc"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.hpbl",
+   "to": "PhysicsColumn.pbl_hpbl_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.hpbl"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.kpbl",
+   "to": "PhysicsColumn.pbl_kpbl_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.kpbl"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.wstar",
+   "to": "PhysicsColumn.pbl_wstar_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.wstar"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.delta",
+   "to": "PhysicsColumn.pbl_delta_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.delta"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.K_h",
+   "to": "PhysicsColumn.pbl_K_h_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.K_h"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.K_m",
+   "to": "PhysicsColumn.pbl_K_m_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.K_m"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.dthdt",
+   "to": "PhysicsColumn.pbl_dthdt_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.dthdt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.dudt",
+   "to": "PhysicsColumn.pbl_dudt_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.dudt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.dvdt",
+   "to": "PhysicsColumn.pbl_dvdt_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.dvdt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Pbl.dqvdt",
+   "to": "PhysicsColumn.pbl_dqvdt_in",
+   "transform": "param_to_var",
+   "description": "expose Pbl.dqvdt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Rtrn.F_up",
+   "to": "PhysicsColumn.F_up_in",
+   "transform": "param_to_var",
+   "description": "expose Rtrn.F_up"
+  },
+  {
+   "type": "variable_map",
+   "from": "Rtrn.F_dn",
+   "to": "PhysicsColumn.F_dn_in",
+   "transform": "param_to_var",
+   "description": "expose Rtrn.F_dn"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.F_up_model",
+   "to": "Heat.F_up_in",
+   "transform": "param_to_var",
+   "description": "RTRN F_up at the model interfaces into the heating-rate component"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.F_dn_model",
+   "to": "Heat.F_dn_in",
+   "transform": "param_to_var",
+   "description": "RTRN F_dn at the model interfaces into the heating-rate component"
+  },
+  {
+   "type": "variable_map",
+   "from": "Heat.dthdt",
+   "to": "PhysicsColumn.dthdt_lw_in",
+   "transform": "param_to_var",
+   "description": "expose Heat.dthdt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Heat.glw",
+   "to": "PhysicsColumn.glw_in",
+   "transform": "param_to_var",
+   "description": "expose Heat.glw"
+  },
+  {
+   "type": "variable_map",
+   "from": "Heat.olr",
+   "to": "PhysicsColumn.olr_in",
+   "transform": "param_to_var",
+   "description": "expose Heat.olr"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sw.dthdt",
+   "to": "PhysicsColumn.dthdt_sw_in",
+   "transform": "param_to_var",
+   "description": "expose Sw.dthdt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sw.gsw",
+   "to": "PhysicsColumn.gsw_in",
+   "transform": "param_to_var",
+   "description": "expose Sw.gsw"
+  },
+  {
+   "type": "variable_map",
+   "from": "PhysicsColumn.rthraten",
+   "to": "Pbl.rthraten_in",
+   "transform": "param_to_var",
+   "description": "radiation tendency into the PBL scheme (WRF order: radiation_driver -> surface_driver -> pbl_driver; YSU reads rthraten in its cloud-top entrainment branch)"
+  }
+ ]
+}

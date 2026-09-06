@@ -387,6 +387,22 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   template imports. Merge conditions (not ours to address): ESD #34/#35/#36
   merged and reachable from CI, EarthSciAST #177 + EarthSciModels #2 for the
   Python gate.
+- **Physics-column assembly done 2026-09-06.** `couplings/physics_column{,_night}.esm`
+  mount SfclayRev, YSU, the five RRTM stages and DudhiaSW as top-level systems
+  (131 `variable_map` edges); YSU gained the additive `rthraten_in`
+  coupling-target parameter (157/157 unchanged), Dudhia needed none; radiation →
+  rthraten → YSU and surface layer → YSU couplings reproduce radiation_driver,
+  surface_driver (sfclayrev part) and pbl_driver at steps 60 and 300 (40
+  assertions each): rthraten Linf ≤ 4.4e-9 K/s, fluxes ≤ 2e-4 W/m², surface-
+  layer outputs at the real32 kernel's own floor (1.6e-5 day, 4.9e-5 stable
+  night: the stable regime amplifies real32 roundoff in θ_v1 − θ_vs;
+  real32-vs-real64 replay 5.3e-5), h 9e-7 / 3.3e-5, PBL tendencies at the
+  implicit-explicit gap (15 % of the column max by day, 1.2 % at night;
+  asserted loosely). Inputs to the surface layer and YSU come from the KERNEL
+  dumps because the driver-level dump's p/psfc differ from the kernel
+  arguments by up to 0.28 Pa (N50). Remaining: slab (gap (n)) and WSM6
+  (in-place step) in the same document; the other five dumped steps as
+  regimes; tighten the `subassembly_pbl` hook's pressure fields in the fork.
 - **EarthSciModels fire PRs opened 2026-09-06:** #22 (4 fire_behavior-derived
   tests appended to the existing `wildland_fire/level_set/fire_heat_flux.esm`,
   PLAN 1.3) and #23 (`components/wildland_fire/fire_behavior/`, 464
