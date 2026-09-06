@@ -379,6 +379,25 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   top-level `expression_template_imports`; the units checker rejects `^0.33`
   of a dimensioned base (unit-valued parameters); coupled iterations must be
   interleaved into one recurrence array.
+- **WSM6 done to the process-rate level.** `hydrometeor_slopes.esm`
+  (distributions, N_i, D_i, fall speeds; mounted as subsystem `sd` by the rate
+  models — the first use of a shaped model as a subsystem, which the Rust CLI
+  resolves through the test-injected input libraries), `cold_accretion.esm`
+  (13 collection terms), `ice_deposition.esm` (deposition chain with WSM6's
+  sequential vapour budget, nucleation/aggregation as target + adjustment-rate
+  pairs, evaporation of melting precipitation), `melting_freezing.esm`
+  (in-place block as increments + post-block state; post-sedimentation inputs
+  reconstructed from the dumps' water and energy budgets); 6 regimes
+  (supercell 9983 i=24/25, 9982 i=25, 7980 i=20; SCM 120 lowest-40 and layers
+  20–59), 504 assertions green. Residuals 1e-8–1e-7 except where the kernel's
+  real32 `t0c`/`pfrz2`/`dimax` are amplified by cancellation (documented per
+  test, tolerances 5e-5–2e-4 there). Remaining for WSM6: sedimentation (needs
+  the downward upwind/PLM flux rule in EarthSciDiscretizations), the
+  saturation adjustment `pcond` (an adjustment formulation), the
+  mass-conservation rescaling (time-step artefact). Format notes: a test cannot
+  assert a mounted subsystem's variable; a subsystem's `index_sets`/
+  `metaparameters` must not be redeclared by the importer; `-` is strictly
+  unary/binary while `+`/`*`/`min`/`max` are n-ary.
 - **RRTM LW stage 1 done.** Heating-rate convention proved:
   `HTR(L−1) = HEATFAC (FNET(L−1) − FNET(L))/(PZ(L−1) − PZ(L))` is the heating
   of layer L; RRTM indexes bottom-up so `TOTUFLUX/TOTDFLUX(0..kte)` map onto

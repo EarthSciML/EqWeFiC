@@ -114,6 +114,121 @@
           0
         ]
       }
+    },
+    "snow_intercept_factor": {
+      "params": ["T", "t0", "alpha", "n0", "n0max"],
+      "description": "Temperature dependence of the snow size-distribution intercept, n0s(T) = n0s exp(alpha (T0 - T)) capped at n0smax (Hong, Dudhia and Chen 2004 eq. 6, after Houze et al. 1979), returned as the dimensionless factor n0s(T)/n0s = max(min(exp(alpha (T0 - T)), n0smax/n0s), 1) (WSM6 n0sfac).",
+      "body": { "op": "max", "args": [{ "op": "min", "args": [{ "op": "exp", "args": [{ "op": "*", "args": ["alpha", { "op": "-", "args": ["t0", "T"] }] }] }, { "op": "/", "args": ["n0max", "n0"] }] }, 1] }
+    },
+    "ice_crystal_number": {
+      "params": ["qi", "rho", "q_min", "coef", "n_min", "n_max"],
+      "description": "Ice crystal number concentration diagnosed from the ice content, N_i = 5.38e7 (rho q_i)^0.75 bounded to [1e3, 1e6] m^-3 (Hong, Dudhia and Chen 2004 eq. 5c; WSM6 xni).",
+      "body": { "op": "min", "args": [{ "op": "max", "args": [{ "op": "*", "args": ["coef", { "op": "^", "args": [{ "op": "*", "args": ["rho", { "op": "max", "args": ["qi", "q_min"] }] }, { "op": "/", "args": [3, 4] }] }] }, "n_min"] }, "n_max"] }
+    },
+    "ice_crystal_diameter": {
+      "params": ["qi", "rho", "xni", "dicon", "dimax"],
+      "description": "Mean ice crystal diameter from the mean crystal mass m_i = rho q_i / N_i, D_i = min(dicon sqrt(m_i), dimax) (Hong, Dudhia and Chen 2004 eq. 5b; WSM6 diameter in the cold-rain block, no lower floor).",
+      "body": { "op": "min", "args": [{ "op": "*", "args": ["dicon", { "op": "sqrt", "args": [{ "op": "/", "args": [{ "op": "*", "args": ["rho", "qi"] }, "xni"] }] }] }, "dimax"] }
+    },
+    "ice_crystal_fall_speed": {
+      "params": ["D", "coef", "expn"],
+      "description": "Terminal fall speed of ice crystals as a power law of the mean diameter, V_i = 1.49e4 D^1.31 m/s (Hong, Dudhia and Chen 2004 eq. 5a, Heymsfield and Donner 1990; WSM6 vt2i).",
+      "body": { "op": "*", "args": ["coef", { "op": "^", "args": ["D", "expn"] }] }
+    },
+    "precipitation_fall_speed": {
+      "params": ["pvt", "rslopeb", "denfac"],
+      "description": "Mass-weighted mean terminal fall speed of an exponential precipitation distribution, V = a Gamma(4 + b)/6 lambda^-b (rho0/rho)^(1/2) = pvt rslopeb denfac (Lin et al. 1983 eq. 3; WSM6 vt2r, vt2s, vt2g with pvt = avt Gamma(4 + bvt)/6).",
+      "body": { "op": "*", "args": ["pvt", "rslopeb", "denfac"] }
+    },
+    "snow_graupel_weighted_mean": {
+      "params": ["x_s", "q_s", "x_g", "q_g", "q_floor"],
+      "description": "Mixing-ratio-weighted mean of a snow and a graupel quantity, (x_s q_s + x_g q_g)/(q_s + q_g), zero where q_s + q_g is below q_floor: the fall speed of the combined snow/graupel category WSM6 sediments jointly since V3.0 (vt2ave) and the combined accretion of cloud water by snow and graupel (paacw).",
+      "body": { "op": "ifelse", "args": [{ "op": ">", "args": [{ "op": "+", "args": ["q_s", "q_g"] }, "q_floor"] }, { "op": "/", "args": [{ "op": "+", "args": [{ "op": "*", "args": ["x_s", "q_s"] }, { "op": "*", "args": ["x_g", "q_g"] }] }, { "op": "+", "args": ["q_s", "q_g"] }] }, 0] }
+    },
+    "collection_kernel_ice_by_precipitation": {
+      "params": ["D", "rslope", "rslope2", "rslope3"],
+      "description": "Geometric collection kernel of monodisperse ice crystals of diameter D swept by an exponential precipitation distribution, the integral of (D_p + D)^2 over the distribution up to the constant: 2 lambda^-3 + 2 D lambda^-2 + D^2 lambda^-1 (Lin et al. 1983 eqs. 25, 26, 41; WSM6 acrfac for praci, psaci, pgaci).",
+      "body": { "op": "+", "args": [{ "op": "*", "args": [2, "rslope3"] }, { "op": "*", "args": [2, "D", "rslope2"] }, { "op": "*", "args": [{ "op": "^", "args": ["D", 2] }, "rslope"] }] }
+    },
+    "collection_kernel_precipitation_by_precipitation": {
+      "params": ["rslope_a", "rslope2_a", "rslope3_a", "rslope_b", "rslope2_b", "rslope3_b"],
+      "description": "Collection kernel between two exponential precipitation distributions a (collected, mass-weighted) and b (collector): 5 lambda_a^-6 lambda_b^-1 + 2 lambda_a^-5 lambda_b^-2 + 0.5 lambda_a^-4 lambda_b^-3 (Lin et al. 1983 eqs. 27, 28, 42; WSM6 acrfac for pracs, psacr, pgacr).",
+      "body": { "op": "+", "args": [{ "op": "*", "args": [5, "rslope3_a", "rslope3_a", "rslope_b"] }, { "op": "*", "args": [2, "rslope3_a", "rslope2_a", "rslope2_b"] }, { "op": "*", "args": [0.5, "rslope2_a", "rslope2_a", "rslope3_b"] }] }
+    },
+    "collection_efficiency_reduction": {
+      "params": ["q_collector", "q_collected", "q_min", "expn"],
+      "description": "Empirical reduction of the collection efficiency when the collector is scarce relative to the collected species, min(max(0, q_collector/q_collected), 1)^2 (WSM6 'reduce collection efficiency (suggested by B. Wilt)', applied to praci, piacr, psacw, pgacw, pracs, psacr, pgacr). The denominator is floored at q_min only to keep the inactive branch finite; every use guards q_collected > q_min.",
+      "body": { "op": "^", "args": [{ "op": "min", "args": [{ "op": "max", "args": [0, { "op": "/", "args": ["q_collector", { "op": "max", "args": ["q_collected", "q_min"] }] }] }, 1] }, "expn"] }
+    },
+    "ventilated_diffusional_growth": {
+      "params": ["rh", "rslope2", "coeres", "f_vent", "f_diff", "c1", "c2"],
+      "description": "Vapor deposition (rh > 1) or sublimation/evaporation (rh < 1) of an exponential precipitation distribution by diffusion with ventilation, (rh - 1)(c1 lambda^-2 + c2 f_vent coeres)/F with c1 = 2 pi n0 a_v (4 n0 a_v for snow), c2 = 2 pi n0 b_v sqrt(a) Gamma(2.5 + b/2), f_vent the ventilation_factor, coeres the ventilation_slope_factor and F the diffusional_growth_denominator (Rutledge and Hobbs 1983 eqs. A27-A28, Lin et al. 1983 eq. 46; WSM6 psdep, pgdep, psevp, pgevp; rain_evaporation is the same form with the rain gate).",
+      "body": { "op": "/", "args": [{ "op": "*", "args": [{ "op": "-", "args": ["rh", 1] }, { "op": "+", "args": [{ "op": "*", "args": ["c1", "rslope2"] }, { "op": "*", "args": ["c2", "f_vent", "coeres"] }] }] }, "f_diff"] }
+    },
+    "ice_deposition_rate": {
+      "params": ["D", "xni", "rh_i", "f_diff_i"],
+      "description": "Deposition (rh_i > 1) / sublimation (rh_i < 1) of vapor on monodisperse ice crystals, 4 D_i N_i (rh_i - 1)/F_i, with F_i the diffusional_growth_denominator over ice (Hong, Dudhia and Chen 2004 eq. 9; WSM6 pidep).",
+      "body": { "op": "/", "args": [{ "op": "*", "args": [4, "D", "xni", { "op": "-", "args": ["rh_i", 1] }] }, "f_diff_i"] }
+    },
+    "saturation_limited_deposition": {
+      "params": ["rate", "satdt", "supice", "q", "dt"],
+      "description": "Time-step limiter of a deposition/sublimation rate in WSM6's sequential vapor budget: sublimation (rate < 0) may neither remove more than the species' mixing ratio q per step, nor exceed half the vapor deficit satdt/2 = (qv - qsat_i)/(2 dt), nor the deficit left after the processes evaluated before it, supice; deposition (rate > 0) may consume neither more than satdt/2 nor more than supice (WSM6 pidep, psdep, pgdep limiters). A time-step artefact, not physics.",
+      "body": { "op": "ifelse", "args": [{ "op": "<", "args": ["rate", 0] }, { "op": "max", "args": ["rate", { "op": "/", "args": ["satdt", 2] }, "supice", { "op": "-", "args": [{ "op": "/", "args": ["q", "dt"] }] }] }, { "op": "min", "args": ["rate", { "op": "/", "args": ["satdt", 2] }, "supice"] }] }
+    },
+    "ice_nucleation_target": {
+      "params": ["T", "t0", "rho", "n_coef", "n_exp", "m_coef", "m_exp"],
+      "description": "Ice mixing ratio that the Fletcher-type nucleation of WSM6 relaxes towards below 0 C: with the ice-nuclei concentration N_i0 = 1e3 exp(0.1 (T0 - T)) m^-3 and the initial ice content rho q_i0 = 4.92e-11 N_i0^1.33 kg m^-3 (Hong, Dudhia and Chen 2004 eqs. 7-8, after Hong et al. 1998), q_i0 = rho q_i0 / rho (WSM6 roqi0/den).",
+      "body": { "op": "/", "args": [{ "op": "*", "args": ["m_coef", { "op": "^", "args": [{ "op": "*", "args": ["n_coef", { "op": "exp", "args": [{ "op": "*", "args": ["n_exp", { "op": "-", "args": ["t0", "T"] }] }] }] }, "m_exp"] }] }, "rho"] }
+    },
+    "adjustment_towards_target_rate": {
+      "params": ["q_target", "q", "dt"],
+      "description": "Rate that brings a mixing ratio up to a target within one step, max(0, (q_target - q)/dt); an instantaneous adjustment written as a rate, so it scales with 1/dt (WSM6 pigen = max(0, (q_i0 - q_i)/dtcld)). A time-step artefact of the adjustment, kept separate from the physical target.",
+      "body": { "op": "max", "args": [0, { "op": "/", "args": [{ "op": "-", "args": ["q_target", "q"] }, "dt"] }] }
+    },
+    "excess_conversion_rate": {
+      "params": ["q", "q_max", "dt"],
+      "description": "Rate that removes the excess of a mixing ratio over a threshold within one step, max(0, (q - q_max)/dt); an instantaneous adjustment written as a rate (WSM6 psaut = max(0, (q_i - q_imax)/dtcld), Hong, Dudhia and Chen 2004 eq. 12).",
+      "body": { "op": "max", "args": [0, { "op": "/", "args": [{ "op": "-", "args": ["q", "q_max"] }, "dt"] }] }
+    },
+    "snow_to_graupel_aggregation": {
+      "params": ["qs", "qs0", "T", "t0", "coef", "expn"],
+      "description": "Autoconversion of snow to graupel, alpha2 max(0, q_s - q_s0) with alpha2 = 1e-3 exp(-0.09 (T0 - T)) (Lin et al. 1983 eq. 37, Hong and Lim 2006 eq. A4; WSM6 pgaut unlimited).",
+      "body": { "op": "*", "args": ["coef", { "op": "exp", "args": [{ "op": "-", "args": [{ "op": "*", "args": ["expn", { "op": "-", "args": ["t0", "T"] }] }] }] }, { "op": "max", "args": [0, { "op": "-", "args": ["qs", "qs0"] }] }] }
+    },
+    "melting_by_conduction": {
+      "params": ["ka", "T", "t0", "xlf", "rho", "geom", "rslope2", "coeres", "f_vent", "c1", "c2"],
+      "description": "Melting of an exponential precipitation distribution by heat conduction and ventilation above 0 C, k_a (T0 - T)/(L_f rho) geom (c1 lambda^-2 + c2 f_vent coeres) in kg/kg/s (negative, a snow/graupel sink), with geom = pi/2 n0s(T)/n0s for snow and 1 for graupel (Rutledge and Hobbs 1983 eq. A25, Lin et al. 1983 eq. 47, Hong and Lim 2006 eqs. A23, A33; WSM6 psmlt, pgmlt before the increment limiter).",
+      "body": { "op": "*", "args": [{ "op": "/", "args": [{ "op": "*", "args": ["ka", { "op": "-", "args": ["t0", "T"] }] }, { "op": "*", "args": ["xlf", "rho"] }] }, "geom", { "op": "+", "args": [{ "op": "*", "args": ["c1", "rslope2"] }, { "op": "*", "args": ["c2", "f_vent", "coeres"] }] }] }
+    },
+    "melting_increment_limiter": {
+      "params": ["rate", "q", "dt"],
+      "description": "Increment (kg/kg) of a melting sink applied in place over one sub-step: the rate times dt, not below the negative of the available mixing ratio, not above zero, min(max(rate dt, -q), 0) (WSM6 psmlt = min(max(psmlt dtcld/mstep, -qs/mstep), 0) with mstep = 1). A time-step artefact, not physics.",
+      "body": { "op": "min", "args": [{ "op": "max", "args": [{ "op": "*", "args": ["rate", "dt"] }, { "op": "-", "args": ["q"] }] }, 0] }
+    },
+    "negative_sink_limiter": {
+      "params": ["rate", "q", "dt"],
+      "description": "Time-step limiter of a negative (sink) rate: not below -q/dt and not above zero, min(max(rate, -q/dt), 0) (WSM6 pseml, pgeml, psevp, pgevp). A time-step artefact, not physics.",
+      "body": { "op": "min", "args": [{ "op": "max", "args": ["rate", { "op": "-", "args": [{ "op": "/", "args": ["q", "dt"] }] }] }, 0] }
+    },
+    "enhanced_melting_by_accretion": {
+      "params": ["T", "t0", "accreted", "cliq", "xlf"],
+      "description": "Additional melting of snow or graupel above 0 C from the sensible heat of the liquid water it accretes, c_l (T0 - T) P_acc / L_f (negative, a sink of the frozen species; Rutledge and Hobbs 1984 eqs. A21-A22, Hong and Lim 2006 eqs. A24, A34; WSM6 pseml, pgeml unlimited with P_acc = paacw + psacr or paacw + pgacr).",
+      "body": { "op": "/", "args": [{ "op": "*", "args": ["cliq", { "op": "-", "args": ["t0", "T"] }, "accreted"] }, "xlf"] }
+    },
+    "biggs_freezing_of_cloud_water": {
+      "params": ["qc", "rho", "T", "t0", "rho_w", "N_c", "pfrz1", "pfrz2", "supcol_max"],
+      "description": "Heterogeneous (Bigg 1953) freezing rate of cloud droplets, B' (exp(B (T0 - T)) - 1) rho q_c^2/(rho_w N_c) with B' = 100 m^-3 s^-1 and B = 0.66 K^-1, the supercooling capped at supcol_max = 50 K (Hong and Lim 2006 eq. A44, Lin et al. 1983 eq. 45 form; WSM6 pihtf rate before the increment limiter).",
+      "body": { "op": "*", "args": ["pfrz1", { "op": "-", "args": [{ "op": "exp", "args": [{ "op": "*", "args": ["pfrz2", { "op": "min", "args": [{ "op": "-", "args": ["t0", "T"] }, "supcol_max"] }] }] }, 1] }, { "op": "/", "args": [{ "op": "*", "args": ["rho", "qc", "qc"] }, { "op": "*", "args": ["rho_w", "N_c"] }] }] }
+    },
+    "biggs_freezing_of_rain": {
+      "params": ["rslope", "rslope3", "rho", "T", "t0", "rho_w", "n0r", "pfrz1", "pfrz2", "supcol_max", "coef", "pi"],
+      "description": "Probabilistic (Bigg 1953) freezing rate of raindrops to graupel integrated over the exponential distribution, 20 pi^2 B' n0r rho_w/rho (exp(B (T0 - T)) - 1) lambda^-7 with the supercooling capped at supcol_max (Lin et al. 1983 eq. 45, Hong and Lim 2006 eq. A20; WSM6 pgfrz rate before the increment limiter).",
+      "body": { "op": "*", "args": ["coef", { "op": "^", "args": ["pi", 2] }, "pfrz1", "n0r", { "op": "/", "args": ["rho_w", "rho"] }, { "op": "-", "args": [{ "op": "exp", "args": [{ "op": "*", "args": ["pfrz2", { "op": "min", "args": [{ "op": "-", "args": ["t0", "T"] }, "supcol_max"] }] }] }, 1] }, "rslope3", "rslope3", "rslope"] }
+    },
+    "freezing_increment_limiter": {
+      "params": ["rate", "q", "dt"],
+      "description": "Increment (kg/kg) of a freezing source applied in place over one sub-step: the rate times dt, at most the available liquid mixing ratio, min(rate dt, q) (WSM6 pfrzdtc, pfrzdtr). A time-step artefact, not physics.",
+      "body": { "op": "min", "args": [{ "op": "*", "args": ["rate", "dt"] }, "q"] }
     }
   }
 }
