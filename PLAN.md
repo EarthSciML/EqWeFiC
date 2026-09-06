@@ -491,7 +491,7 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   rates as scoped references to the `RADM2RateConstants` model so every
   coefficient lives once; negative KPP product coefficient (CSL+OH, −0.9 OH)
   as a shadow reaction. 405 assertions green in Rust at rel 1e-9 (rc_n2o5
-  1e-6, WRF evaluates it in real32). Gaps (EarthSciAST issue #201): (p) the
+  1e-6, WRF evaluates it in real32). Gaps (EarthSciAST issue #206): (p) the
   Rust CLI runs no `reaction_systems` tests; (q) an observed `D(x,t)`
   evaluates to 0, so Vdot cannot be asserted at t=0; bare
   `parameter_overrides` resolve per component in Rust but document-wide in
