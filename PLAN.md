@@ -348,6 +348,28 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     physics inputs and tendencies for the surface+PBL, radiation, and
     full-physics subassemblies. Select a handful of time steps as the
     subassembly tests.
+    Done 2026-09-06 (fork 592f693): driver-level dumps `subassembly_rad`,
+    `subassembly_pbl`, `subassembly_mp`, `subassembly_all` for steps 1, 60,
+    300, 720, 900, 1200, 1410 (`data/eqwefic/dumps/subassembly`). First
+    assemblies live in `couplings/` (EarthSciModels' directory for coupled
+    documents; kept out of `components/` because the Rust CLI re-runs the
+    mounted components' inline tests under the coupling and a whole-file run
+    goes red — run them with `./esm test --model <Assembly> <file>`):
+    `surface_pbl_column.esm` (SfclayRev + YSU) and `surface_soil_column.esm`
+    (SfclayRev + slab) as top-level ref mounts coupled by `variable_map
+    param_to_var`, column state injected per mount (§9.7.10), tests in the
+    assembly model (31 + 20 assertions green, step 60). Findings: YSU's
+    `psim/psih` = sfclayrev's `fm/fh`; WRF's PBL sees the slab's sub-stepped
+    hfx; implicit-vs-instantaneous PBL tendency gap 15 % at dt = 60 (asserted
+    loosely, documented). Gaps (EarthSciAST issue #198): (n) document-scoped
+    index sets forbid two column components with different NLEV in one
+    document; coupling endpoints in models with subsystems → NaN or silently
+    dropped; mounted components' inline tests re-run under coupling; top-level
+    mounts don't merge leaf index sets; subsystem parameters not settable from
+    a parent test (PR #179). Repros: `data/eqwefic/esm-repro/assemblies/`.
+    Remaining: radiation, microphysics-step and full-physics-sum assemblies
+    (dumps exist); the other six dumped steps as additional regimes; tighten
+    the fork's RRTM hook gating (N39).
 1.5 Stubs live on this repo's `main` under `components/<domain>/…` mirroring
     the EarthSciModels layout. They are *not* opened as EarthSciModels PRs
     until their tests pass (finding 9).

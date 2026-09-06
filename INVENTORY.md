@@ -23,6 +23,9 @@ Status values: `not started` · `instrumented` · `stub` (tests written, on this
 | Subassembly: radiation column | — | SCM dumps | — | not started |
 | Subassembly: full SCM physics suite | — | SCM dumps | — | not started |
 | Deferred: RRTMG LW/SW, Noah-MP, MYNN, Thompson, KF | | | | — |
+| Subassembly: surface layer + PBL | shared column state, sfclayrev → YSU couplings (u*, fm, fh, Ri_b, wspd, 10 m wind, z0) | driver-level dump `subassembly_pbl` (fork 592f693) | `couplings/` (EarthSciModels convention) | stub with tests (2026-09-06): `couplings/surface_pbl_column.esm`, 31/31 with `./esm test --model SurfacePBLColumn` (step 60); mounted components' own tests error under the coupling in a whole-file run (EarthSciAST #198); slab not co-mountable (gap (n)) |
+| Subassembly: surface layer + slab | shared state, sfclayrev FLHC/FLQC → slab | driver-level dump `subassembly_pbl` + slab real64 replay | — | stub with tests (2026-09-06): `couplings/surface_soil_column.esm`, 20/20 with `./esm test --model SurfaceSoilColumn` |
+| Subassembly: radiation / microphysics step / full-physics sum | | dumps `subassembly_rad/_mp/_all` (7 steps each) | — | instrumented (2026-09-06), no assembly yet |
 
 ## EqAtmChem — WRF-Chem `chem_opt=1` then `300`
 
