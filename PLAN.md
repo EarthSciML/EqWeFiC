@@ -387,6 +387,10 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   template imports. Merge conditions (not ours to address): ESD #34/#35/#36
   merged and reachable from CI, EarthSciAST #177 + EarthSciModels #2 for the
   Python gate.
+- **EarthSciModels fire PRs opened 2026-09-06:** #22 (4 fire_behavior-derived
+  tests appended to the existing `wildland_fire/level_set/fire_heat_flux.esm`,
+  PLAN 1.3) and #23 (`components/wildland_fire/fire_behavior/`, 464
+  assertions).
 
 - **Slab done.** `SlabLandSurface` written as instantaneous tendencies: surface
   budget from consumer-supplied `FLHC/FLQC`, soil heat equation
