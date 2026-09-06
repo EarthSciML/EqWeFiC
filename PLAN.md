@@ -546,6 +546,24 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   assembly (Phase 2 subassembly; each interface is currently fed from the
   dumps), and the RTRN cloud-overlap path in regimes with fractional cloud
   (all SCM clouds are overcast).
+  End-to-end assembly done 2026-09-06: `couplings/rrtm_lw_column*.esm` chain
+  the five stages as top-level ref mounts; each stage keeps its `input_<x>`
+  rewrite targets and gained shaped `<x>_in` coupling-target parameters
+  (additive, standalone 888/888 unchanged) that the mount-edge libraries
+  `couplings/tests/rrtm_couple_*_inputs.esm` make the targets resolve to,
+  filled by `variable_map param_to_var` from the upstream stage — the general
+  coupling path for every `input_<x>` column component; rank-2 fields
+  flattened (gas optics gained `pfrac_flat`). 4 regimes × 25 assertions green
+  (18 s each); end-to-end residuals: fluxes ≤ 2e-4 W/m² except 3.3e-3 at call
+  1440 (±1 ITR quantisation flips propagated through the sweep), htr ≤ 1.3e-3
+  K/day, dTdt ≤ 1.5e-8 K/s, glw/olr ≤ 1.3e-5 rel; tolerances 5e-3 W/m² /
+  5e-3 K/day / 2e-8 K/s / rel 2e-5. `couplings/radiation_column{,_night}.esm`
+  add DudhiaSW and reproduce radiation_driver's rthraten, gsw, glw, olr at
+  steps 60 and 300 (30 assertions each). Gap (r) (EarthSciAST issue #207):
+  the Rust CLI folds a gather from a bare `const` array at interpreter-build
+  time before document couplings are applied (`E_TREEWALK_CONSTARRAY_OOB` with
+  the coupled temperature = 0); wrapping the table in an aggregate defers it
+  (`rtrn_sweep.esm` `totplnk`; repro `esm-repro/assemblies/rrtm/`).
 
 ## 4. Phase 2 — physics and subassemblies
 
