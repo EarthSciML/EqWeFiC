@@ -363,6 +363,23 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   `dTsk_dt`; tolerances 5–10× above, per assertion. 84 assertions green. The
   Bolton saturation template lives in `slab_templates.esm` pending a second
   consumer (sfclayrev) before moving to `lib/wrf_thermo.esm`.
+- **RRTM LW stage 1 done.** Heating-rate convention proved:
+  `HTR(L−1) = HEATFAC (FNET(L−1) − FNET(L))/(PZ(L−1) − PZ(L))` is the heating
+  of layer L; RRTM indexes bottom-up so `TOTUFLUX/TOTDFLUX(0..kte)` map onto
+  `lev_nodes` with no reversal; WRF's OLR is the model-top flux. Written as
+  `dT/dt = −(g/cp) D(F_net, lev)` with the column grid's `ze = p_sfc − p_e`
+  (pressure coordinate), 56 assertions; the MM5ATM/SETCOEF column mapping
+  (NBUF = nint(p_top/(100 deltap)) buffer layers, standard-atmosphere
+  temperatures, coldry and column amounts, cloud optical depth) as
+  `RRTMColumn`, 200 assertions; both real32 references at rel 1e-5. Stage 2
+  (RTRN sweep, per-g-point recurrences on `rlay`) is blocked on
+  instrumentation: dump `TAUG, PFRAC, ITR` (NGPT × NLAYERS),
+  `TOTUCLFL/TOTDCLFL`, band Planck integrals; stage 3 (TAUGB1–16 k-tables,
+  ≈1e5 coefficients) needs `data_sources`. `colo3` deferred (O3DATA as a
+  pressure integral). Gap (l): Rust `esm test` does not lower `table_lookup`
+  (esm-spec §9.5.3; repro `esm-repro/rrtm/probe_table_lookup.esm`), so tables
+  are spelled as `fn interp.linear` on `const` arrays; also `ifelse` branches
+  evaluate eagerly, so index gathers in inactive branches must be clamped.
 
 ## 4. Phase 2 — physics and subassemblies
 
