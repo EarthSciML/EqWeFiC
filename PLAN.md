@@ -355,6 +355,16 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
 
 ### Phase 1 progress (2026-09-05)
 
+- **EarthSciModels PRs opened 2026-09-06 (user decision):** #15 lib
+  (`wrf_constants`/`wrf_thermo`/`wrf_air_properties`), #16 sfclayrev, #17 slab
+  (new domain `land_surface/`), #18 ysu, #19 wsm6, #20 dudhia_sw and #21
+  rrtm_lw stages 1–2 (new domain `atmospheric_radiation/`); each component PR
+  carries the lib files and is self-contained. ESD rules are referenced by
+  relative sibling path because the Rust CLI does not expand `${ESD_ROOT}` in
+  template imports. Merge conditions (not ours to address): ESD #34/#35/#36
+  merged and reachable from CI, EarthSciAST #177 + EarthSciModels #2 for the
+  Python gate.
+
 - **Slab done.** `SlabLandSurface` written as instantaneous tendencies: surface
   budget from consumer-supplied `FLHC/FLQC`, soil heat equation
   `D(K·D(T) − F, lev)/capg` with the surface flux G and the fixed deepest layer
