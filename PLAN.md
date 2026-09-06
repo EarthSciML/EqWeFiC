@@ -394,7 +394,14 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   test, tolerances 5e-5–2e-4 there). Remaining for WSM6: sedimentation (needs
   the downward upwind/PLM flux rule in EarthSciDiscretizations), the
   saturation adjustment `pcond` (an adjustment formulation), the
-  mass-conservation rescaling (time-step artefact). Format notes: a test cannot
+  mass-conservation rescaling (time-step artefact). pcond done 2026-09-05:
+  `WSM6SaturationAdjustment` (`saturation.esm` mounted as subsystem `sat` for
+  qsat at the pre-adjustment state; Asai/RH83 one-step Newton increment, WSM6
+  bounds, target state T*, qv*, qc*, kernel rate pcond = dq/dtcld and
+  relaxation form dq_adj/τ); 4 regimes (condensing updraft, evaporating
+  downdraft with the −qc bound, mixed early storm, SCM zero), 52 assertions
+  green against real64 replays; residual ≤ 1.7e-10 kg/kg/s from real32
+  constants in qsat. Format notes: a test cannot
   assert a mounted subsystem's variable; a subsystem's `index_sets`/
   `metaparameters` must not be redeclared by the importer; `-` is strictly
   unary/binary while `+`/`*`/`min`/`max` are n-ary.
