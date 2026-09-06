@@ -377,7 +377,8 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   `TOTUCLFL/TOTDCLFL`, band Planck integrals; stage 3 (TAUGB1–16 k-tables,
   ≈1e5 coefficients) needs `data_sources`. `colo3` deferred (O3DATA as a
   pressure integral). Gap (l): Rust `esm test` does not lower `table_lookup`
-  (esm-spec §9.5.3; repro `esm-repro/rrtm/probe_table_lookup.esm`), so tables
+  (esm-spec §9.5.3; repro `esm-repro/rrtm/probe_table_lookup.esm`; EarthSciAST
+  issue #188), so tables
   are spelled as `fn interp.linear` on `const` arrays; also `ifelse` branches
   evaluate eagerly, so index gathers in inactive branches must be clamped.
 
