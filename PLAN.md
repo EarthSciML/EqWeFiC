@@ -144,8 +144,11 @@ optional later rows.
     interfaces; the bound literal `lev`/`lev_nodes` selects the form). Verified
     numerically in the Rust CLI (27 probe assertions, three MMS problems all
     green; the constant-K column problem reproduces the cartesian
-    `heat_1d_nonuniform_neumann` error at N=64). Sedimentation (`upwind1_flux_D_lev`,
-    downward only) is deferred to the WSM6 stage-2 work.
+    `heat_1d_nonuniform_neumann` error at N=64). Sedimentation done 2026-09-06: ESD PR #36
+    (stacked on #35) `sedimentation_upwind1_flux_D_lev` — donor-cell
+    `D(W·q, lev)` for a layer-centred W = −v_t ≤ 0, no inflow at the top,
+    surface outflow = layer-1 flux; MMS order 0.87–0.95; rust+julia gates
+    green, python left to CI.
     **Format gaps found (EarthSciAST PR #177 fixes (a)–(c) in all three
     bindings — (b)/(c) turned out to be one Python bug, a multi-model cell-name
     collision in the inline runner, not an aggregate bug; issues #174 (rename
@@ -401,7 +404,15 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   relaxation form dq_adj/τ); 4 regimes (condensing updraft, evaporating
   downdraft with the −qc bound, mixed early storm, SCM zero), 52 assertions
   green against real64 replays; residual ≤ 1.7e-10 kg/kg/s from real32
-  constants in qsat. Format notes: a test cannot
+  constants in qsat. Sedimentation done 2026-09-06 (`sedimentation.esm`, 65
+  assertions): the kernel's `fall` arrays are post-fallout density × speed /
+  delz, so references are the Richardson dt→0 limit of real64 replays at
+  0.04/0.02/0.01 s, which equals the donor-cell flux ρ v_t q; WSM6's PLM
+  increment at dt = 12 s differs from the donor-cell divergence by factors
+  0.4–1.6 (rain) with sign flips for snow/graupel — the instantaneous-
+  derivative form is scheme-independent only at t = 0. Gap (m): subsystem
+  index sets fold metaparameters before merging, so grid imports must be bound
+  to the literal `NLEV` when a shaped model is mounted. Format notes: a test cannot
   assert a mounted subsystem's variable; a subsystem's `index_sets`/
   `metaparameters` must not be redeclared by the importer; `-` is strictly
   unary/binary while `+`/`*`/`min`/`max` are n-ary.
