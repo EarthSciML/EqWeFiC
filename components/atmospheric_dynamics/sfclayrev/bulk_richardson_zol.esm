@@ -1,0 +1,635 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "sfclayrev_bulk_richardson_zol",
+  "description": "The bulk-Richardson-number to stability-parameter inversion of WRF's revised MM5 surface layer (function zolri of sf_sfclayrev.F90, lines 949-1008), as expression templates. The surface-layer relation Ri_b = zeta psi_h(zeta)/psi_m(zeta)^2, with psi_m = ln((z+z0)/z0) - [Psi_m(zeta(z+z0)/z) - Psi_m(zeta z0/z)] and likewise psi_h, is inverted for zeta = z/L. The kernel does NOT solve this to convergence: it runs a secant iteration from the bracket {-5, 0} (Ri_b < 0) or {0, 5} (Ri_b > 0), updating whichever endpoint has the larger |residual|, clamping an iterate that crosses zero back to zero, and STOPPING as soon as the two endpoints are within 0.01 of each other (or after 10 updates, or when the two residuals coincide), returning the last updated endpoint. That stopping rule leaves zeta up to 8e-5 relative away from the exact root in the SCM regimes (measured against a bracketing solve), so a component that solved the equation exactly would not reproduce the scheme to the 1e-6 tolerance of these tests. The iteration is therefore transcribed step by step: the model spells it as one esm-spec 4.3.1.1 recurrence over an index set of 33 cells, three per iteration (x1_n, x2_n, r_n = the running return value), and these templates are the per-cell update rules. zolri_residual is the equation being solved (its zero IS the Monin-Obukhov relation); secant_x1_next / secant_x2_next / secant_result_next are the numerical method. A consumer wanting the converged physics may instead assert zolri_residual(zol) = 0.",
+  "license": "MIT",
+  "tags": [
+   "wrf",
+   "surface-layer",
+   "sfclayrev",
+   "monin-obukhov",
+   "bulk-richardson",
+   "expression-templates"
+  ],
+  "references": [
+   {
+    "citation": "Jimenez, P. A., Dudhia, J., Gonzalez-Rouco, J. F., Navarro, J., Montavez, J. P., and Garcia-Bustamante, E. (2012). A revised scheme for the WRF surface layer formulation. Mon. Wea. Rev. 140, 898-918, eq. 12-13 (Ri_b(zeta) inversion)."
+   },
+   {
+    "citation": "WRF 4.8 phys/physics_mmm/sf_sfclayrev.F90 lines 949-1008 (zolri, zolri2)."
+   }
+  ]
+ },
+ "expression_template_imports": [
+  {
+   "ref": "./similarity_functions.esm"
+  }
+ ],
+ "expression_templates": {
+  "zolri_clamp": {
+   "params": [
+    "x",
+    "ri"
+   ],
+   "description": "The kernel limits an iterate to the sign of Ri_b: if x Ri_b < 0 the iterate is set to zero (zolri2 line 992; the inout argument is modified, so the clamped value is also the one the secant continues from).",
+   "body": {
+    "op": "ifelse",
+    "args": [
+     {
+      "op": "<",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         "x",
+         "ri"
+        ]
+       },
+       0
+      ]
+     },
+     0,
+     "x"
+    ]
+   }
+  },
+  "zolri_residual": {
+   "params": [
+    "x",
+    "ri",
+    "z",
+    "z0"
+   ],
+   "description": "Residual of the surface-layer relation at the (clamped) stability parameter x = z/L: x psi_h/psi_m^2 - Ri_b, where psi_m = ln((z+z0)/z0) - [Psi_m(x (z+z0)/z) - Psi_m(x z0/z)] and psi_h likewise, with the stable or unstable tabulated similarity functions selected by the sign of x (= sign of Ri_b after the clamp, as zolri2 selects by ri2). Its zero is Ri_b = zeta psi_h/psi_m^2 (Jimenez et al. 2012 eq. 12).",
+   "body": {
+    "op": "-",
+    "args": [
+     {
+      "op": "/",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_clamp",
+          "bindings": {
+           "x": "x",
+           "ri": "ri"
+          }
+         },
+         {
+          "op": "-",
+          "args": [
+           {
+            "op": "log",
+            "args": [
+             {
+              "op": "/",
+              "args": [
+               {
+                "op": "+",
+                "args": [
+                 "z",
+                 "z0"
+                ]
+               },
+               "z0"
+              ]
+             }
+            ]
+           },
+           {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "psi_h_profile",
+            "bindings": {
+             "zol": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "zolri_clamp",
+              "bindings": {
+               "x": "x",
+               "ri": "ri"
+              }
+             },
+             "z_hi": {
+              "op": "+",
+              "args": [
+               "z",
+               "z0"
+              ]
+             },
+             "z_lo": "z0",
+             "za": "z"
+            }
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "^",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           {
+            "op": "log",
+            "args": [
+             {
+              "op": "/",
+              "args": [
+               {
+                "op": "+",
+                "args": [
+                 "z",
+                 "z0"
+                ]
+               },
+               "z0"
+              ]
+             }
+            ]
+           },
+           {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "psi_m_profile",
+            "bindings": {
+             "zol": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "zolri_clamp",
+              "bindings": {
+               "x": "x",
+               "ri": "ri"
+              }
+             },
+             "z_hi": {
+              "op": "+",
+              "args": [
+               "z",
+               "z0"
+              ]
+             },
+             "z_lo": "z0",
+             "za": "z"
+            }
+           }
+          ]
+         },
+         2
+        ]
+       }
+      ]
+     },
+     "ri"
+    ]
+   }
+  },
+  "secant_update": {
+   "params": [
+    "xa",
+    "xb",
+    "fa",
+    "fb"
+   ],
+   "description": "One secant step moving the endpoint xa: xa - fa (xb - xa)/(fb - fa) (zolri lines 972, 976).",
+   "body": {
+    "op": "-",
+    "args": [
+     "xa",
+     {
+      "op": "*",
+      "args": [
+       {
+        "op": "/",
+        "args": [
+         "fa",
+         {
+          "op": "-",
+          "args": [
+           "fb",
+           "fa"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "-",
+        "args": [
+         "xb",
+         "xa"
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "secant_active": {
+   "params": [
+    "x1",
+    "x2",
+    "f1",
+    "f2",
+    "tol"
+   ],
+   "description": "The kernel keeps iterating while |x1 - x2| > tol (0.01) and the two residuals differ (zolri lines 967, 970); the 10-update cap is the length of the recurrence axis.",
+   "body": {
+    "op": "and",
+    "args": [
+     {
+      "op": ">",
+      "args": [
+       {
+        "op": "abs",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           "x1",
+           "x2"
+          ]
+         }
+        ]
+       },
+       "tol"
+      ]
+     },
+     {
+      "op": "!=",
+      "args": [
+       "f1",
+       "f2"
+      ]
+     }
+    ]
+   }
+  },
+  "secant_lower": {
+   "params": [
+    "f1",
+    "f2"
+   ],
+   "description": "The endpoint with the larger |residual| is moved: x1 when |f2| < |f1|, else x2 (zolri line 971).",
+   "body": {
+    "op": "<",
+    "args": [
+     {
+      "op": "abs",
+      "args": [
+       "f2"
+      ]
+     },
+     {
+      "op": "abs",
+      "args": [
+       "f1"
+      ]
+     }
+    ]
+   }
+  },
+  "secant_x1_next": {
+   "params": [
+    "x1",
+    "x2",
+    "ri",
+    "z",
+    "z0",
+    "tol"
+   ],
+   "description": "Next lower endpoint: the clamped secant update when the iteration is active and x1 is the endpoint to move, otherwise unchanged.",
+   "body": {
+    "op": "ifelse",
+    "args": [
+     {
+      "op": "and",
+      "args": [
+       {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "secant_active",
+        "bindings": {
+         "x1": "x1",
+         "x2": "x2",
+         "f1": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x1",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         },
+         "f2": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x2",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         },
+         "tol": "tol"
+        }
+       },
+       {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "secant_lower",
+        "bindings": {
+         "f1": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x1",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         },
+         "f2": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x2",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         }
+        }
+       }
+      ]
+     },
+     {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "zolri_clamp",
+      "bindings": {
+       "ri": "ri",
+       "x": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "secant_update",
+        "bindings": {
+         "xa": "x1",
+         "xb": "x2",
+         "fa": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x1",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         },
+         "fb": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x2",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         }
+        }
+       }
+      }
+     },
+     "x1"
+    ]
+   }
+  },
+  "secant_x2_next": {
+   "params": [
+    "x1",
+    "x2",
+    "ri",
+    "z",
+    "z0",
+    "tol"
+   ],
+   "description": "Next upper endpoint: the clamped secant update when the iteration is active and x2 is the endpoint to move, otherwise unchanged.",
+   "body": {
+    "op": "ifelse",
+    "args": [
+     {
+      "op": "and",
+      "args": [
+       {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "secant_active",
+        "bindings": {
+         "x1": "x1",
+         "x2": "x2",
+         "f1": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x1",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         },
+         "f2": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x2",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         },
+         "tol": "tol"
+        }
+       },
+       {
+        "op": "not",
+        "args": [
+         {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "secant_lower",
+          "bindings": {
+           "f1": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "zolri_residual",
+            "bindings": {
+             "x": "x1",
+             "ri": "ri",
+             "z": "z",
+             "z0": "z0"
+            }
+           },
+           "f2": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "zolri_residual",
+            "bindings": {
+             "x": "x2",
+             "ri": "ri",
+             "z": "z",
+             "z0": "z0"
+            }
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "zolri_clamp",
+      "bindings": {
+       "ri": "ri",
+       "x": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "secant_update",
+        "bindings": {
+         "xa": "x2",
+         "xb": "x1",
+         "fa": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x2",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         },
+         "fb": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x1",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         }
+        }
+       }
+      }
+     },
+     "x2"
+    ]
+   }
+  },
+  "secant_result_next": {
+   "params": [
+    "x1_prev",
+    "x2_prev",
+    "x1_new",
+    "x2_new",
+    "r_prev",
+    "ri",
+    "z",
+    "z0",
+    "tol"
+   ],
+   "description": "Running return value of zolri: the endpoint moved in this iteration when the iteration was active, otherwise the previous return value (zolri lines 974, 978).",
+   "body": {
+    "op": "ifelse",
+    "args": [
+     {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "secant_active",
+      "bindings": {
+       "x1": "x1_prev",
+       "x2": "x2_prev",
+       "f1": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "zolri_residual",
+        "bindings": {
+         "x": "x1_prev",
+         "ri": "ri",
+         "z": "z",
+         "z0": "z0"
+        }
+       },
+       "f2": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "zolri_residual",
+        "bindings": {
+         "x": "x2_prev",
+         "ri": "ri",
+         "z": "z",
+         "z0": "z0"
+        }
+       },
+       "tol": "tol"
+      }
+     },
+     {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "secant_lower",
+        "bindings": {
+         "f1": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x1_prev",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         },
+         "f2": {
+          "op": "apply_expression_template",
+          "args": [],
+          "name": "zolri_residual",
+          "bindings": {
+           "x": "x2_prev",
+           "ri": "ri",
+           "z": "z",
+           "z0": "z0"
+          }
+         }
+        }
+       },
+       "x1_new",
+       "x2_new"
+      ]
+     },
+     "r_prev"
+    ]
+   }
+  }
+ }
+}

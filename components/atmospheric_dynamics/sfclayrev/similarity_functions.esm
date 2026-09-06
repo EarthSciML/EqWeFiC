@@ -1,0 +1,128 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "sfclayrev_similarity_functions",
+  "description": "Integrated Monin-Obukhov similarity functions psi_m(zeta) and psi_h(zeta) of WRF's revised MM5 surface layer (Jimenez et al. 2012), as pure expression templates. Stable side: Cheng and Brutsaert (2005), psi_m = -6.1 ln(zeta + (1 + zeta^2.5)^(1/2.5)), psi_h = -5.3 ln(zeta + (1 + zeta^1.1)^(1/1.1)). Unstable side: the Kansas (Paulson 1970) forms for -zeta small blended with the free-convection (Fairall et al. 1996) forms for -zeta large, psi = (psi_kansas + zeta^2 psi_conv)/(1 + zeta^2), with x = (1 - 16 zeta)^(1/4), y = (1 - 16 zeta)^(1/2), y_m = (1 - 10 zeta)^0.33, y_h = (1 - 34 zeta)^0.33. The Fortran (sf_sfclayrev.F90 lines 1014-1122) evaluates them through lookup tables of 1000 nodes at spacing 0.01 with linear interpolation, falling back to the closed form beyond the last node; that discretisation changes the value at the 1e-4 level, so the *_tab templates reproduce it and the profile templates below use the tabulated forms exactly as the kernel does. The profile templates psi_m_profile / psi_h_profile give the integrated correction between two heights, psi(zol z_hi/za) - psi(zol z_lo/za), choosing the stable, neutral (zero) or unstable form by the sign of zol (the kernel's regime switch, lines 425-495 and 552-566). These are NOT the Businger-Dyer forms of EarthSciModels' atmospheric_dynamics/local_scale/surface_layer_profile.esm (Seinfeld and Pandis 16.78-16.79), which is why that component is not reused. NOTE: the coefficients 6.1, 2.5, 5.3, 1.1, 16, 10, 34 and 0.33 are the constants of the published functions (Cheng and Brutsaert 2005 eq. 21-22; Jimenez et al. 2012 eq. 8-11), written here as literals of the functions rather than as scheme parameters; pi/2 and pi/sqrt(3) are written 2 atan(1) and 4 atan(1)/sqrt(3) as in the Fortran.",
+  "license": "MIT",
+  "tags": ["wrf", "surface-layer", "sfclayrev", "monin-obukhov", "similarity-functions", "expression-templates"],
+  "references": [
+   {"citation": "Jimenez, P. A., Dudhia, J., Gonzalez-Rouco, J. F., Navarro, J., Montavez, J. P., and Garcia-Bustamante, E. (2012). A revised scheme for the WRF surface layer formulation. Mon. Wea. Rev. 140, 898-918, eqs. 8-11."},
+   {"citation": "Cheng, Y. and Brutsaert, W. (2005). Flux-profile relationships for wind speed and temperature in the stable atmospheric boundary layer. Bound.-Layer Meteor. 114, 519-538, eqs. 21-22."},
+   {"citation": "Paulson, C. A. (1970). The mathematical representation of wind speed and temperature profiles in the unstable atmospheric surface layer. J. Appl. Meteor. 9, 857-861."},
+   {"citation": "Fairall, C. W., Bradley, E. F., Rogers, D. P., Edson, J. B., and Young, G. S. (1996). Bulk parameterization of air-sea fluxes for TOGA COARE. J. Geophys. Res. 101, 3747-3764."},
+   {"citation": "WRF 4.8 phys/physics_mmm/sf_sfclayrev.F90 lines 41-51 (table construction), 1014-1057 (closed forms), 1061-1122 (table lookup)."}
+  ]
+ },
+ "expression_templates": {
+  "psi_stable_cb05": {
+   "params": ["zeta", "coef", "expo"],
+   "description": "Cheng and Brutsaert (2005) stable integrated similarity function -coef ln(zeta + (1 + zeta^expo)^(1/expo)); coef, expo = 6.1, 2.5 for momentum and 5.3, 1.1 for heat (psim_stable_full, psih_stable_full).",
+   "body": {"op": "*", "args": [{"op": "-", "args": ["coef"]}, {"op": "log", "args": [{"op": "+", "args": ["zeta", {"op": "^", "args": [{"op": "+", "args": [1, {"op": "^", "args": ["zeta", "expo"]}]}, {"op": "/", "args": [1, "expo"]}]}]}]}]}
+  },
+  "psi_kansas_momentum": {
+   "params": ["x"],
+   "description": "Paulson (1970) unstable momentum function 2 ln((1+x)/2) + ln((1+x^2)/2) - 2 atan(x) + pi/2 of x = (1 - 16 zeta)^(1/4) (psimk).",
+   "body": {"op": "+", "args": [{"op": "*", "args": [2, {"op": "log", "args": [{"op": "*", "args": [0.5, {"op": "+", "args": [1, "x"]}]}]}]}, {"op": "log", "args": [{"op": "*", "args": [0.5, {"op": "+", "args": [1, {"op": "*", "args": ["x", "x"]}]}]}]}, {"op": "*", "args": [-2, {"op": "atan", "args": ["x"]}]}, {"op": "*", "args": [2, {"op": "atan", "args": [1]}]}]}
+  },
+  "psi_kansas_heat": {
+   "params": ["y"],
+   "description": "Paulson (1970) unstable heat function 2 ln((1+y)/2) of y = (1 - 16 zeta)^(1/2) (psihk).",
+   "body": {"op": "*", "args": [2, {"op": "log", "args": [{"op": "/", "args": [{"op": "+", "args": [1, "y"]}, 2]}]}]}
+  },
+  "psi_free_convection": {
+   "params": ["y"],
+   "description": "Free-convection integrated function (3/2) ln((y^2 + y + 1)/3) - sqrt(3) atan((2y + 1)/sqrt(3)) + pi/sqrt(3) of y = (1 - gamma zeta)^0.33 (psimc with gamma = 10, psihc with gamma = 34).",
+   "body": {"op": "+", "args": [{"op": "*", "args": [{"op": "/", "args": [3, 2]}, {"op": "log", "args": [{"op": "/", "args": [{"op": "+", "args": [{"op": "^", "args": ["y", 2]}, "y", 1]}, 3]}]}]}, {"op": "-", "args": [{"op": "*", "args": [{"op": "sqrt", "args": [3]}, {"op": "atan", "args": [{"op": "/", "args": [{"op": "+", "args": [{"op": "*", "args": [2, "y"]}, 1]}, {"op": "sqrt", "args": [3]}]}]}]}]}, {"op": "/", "args": [{"op": "*", "args": [4, {"op": "atan", "args": [1]}]}, {"op": "sqrt", "args": [3]}]}]}
+  },
+  "psi_unstable_blend": {
+   "params": ["psi_kansas", "psi_conv", "zeta"],
+   "description": "Jimenez et al. (2012) eq. 9/11 blend of the Kansas and free-convection forms, (psi_kansas + zeta^2 psi_conv)/(1 + zeta^2).",
+   "body": {"op": "/", "args": [{"op": "+", "args": ["psi_kansas", {"op": "*", "args": [{"op": "^", "args": ["zeta", 2]}, "psi_conv"]}]}, {"op": "+", "args": [1, {"op": "^", "args": ["zeta", 2]}]}]}
+  },
+  "psim_stable_full": {
+   "params": ["zeta"],
+   "description": "Closed-form stable psi_m (psim_stable_full): psi_stable_cb05 with 6.1 and 2.5.",
+   "body": {"op": "apply_expression_template", "args": [], "name": "psi_stable_cb05", "bindings": {"zeta": "zeta", "coef": 6.1, "expo": 2.5}}
+  },
+  "psih_stable_full": {
+   "params": ["zeta"],
+   "description": "Closed-form stable psi_h (psih_stable_full): psi_stable_cb05 with 5.3 and 1.1.",
+   "body": {"op": "apply_expression_template", "args": [], "name": "psi_stable_cb05", "bindings": {"zeta": "zeta", "coef": 5.3, "expo": 1.1}}
+  },
+  "psim_unstable_full": {
+   "params": ["zeta"],
+   "description": "Closed-form unstable psi_m (psim_unstable_full): blend of the Kansas function of x = (1 - 16 zeta)^0.25 and the free-convection function of y_m = (1 - 10 zeta)^0.33.",
+   "body": {"op": "apply_expression_template", "args": [], "name": "psi_unstable_blend", "bindings": {
+     "psi_kansas": {"op": "apply_expression_template", "args": [], "name": "psi_kansas_momentum", "bindings": {"x": {"op": "^", "args": [{"op": "-", "args": [1, {"op": "*", "args": [16, "zeta"]}]}, 0.25]}}},
+     "psi_conv": {"op": "apply_expression_template", "args": [], "name": "psi_free_convection", "bindings": {"y": {"op": "^", "args": [{"op": "-", "args": [1, {"op": "*", "args": [10, "zeta"]}]}, 0.33]}}},
+     "zeta": "zeta"}}
+  },
+  "psih_unstable_full": {
+   "params": ["zeta"],
+   "description": "Closed-form unstable psi_h (psih_unstable_full): blend of the Kansas function of y = (1 - 16 zeta)^0.5 and the free-convection function of y_h = (1 - 34 zeta)^0.33.",
+   "body": {"op": "apply_expression_template", "args": [], "name": "psi_unstable_blend", "bindings": {
+     "psi_kansas": {"op": "apply_expression_template", "args": [], "name": "psi_kansas_heat", "bindings": {"y": {"op": "^", "args": [{"op": "-", "args": [1, {"op": "*", "args": [16, "zeta"]}]}, 0.5]}}},
+     "psi_conv": {"op": "apply_expression_template", "args": [], "name": "psi_free_convection", "bindings": {"y": {"op": "^", "args": [{"op": "-", "args": [1, {"op": "*", "args": [34, "zeta"]}]}, 0.33]}}},
+     "zeta": "zeta"}}
+  },
+  "table_interpolation": {
+   "params": ["f_lo", "f_hi", "f_exact", "s"],
+   "description": "WRF's psi lookup: at scaled position s = |zeta|/0.01 the value is interpolated linearly between the table nodes floor(s) and floor(s)+1 (f_lo, f_hi = the closed form at those nodes) while floor(s) + 1 < 1000, and is the closed form f_exact beyond the table (lines 1065-1071).",
+   "body": {"op": "ifelse", "args": [{"op": "<", "args": [{"op": "+", "args": [{"op": "floor", "args": ["s"]}, 1]}, 1000]}, {"op": "+", "args": ["f_lo", {"op": "*", "args": [{"op": "-", "args": ["s", {"op": "floor", "args": ["s"]}]}, {"op": "-", "args": ["f_hi", "f_lo"]}]}]}, "f_exact"]}
+  },
+  "psim_stable_tab": {
+   "params": ["zeta"],
+   "description": "Tabulated stable psi_m (psim_stable): table_interpolation of psim_stable_full at the nodes n/100, (n+1)/100, n = floor(100 zeta), zeta >= 0.",
+   "body": {"op": "apply_expression_template", "args": [], "name": "table_interpolation", "bindings": {
+     "f_lo": {"op": "apply_expression_template", "args": [], "name": "psim_stable_full", "bindings": {"zeta": {"op": "/", "args": [{"op": "floor", "args": [{"op": "*", "args": ["zeta", 100]}]}, 100]}}},
+     "f_hi": {"op": "apply_expression_template", "args": [], "name": "psim_stable_full", "bindings": {"zeta": {"op": "/", "args": [{"op": "+", "args": [{"op": "floor", "args": [{"op": "*", "args": ["zeta", 100]}]}, 1]}, 100]}}},
+     "f_exact": {"op": "apply_expression_template", "args": [], "name": "psim_stable_full", "bindings": {"zeta": "zeta"}},
+     "s": {"op": "*", "args": ["zeta", 100]}}}
+  },
+  "psih_stable_tab": {
+   "params": ["zeta"],
+   "description": "Tabulated stable psi_h (psih_stable), as psim_stable_tab.",
+   "body": {"op": "apply_expression_template", "args": [], "name": "table_interpolation", "bindings": {
+     "f_lo": {"op": "apply_expression_template", "args": [], "name": "psih_stable_full", "bindings": {"zeta": {"op": "/", "args": [{"op": "floor", "args": [{"op": "*", "args": ["zeta", 100]}]}, 100]}}},
+     "f_hi": {"op": "apply_expression_template", "args": [], "name": "psih_stable_full", "bindings": {"zeta": {"op": "/", "args": [{"op": "+", "args": [{"op": "floor", "args": [{"op": "*", "args": ["zeta", 100]}]}, 1]}, 100]}}},
+     "f_exact": {"op": "apply_expression_template", "args": [], "name": "psih_stable_full", "bindings": {"zeta": "zeta"}},
+     "s": {"op": "*", "args": ["zeta", 100]}}}
+  },
+  "psim_unstable_tab": {
+   "params": ["zeta"],
+   "description": "Tabulated unstable psi_m (psim_unstable): table_interpolation of psim_unstable_full at the nodes -n/100, -(n+1)/100, n = floor(-100 zeta), zeta <= 0.",
+   "body": {"op": "apply_expression_template", "args": [], "name": "table_interpolation", "bindings": {
+     "f_lo": {"op": "apply_expression_template", "args": [], "name": "psim_unstable_full", "bindings": {"zeta": {"op": "/", "args": [{"op": "-", "args": [{"op": "floor", "args": [{"op": "*", "args": [{"op": "-", "args": ["zeta"]}, 100]}]}]}, 100]}}},
+     "f_hi": {"op": "apply_expression_template", "args": [], "name": "psim_unstable_full", "bindings": {"zeta": {"op": "/", "args": [{"op": "-", "args": [{"op": "+", "args": [{"op": "floor", "args": [{"op": "*", "args": [{"op": "-", "args": ["zeta"]}, 100]}]}, 1]}]}, 100]}}},
+     "f_exact": {"op": "apply_expression_template", "args": [], "name": "psim_unstable_full", "bindings": {"zeta": "zeta"}},
+     "s": {"op": "*", "args": [{"op": "-", "args": ["zeta"]}, 100]}}}
+  },
+  "psih_unstable_tab": {
+   "params": ["zeta"],
+   "description": "Tabulated unstable psi_h (psih_unstable), as psim_unstable_tab.",
+   "body": {"op": "apply_expression_template", "args": [], "name": "table_interpolation", "bindings": {
+     "f_lo": {"op": "apply_expression_template", "args": [], "name": "psih_unstable_full", "bindings": {"zeta": {"op": "/", "args": [{"op": "-", "args": [{"op": "floor", "args": [{"op": "*", "args": [{"op": "-", "args": ["zeta"]}, 100]}]}]}, 100]}}},
+     "f_hi": {"op": "apply_expression_template", "args": [], "name": "psih_unstable_full", "bindings": {"zeta": {"op": "/", "args": [{"op": "-", "args": [{"op": "+", "args": [{"op": "floor", "args": [{"op": "*", "args": [{"op": "-", "args": ["zeta"]}, 100]}]}, 1]}]}, 100]}}},
+     "f_exact": {"op": "apply_expression_template", "args": [], "name": "psih_unstable_full", "bindings": {"zeta": "zeta"}},
+     "s": {"op": "*", "args": [{"op": "-", "args": ["zeta"]}, 100]}}}
+  },
+  "psi_m_profile": {
+   "params": ["zol", "z_hi", "z_lo", "za"],
+   "description": "Integrated momentum stability correction between the heights z_lo and z_hi for a surface layer whose first-level stability parameter is zol = za/L: psi_m(zol z_hi/za) - psi_m(zol z_lo/za) with the stable tabulated form for zol > 0, the unstable one for zol < 0 and zero in the neutral regime (the kernel's psim = psim_stable(zolzz) - psim_stable(zol0) etc., lines 434-495; the two heights are passed as z + z0 style arguments so that zol z_hi/za reproduces the kernel's zol (za + z0)/za).",
+   "body": {"op": "ifelse", "args": [{"op": ">", "args": ["zol", 0]},
+     {"op": "-", "args": [{"op": "apply_expression_template", "args": [], "name": "psim_stable_tab", "bindings": {"zeta": {"op": "/", "args": [{"op": "*", "args": ["zol", "z_hi"]}, "za"]}}}, {"op": "apply_expression_template", "args": [], "name": "psim_stable_tab", "bindings": {"zeta": {"op": "/", "args": [{"op": "*", "args": ["zol", "z_lo"]}, "za"]}}}]},
+     {"op": "ifelse", "args": [{"op": "<", "args": ["zol", 0]},
+       {"op": "-", "args": [{"op": "apply_expression_template", "args": [], "name": "psim_unstable_tab", "bindings": {"zeta": {"op": "/", "args": [{"op": "*", "args": ["zol", "z_hi"]}, "za"]}}}, {"op": "apply_expression_template", "args": [], "name": "psim_unstable_tab", "bindings": {"zeta": {"op": "/", "args": [{"op": "*", "args": ["zol", "z_lo"]}, "za"]}}}]},
+       0]}]}
+  },
+  "psi_h_profile": {
+   "params": ["zol", "z_hi", "z_lo", "za"],
+   "description": "Integrated heat/moisture stability correction between z_lo and z_hi, psi_h(zol z_hi/za) - psi_h(zol z_lo/za), regime-selected by the sign of zol as psi_m_profile.",
+   "body": {"op": "ifelse", "args": [{"op": ">", "args": ["zol", 0]},
+     {"op": "-", "args": [{"op": "apply_expression_template", "args": [], "name": "psih_stable_tab", "bindings": {"zeta": {"op": "/", "args": [{"op": "*", "args": ["zol", "z_hi"]}, "za"]}}}, {"op": "apply_expression_template", "args": [], "name": "psih_stable_tab", "bindings": {"zeta": {"op": "/", "args": [{"op": "*", "args": ["zol", "z_lo"]}, "za"]}}}]},
+     {"op": "ifelse", "args": [{"op": "<", "args": ["zol", 0]},
+       {"op": "-", "args": [{"op": "apply_expression_template", "args": [], "name": "psih_unstable_tab", "bindings": {"zeta": {"op": "/", "args": [{"op": "*", "args": ["zol", "z_hi"]}, "za"]}}}, {"op": "apply_expression_template", "args": [], "name": "psih_unstable_tab", "bindings": {"zeta": {"op": "/", "args": [{"op": "*", "args": ["zol", "z_lo"]}, "za"]}}}]},
+       0]}]}
+  }
+ }
+}

@@ -1,0 +1,73 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "sfclayrev_surface_roughness",
+  "description": "Roughness lengths of WRF's revised MM5 surface layer as expression templates: the kinematic viscosity of air and the roughness Reynolds number Re* = u* z0/nu; the thermal/moisture roughness over water of Fairall et al. (2003), z0t = 5.5e-5 Re*^-0.6 bounded to [2e-9, 1e-4] m (sf_sfclayrev.F90 lines 539-544); the Garratt (1992)/Brutsaert (1975) roughness-sublayer form z0x = z0 exp(-k (7.3 Re*^(1/4) Pr^(1/2) - 5)) used over water for isftcflx = 2 (lines 640-676); the Zilitinkevich (1995) thermal roughness over land z0t = z0 exp(-C_zil k Re*^(1/2)) with C_zil = 0.1 (iz0tlnd = 2) or the Chen and Zhang (2009) C_zil = 10^(-0.4 z0/0.07) (iz0tlnd = 1) (lines 731-744); and the momentum roughness of the sea surface updated from the friction velocity: the Charnock plus smooth-flow form z0 = czo u*^2/g + 0.11 nu/u* capped at 2.85e-3 m (line 831-833, ECMWF Cy36r1), the AHW hurricane form blending a low-wind Charnock and a high-wind saturating fit (lines 848-854, isftcflx /= 0), and the depth-dependent shallow-water form of Jimenez and Dudhia (2018) (lines 1125-1142, shalwater_z0).",
+  "license": "MIT",
+  "tags": ["wrf", "surface-layer", "sfclayrev", "roughness-length", "expression-templates"],
+  "references": [
+   {"citation": "Fairall, C. W., Bradley, E. F., Hare, J. E., Grachev, A. A., and Edson, J. B. (2003). Bulk parameterization of air-sea fluxes: updates and verification for the COARE algorithm. J. Climate 16, 571-591."},
+   {"citation": "Garratt, J. R. (1992). The Atmospheric Boundary Layer. Cambridge University Press, eq. 4.14 with Brutsaert (1975)."},
+   {"citation": "Zilitinkevich, S. S. (1995). Non-local turbulent transport: pollution dispersion aspects of coherent structure of convective flows. Air Pollution III, vol. I, 53-60."},
+   {"citation": "Chen, F. and Zhang, Y. (2009). On the coupling strength between the land surface and the atmosphere: from viewpoint of surface exchange coefficients. Geophys. Res. Lett. 36, L10404."},
+   {"citation": "Jimenez, P. A. and Dudhia, J. (2018). On the need to modify the sea surface roughness formulation over shallow waters. J. Appl. Meteor. Climatol. 57, 1101-1110."},
+   {"citation": "WRF 4.8 phys/physics_mmm/sf_sfclayrev.F90 lines 539-544, 640-676, 731-744, 823-856, 1125-1142."}
+  ]
+ },
+ "expression_templates": {
+  "kinematic_viscosity_of_air_linear": {
+   "params": ["T", "nu0", "dnu_dT", "T0"],
+   "description": "Kinematic viscosity of air, linear in temperature: nu0 + dnu_dT (T - T0) (the kernel's (1.32 + 0.009 (T - 273.15)) 1e-5 m^2/s).",
+   "body": {"op": "+", "args": ["nu0", {"op": "*", "args": ["dnu_dT", {"op": "-", "args": ["T", "T0"]}]}]}
+  },
+  "roughness_reynolds_number": {
+   "params": ["ust", "z0", "nu"],
+   "description": "Roughness Reynolds number Re* = u* z0/nu.",
+   "body": {"op": "/", "args": [{"op": "*", "args": ["ust", "z0"]}, "nu"]}
+  },
+  "fairall_scalar_roughness": {
+   "params": ["restar", "coef", "expo", "z_min", "z_max"],
+   "description": "Fairall et al. (2003) scalar roughness over water, coef Re*^expo bounded to [z_min, z_max] (z0t = z0q = min(max(5.5e-5 Re*^-0.6, 2e-9), 1e-4) m).",
+   "body": {"op": "max", "args": [{"op": "min", "args": [{"op": "*", "args": ["coef", {"op": "^", "args": ["restar", "expo"]}]}, "z_max"]}, "z_min"]}
+  },
+  "garratt_scalar_roughness": {
+   "params": ["z0", "restar", "k", "a", "b", "ratio"],
+   "description": "Garratt (1992) roughness-sublayer scalar roughness z0x = z0 / exp(k (a Re*^(1/4) ratio^(1/2) - b)), with ratio the Prandtl (0.71, temperature) or Schmidt (0.60, moisture) number, k = 0.40, a = 7.3, b = 5 (isftcflx = 2).",
+   "body": {"op": "/", "args": ["z0", {"op": "exp", "args": [{"op": "*", "args": ["k", {"op": "-", "args": [{"op": "*", "args": ["a", {"op": "sqrt", "args": [{"op": "sqrt", "args": ["restar"]}]}, {"op": "sqrt", "args": ["ratio"]}]}, "b"]}]}]}]}
+  },
+  "chen_zhang_czil": {
+   "params": ["z0", "expo", "z0_ref"],
+   "description": "Chen and Zhang (2009) roughness-dependent Zilitinkevich coefficient C_zil = 10^(expo z0/z0_ref) with expo = -0.4, z0_ref = 0.07 m (iz0tlnd = 1).",
+   "body": {"op": "^", "args": [10, {"op": "*", "args": ["expo", {"op": "/", "args": ["z0", "z0_ref"]}]}]}
+  },
+  "zilitinkevich_thermal_roughness": {
+   "params": ["z0", "restar", "czil", "karman"],
+   "description": "Zilitinkevich (1995) thermal roughness over land z0t = z0 / exp(C_zil k Re*^(1/2)).",
+   "body": {"op": "/", "args": ["z0", {"op": "exp", "args": [{"op": "*", "args": ["czil", "karman", {"op": "sqrt", "args": ["restar"]}]}]}]}
+  },
+  "sea_roughness_charnock_smooth": {
+   "params": ["ust", "g", "czo", "c_smooth", "nu", "z0_max"],
+   "description": "Sea-surface momentum roughness, Charnock plus smooth-flow term: min(czo u*^2/g + c_smooth nu/u*, z0_max) (ECMWF Cy36r1 form, lines 831-833).",
+   "body": {"op": "min", "args": [{"op": "+", "args": [{"op": "/", "args": [{"op": "*", "args": ["czo", "ust", "ust"]}, "g"]}, {"op": "/", "args": [{"op": "*", "args": ["c_smooth", "nu"]}, "ust"]}]}, "z0_max"]}
+  },
+  "sea_roughness_ahw": {
+   "params": ["ust", "g", "u_ref", "zw_exp", "charnock", "ozo", "zn2_coef", "zn2_exp", "zn2_ust_exp", "unit_velocity", "c_smooth", "nu", "ust_min", "z0_min", "z0_max"],
+   "description": "AHW (Advanced Hurricane WRF, 2012) sea roughness for isftcflx /= 0: a blend (1 - w) zn1 + w zn2 of the low-wind Charnock form zn1 = 0.011 u*^2/g + ozo and the high-wind saturating form zn2 = 10 exp(-9.5 (u*/1 m/s)^-0.3333) + 0.11 nu/max(u*, 0.01), with weight w = min((u*/1.06)^0.3, 1), bounded to [1.27e-7, 2.85e-3] m (lines 848-854).",
+   "body": {"op": "max", "args": [{"op": "min", "args": [
+     {"op": "+", "args": [
+       {"op": "*", "args": [{"op": "-", "args": [1, {"op": "min", "args": [{"op": "^", "args": [{"op": "/", "args": ["ust", "u_ref"]}, "zw_exp"]}, 1]}]},
+                            {"op": "+", "args": [{"op": "/", "args": [{"op": "*", "args": ["charnock", "ust", "ust"]}, "g"]}, "ozo"]}]},
+       {"op": "*", "args": [{"op": "min", "args": [{"op": "^", "args": [{"op": "/", "args": ["ust", "u_ref"]}, "zw_exp"]}, 1]},
+                            {"op": "+", "args": [{"op": "*", "args": ["zn2_coef", {"op": "exp", "args": [{"op": "*", "args": [{"op": "-", "args": ["zn2_exp"]}, {"op": "^", "args": [{"op": "/", "args": ["ust", "unit_velocity"]}, "zn2_ust_exp"]}]}]}]},
+                                                 {"op": "/", "args": [{"op": "*", "args": ["c_smooth", "nu"]}, {"op": "max", "args": ["ust", "ust_min"]}]}]}]}]},
+     "z0_max"]}, "z0_min"]}
+  },
+  "shallow_water_roughness": {
+   "params": ["depth", "ust", "depth_min", "depth_max", "b_coef", "b_scale", "c1", "c2", "c3", "z0_max", "unit_length"],
+   "description": "Jimenez and Dudhia (2018) depth-dependent sea roughness: with the depth clamped to [10, 100] m and b = (1/30) ln(1260 m/depth), z0 = min(exp((2.7 u* - 1.8/b)/(u* + 0.17/b)), 0.1) m (depth_dependent_z0, lines 1125-1142; the exponential is a pure number used as metres, hence the unit_length factor).",
+   "body": {"op": "min", "args": [{"op": "*", "args": ["unit_length", {"op": "exp", "args": [{"op": "/", "args": [
+      {"op": "-", "args": [{"op": "*", "args": ["c1", "ust"]}, {"op": "/", "args": ["c2", {"op": "*", "args": ["b_coef", {"op": "log", "args": [{"op": "/", "args": ["b_scale", {"op": "min", "args": [{"op": "max", "args": ["depth", "depth_min"]}, "depth_max"]}]}]}]}]}]},
+      {"op": "+", "args": ["ust", {"op": "/", "args": ["c3", {"op": "*", "args": ["b_coef", {"op": "log", "args": [{"op": "/", "args": ["b_scale", {"op": "min", "args": [{"op": "max", "args": ["depth", "depth_min"]}, "depth_max"]}]}]}]}]}]}]}]}]}, "z0_max"]}
+  }
+ }
+}

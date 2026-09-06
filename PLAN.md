@@ -363,6 +363,22 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   `dTsk_dt`; tolerances 5–10× above, per assertion. 84 assertions green. The
   Bolton saturation template lives in `slab_templates.esm` pending a second
   consumer (sfclayrev) before moving to `lib/wrf_thermo.esm`.
+- **sfclayrev done.** Full `sf_sfclayrev_run` as scalar observeds (regimes
+  1/3/4, first-guess branch, Fairall/Garratt/Zilitinkevich roughness,
+  Charnock/AHW/shallow-water z0, `isfflx`/`scm_force_flux` options); the
+  Ri_b → z/L secant iteration is transcribed step by step as a 33-cell
+  §4.3.1.1 recurrence because the kernel stops it at |x1−x2| ≤ 0.01 (up to
+  8e-5 relative from the root; the residual equation is exposed for a consumer
+  who wants the converged physics); psi lookup tables reproduced; 610
+  assertions in 18 regimes (12 synthetic, Fortran-generated water/option
+  regimes since the SCM is land-only with default options); residual ≤ 4e-6
+  relative (real32 `svpt0` through θ_v1 − θ_vs), tolerances 2e-5/1e-6.
+  EarthSciModels `surface_layer_profile.esm` (Businger-Dyer) shares no
+  function with sfclayrev (Cheng-Brutsaert / Kansas-free-convection blend), so
+  nothing was reused. Lessons: a template library may layer on another via
+  top-level `expression_template_imports`; the units checker rejects `^0.33`
+  of a dimensioned base (unit-valued parameters); coupled iterations must be
+  interleaved into one recurrence array.
 - **RRTM LW stage 1 done.** Heating-rate convention proved:
   `HTR(L−1) = HEATFAC (FNET(L−1) − FNET(L))/(PZ(L−1) − PZ(L))` is the heating
   of layer L; RRTM indexes bottom-up so `TOTUFLUX/TOTDFLUX(0..kte)` map onto
