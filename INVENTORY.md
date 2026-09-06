@@ -33,9 +33,9 @@ Status values: `not started` · `instrumented` · `stub` (tests written, on this
 |---|---|---|---|
 | Anthropogenic emissions | `chem/emissions_driver.F` | `earthsci_data/nei2016_monthly.esm` (pattern) | not started |
 | Biogenic emissions | `chem/module_bioemi_*.F` | — | not started |
-| Dry deposition (Wesely) | `chem/dry_dep_driver.F`, `module_dep_simple.F` | `atmospheric_deposition/wesley_dry_gas.esm` | not started |
-| Photolysis | `chem/module_phot_fastj.F` / TUV | `gaschem/fastjx/*` | not started |
-| RADM2 gas mechanism | `chem/KPP/mechanisms/radm2` | — | not started |
+| Dry deposition (Wesely) | `chem/dry_dep_driver.F`, `module_dep_simple.F` | `atmospheric_deposition/wesley_dry_gas.esm` (covers ≈20 RADM2 species by name/synonym) | not started |
+| Photolysis | `chem/module_phot_fastj.F` / TUV | `gaschem/fastjx/*` (covers 10 of RADM2's 21 j inputs) | not started |
+| RADM2 gas mechanism | `chem/KPP/mechanisms/radm2` | — | physics, rate coefficients (Phase 0/1, 2026-09-06): `components/gaschem/radm2/radm2.esm` (`RADM2RateConstants` model + `RADM2` reaction system, 157 reactions, 61 species) + `radm2_ratelaws.esm` (11 WRF rate-law templates); 405/405 `./esm test` (135 thermal rate coefficients × 3 box states vs the real64 KPP box driver; rel 1e-9, rc_n2o5 1e-6); reaction-system trajectory tests not executable in the Rust CLI (gap p); no WRF-Chem reference run (typical box states only) |
 | Wet scavenging | `chem/module_wetscav_driver.F` | `atmospheric_deposition/wet_deposition.esm` | not started |
 | GOCART aerosols | `chem/module_gocart_*.F` | — | not started |
 

@@ -480,6 +480,27 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   (`esm-repro/fire/probe_observed_named_t.esm`). Not started: atmosphere→fire
   wind (`Interp_profile`), the coupling file, reinitialisation, ignition lines,
   smoke; the rain/wetting moisture branch is transcribed but untested.
+- **RADM2 (EqAtmChem) 2026-09-06.** KPP 2.1 built on the host (flex/bison;
+  two Makefile patches), radm2 generated from `chem/KPP/mechanisms/radm2`,
+  standalone real64 box driver in the container (`data/eqwefic/chem_build/
+  driver`: `Update_RCONST` with WRF's include lists expanded, `radm2_Fun`/
+  `IRRFun`, Rodas3 trajectories) dumping RCONST/A/Vdot/trajectories for three
+  documented typical states (no WRF-Chem run). `components/gaschem/radm2/`:
+  11 hand-authored WRF rate-law templates; `radm2.esm` translated from the
+  .eqn by `radm2_from_kpp.py` (`data/eqwefic/chem_build`) with the reaction
+  rates as scoped references to the `RADM2RateConstants` model so every
+  coefficient lives once; negative KPP product coefficient (CSL+OH, −0.9 OH)
+  as a shadow reaction. 405 assertions green in Rust at rel 1e-9 (rc_n2o5
+  1e-6, WRF evaluates it in real32). Gaps (EarthSciAST issue #201): (p) the
+  Rust CLI runs no `reaction_systems` tests; (q) an observed `D(x,t)`
+  evaluates to 0, so Vdot cannot be asserted at t=0; bare
+  `parameter_overrides` resolve per component in Rust but document-wide in
+  Python (model parameter renamed `M_air` after a one-off gate check).
+  Remaining: Vdot/stoichiometry verification once (p)/(q) are fixed; a
+  WRF-Chem reference run (chem-enabled WRF build with KPP, emissions/
+  photolysis inputs, dump hooks in `chem/chem_driver.F` around the KPP
+  mechanism driver); RADM2SORG/aerosol; emissions, Wesely and FastJX
+  couplings (FastJX covers 10 of 21 j inputs; Wesely ≈20 species).
 - **RRTM LW stage 1 done.** Heating-rate convention proved:
   `HTR(L−1) = HEATFAC (FNET(L−1) − FNET(L))/(PZ(L−1) − PZ(L))` is the heating
   of layer L; RRTM indexes bottom-up so `TOTUFLUX/TOTDFLUX(0..kte)` map onto
