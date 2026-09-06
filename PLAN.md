@@ -497,6 +497,24 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   (`esm-repro/fire/probe_observed_named_t.esm`). Not started: atmosphere→fire
   wind (`Interp_profile`), the coupling file, reinitialisation, ignition lines,
   smoke; the rain/wetting moisture branch is transcribed but untested.
+  Atmosphere–fire coupling 2026-09-06: fire_behavior fork 8d519c6 adds
+  ESM_DUMP hooks to `Calc_fire_wind` / `Interp_wrfwinds_to_cfbm` /
+  `Provide_atm_feedback`; WRF fork branch `earthsciml-instrumented-fire`
+  (c01746f) builds WRF 4.8 with CMake + ENABLE_CFBM + ESM_DUMP in the container
+  (25 min; the classic `./compile` has no CFBM), but no shipped case can run
+  CFBM (Lambert-only; ideal em_fire is map_proj 0) and test7/wrf.nc is an
+  ifire = 2 (SFIRE) output, so the coupled references are fire_behavior's own
+  WRF-side routines replayed by `data/eqwefic/fire_build/feedback_driver` on
+  wrf.nc columns (`dumps/fire_wrf/`). Components: `FireWindWRFFire` (21
+  assertions, all Interp_profile branches via fire-wind-height overrides) and
+  `FireFluxToAtmosphereWRFFire` (54; grnhfx aggregation identical to SFIRE's,
+  Fire_tendency differs from SFIRE's prop_heat profile by 0.7–1.5 %);
+  `couplings/fire_atmosphere_column.esm` chains FireHeatFlux → flux/tendency (9
+  assertions). Remaining: a real-data Lambert WRF+CFBM case for a true in-model
+  coupled reference; the horizontal atm→fire mapping (nearest/bilinear,
+  projection) and the fire → smoke tracer path. Authoring note: an `aggregate`
+  with `output_idx: ["k"]` is a shaped map; a scalar reduction needs
+  `output_idx: []`, otherwise the observed is silently unmaterialised.
 - **RADM2 (EqAtmChem) 2026-09-06.** KPP 2.1 built on the host (flex/bison;
   two Makefile patches), radm2 generated from `chem/KPP/mechanisms/radm2`,
   standalone real64 box driver in the container (`data/eqwefic/chem_build/

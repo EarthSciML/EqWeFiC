@@ -1,0 +1,1663 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "FireFluxToAtmosphereWRFFire",
+  "description": "Fire -> atmosphere feedback of NCAR fire_behavior within WRF (io/wrf_mod.F90: Provide_atm_feedback and Fire_tendency). (1) Aggregation: the sensible and latent heat fluxes of the sr_x x sr_y fire cells under an atmosphere cell are averaged, grnhfx = mean_s fgrnhfx_s (W/m^2); the canopy fluxes canhfx/canqfx are inputs (0 in fire_behavior, which has no crown fire). (2) Vertical distribution: the surface flux decays exponentially with height above ground with the extinction depth alfg (fire_ext_grnd), the canopy flux is constant up to z1can (fire_crwn_hgt) and decays with alfc above it; the kinematic fluxes on the w-levels are F_h(z) = f grnhfx e^(-z/alfg)/cp + canhfx c(z)/cp and F_q(z) = f grnqfx e^(-z/alfg)/xlv + canqfx c(z)/xlv with f = fire_atm_feedback. (3) The layer tendencies are the flux divergence, written as the PDE dtheta/dt = -(1/rho) dF_h/dz and lowered on the column_nonuniform_1d grid (ze = WRF z_at_w) by the face-flux rule, which reproduces WRF's (F_{k+1} - F_k)/dz8w_k exactly; WRF stores them mass-weighted, rthfrten = (c1h mu + c2h) dtheta/dt (Pa K/s; the hybrid-coordinate column mass factor replaces calculate_phy_tend), and leaves the top layer at 0 (its loop stops at kde - 2): rthfrten_wrf makes that truncation explicit, rthfrten itself carries the flux of the extrapolated top face. Note WRF divides the heat flux by cp and calls the result a theta tendency (theta ~ T, no Exner factor), transcribed as written. Compared with WRF-SFIRE's fire_tendency (phys/module_fr_fire_atm.F, ifire = 2): the aggregation is identical (test7/wrf.nc GRNHFX reproduced to 0), but SFIRE multiplies the profile by a prop_heat(i,k,j) factor, so its RTHFRTEN differs from this component by 0.7-1.5 % in test7/wrf.nc. Tests: fire_behavior's Provide_atm_feedback replayed by the EarthSciML feedback driver (data/eqwefic/fire_build/feedback_driver, instrumented firelib 8d519c6, real32) on the atmosphere columns of test7/wrf.nc frames 5 and 10 (t = 5, 10 s) with (a) the fire-mesh fluxes stored in wrf.nc and (b) fire_behavior's own fluxes of the standalone test7 run at step 10 (the CFBM-consistent coupled chain); rel 1e-5.",
+  "license": "MIT",
+  "tags": [
+   "wildland_fire",
+   "fire_behavior",
+   "wrf-fire",
+   "coupling",
+   "heat-flux"
+  ],
+  "references": [
+   {
+    "citation": "NCAR Community Fire Behavior Model (fire_behavior), develop @ eb77580; instrumented fork ctessum-claude/fire_behavior branch earthsciml-instrumented (8d519c6: coupling dumps). WRF v4.8.0 registry.fire defaults fire_ext_grnd = fire_ext_crwn = 50 m, fire_crwn_hgt = 15 m, fire_atm_feedback = 1."
+   }
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {
+   "type": "integer",
+   "default": 44,
+   "description": "Number of atmosphere layers (WRF kte = kde - 1; 44 for the 45-level test7 column). Bound into the column grid at the import edge."
+  },
+  "NSUB": {
+   "type": "integer",
+   "default": 16,
+   "description": "Number of fire cells under one atmosphere cell, sr_x * sr_y (test7: 4 x 4)."
+  }
+ },
+ "index_sets": {
+  "subcell": {
+   "kind": "interval",
+   "size": "NSUB"
+  }
+ },
+ "models": {
+  "FireFluxToAtmosphereWRFFire": {
+   "expression_template_imports": [
+    {
+     "ref": "../../../../EarthSciDiscretizations/grids/column_nonuniform_1d/grid.esm",
+     "bindings": {
+      "NLEV": "NLEV"
+     }
+    },
+    {
+     "ref": "../../../../EarthSciDiscretizations/grids/column_nonuniform_1d/rules/face_flux_D_lev_supplied_faces.esm",
+     "bindings": {
+      "NLEV": "NLEV"
+     }
+    }
+   ],
+   "subsystems": {
+    "wrf": {
+     "ref": "../../../lib/wrf_constants.esm"
+    }
+   },
+   "variables": {
+    "fgrnhfx_block": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "subcell"
+     ],
+     "description": "Sensible heat flux of the fire cells under the atmosphere cell (fire_behavior fgrnhfx = FireHeatFlux phi_h per fire cell, Fortran order over the sr_x x sr_y block), consumer-supplied through `input_fgrnhfx_block`."
+    },
+    "fgrnqfx_block": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "subcell"
+     ],
+     "description": "Latent heat flux of the fire cells (fgrnqfx = FireHeatFlux phi_q), consumer-supplied through `input_fgrnqfx_block`."
+    },
+    "s_coupled": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Coupling hook: index (1-based) of the fire cell whose fluxes are taken from phi_h_in/phi_q_in instead of the block (0 = none). Lets a coupled document drive one fire cell's flux from a FireHeatFlux model."
+    },
+    "phi_h_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Coupling target: sensible heat flux of fire cell s_coupled (variable_map from FireHeatFlux.phi_h)."
+    },
+    "phi_q_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Coupling target: latent heat flux of fire cell s_coupled (variable_map from FireHeatFlux.phi_q)."
+    },
+    "fgrnhfx_eff": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "subcell"
+     ],
+     "description": "Block fluxes with cell s_coupled replaced by phi_h_in."
+    },
+    "fgrnqfx_eff": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "subcell"
+     ],
+     "description": "Block fluxes with cell s_coupled replaced by phi_q_in."
+    },
+    "canhfx": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Canopy (crown fire) sensible heat flux on the atmosphere cell; 0 in fire_behavior."
+    },
+    "canqfx": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Canopy latent heat flux; 0 in fire_behavior."
+    },
+    "mu": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 80000.0,
+     "description": "Dry air mass of the column (WRF mut = mu + mub)."
+    },
+    "alfg": {
+     "type": "parameter",
+     "units": "m",
+     "default": 50.0,
+     "description": "Extinction depth of the surface fire heat (fire_ext_grnd)."
+    },
+    "alfc": {
+     "type": "parameter",
+     "units": "m",
+     "default": 50.0,
+     "description": "Extinction depth of the crown fire heat above z1can (fire_ext_crwn)."
+    },
+    "z1can": {
+     "type": "parameter",
+     "units": "m",
+     "default": 15.0,
+     "description": "Height of the crown fire heat release (fire_crwn_hgt)."
+    },
+    "fire_atm_feedback": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Multiplier of the surface fluxes fed back to the atmosphere (fire_atm_feedback; 0 switches the feedback off, in which case WRF returns zero tendencies)."
+    },
+    "ze": {
+     "type": "unknown",
+     "units": "m",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "Height of the w-levels (WRF z_at_w, above sea level), the grid's geometry input, consumer-supplied through `input_ze`."
+    },
+    "dz": {
+     "type": "unknown",
+     "units": "m",
+     "shape": [
+      "lev"
+     ],
+     "description": "Layer thickness ze[k+1] - ze[k] (WRF dz8w), from the grid template."
+    },
+    "rho": {
+     "type": "unknown",
+     "units": "kg/m^3",
+     "shape": [
+      "lev"
+     ],
+     "description": "Layer air density (WRF rho), consumer-supplied through `input_rho`."
+    },
+    "c1h": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "lev"
+     ],
+     "description": "Hybrid-coordinate weight c1h of the mass levels, consumer-supplied through `input_c1h`."
+    },
+    "c2h": {
+     "type": "unknown",
+     "units": "Pa",
+     "shape": [
+      "lev"
+     ],
+     "description": "Hybrid-coordinate weight c2h of the mass levels, consumer-supplied through `input_c2h`."
+    },
+    "avgw": {
+     "type": "unknown",
+     "units": "1",
+     "description": "1/(sr_x sr_y), the averaging weight of the fire cells."
+    },
+    "grnhfx": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Surface sensible heat flux on the atmosphere cell: mean of the fire-cell fluxes (Provide_atm_feedback grnhfx)."
+    },
+    "grnqfx": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Surface latent heat flux on the atmosphere cell (grnqfx)."
+    },
+    "z_w": {
+     "type": "unknown",
+     "units": "m",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "Height of the w-levels above ground, ze - ze[1]."
+    },
+    "decay_g": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "Surface-fire decay e^(-z_w/alfg)."
+    },
+    "decay_c": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "Crown-fire profile: 1 below z1can, e^(-(z_w - z1can)/alfc) above."
+    },
+    "F_h": {
+     "type": "unknown",
+     "units": "K*kg/m^2/s",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "Kinematic sensible heat flux on the w-levels (Fire_tendency hfx): (fire_atm_feedback grnhfx decay_g + canhfx decay_c)/cp."
+    },
+    "F_q": {
+     "type": "unknown",
+     "units": "kg/m^2/s",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "Kinematic moisture flux on the w-levels (Fire_tendency qfx): (fire_atm_feedback grnqfx decay_g + canqfx decay_c)/xlv."
+    },
+    "dtheta_dt": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Potential-temperature tendency -(1/rho) dF_h/dz of each layer (the physics; layer NLEV uses the extrapolated top face)."
+    },
+    "dqv_dt": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Water-vapour tendency -(1/rho) dF_q/dz."
+    },
+    "mass_factor": {
+     "type": "unknown",
+     "units": "Pa",
+     "shape": [
+      "lev"
+     ],
+     "description": "c1h mu + c2h, the hybrid-coordinate column mass WRF multiplies the tendencies by."
+    },
+    "rthfrten": {
+     "type": "unknown",
+     "units": "Pa*K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Mass-weighted theta tendency as WRF stores it, (c1h mu + c2h) dtheta_dt."
+    },
+    "rqvfrten": {
+     "type": "unknown",
+     "units": "Pa/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Mass-weighted qv tendency, (c1h mu + c2h) dqv_dt."
+    },
+    "rthfrten_wrf": {
+     "type": "unknown",
+     "units": "Pa*K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "rthfrten with the top layer set to 0, as WRF's Fire_tendency leaves it (loop k = kts .. kde - 2)."
+    },
+    "rqvfrten_wrf": {
+     "type": "unknown",
+     "units": "Pa/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "rqvfrten with the top layer set to 0 (WRF truncation)."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "fgrnhfx_block",
+     "rhs": {
+      "op": "input_fgrnhfx_block",
+      "args": []
+     }
+    },
+    {
+     "lhs": "fgrnqfx_block",
+     "rhs": {
+      "op": "input_fgrnqfx_block",
+      "args": []
+     }
+    },
+    {
+     "lhs": "fgrnhfx_eff",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "s"
+      ],
+      "args": [],
+      "ranges": {
+       "s": {
+        "from": "subcell"
+       }
+      },
+      "expr": {
+       "op": "ifelse",
+       "args": [
+        {
+         "op": "==",
+         "args": [
+          "s",
+          "s_coupled"
+         ]
+        },
+        "phi_h_in",
+        {
+         "op": "index",
+         "args": [
+          "fgrnhfx_block",
+          "s"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "fgrnqfx_eff",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "s"
+      ],
+      "args": [],
+      "ranges": {
+       "s": {
+        "from": "subcell"
+       }
+      },
+      "expr": {
+       "op": "ifelse",
+       "args": [
+        {
+         "op": "==",
+         "args": [
+          "s",
+          "s_coupled"
+         ]
+        },
+        "phi_q_in",
+        {
+         "op": "index",
+         "args": [
+          "fgrnqfx_block",
+          "s"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "avgw",
+     "rhs": {
+      "op": "/",
+      "args": [
+       1.0,
+       "NSUB"
+      ]
+     }
+    },
+    {
+     "lhs": "grnhfx",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "avgw",
+       {
+        "op": "aggregate",
+        "output_idx": [],
+        "args": [],
+        "ranges": {
+         "s": {
+          "from": "subcell"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          "fgrnhfx_eff",
+          "s"
+         ]
+        }
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "grnqfx",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "avgw",
+       {
+        "op": "aggregate",
+        "output_idx": [],
+        "args": [],
+        "ranges": {
+         "s": {
+          "from": "subcell"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          "fgrnqfx_eff",
+          "s"
+         ]
+        }
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "ze",
+     "rhs": {
+      "op": "input_ze",
+      "args": []
+     }
+    },
+    {
+     "lhs": "dz",
+     "rhs": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "column_cell_thickness",
+      "bindings": {
+       "ze": "ze"
+      }
+     }
+    },
+    {
+     "lhs": "rho",
+     "rhs": {
+      "op": "input_rho",
+      "args": []
+     }
+    },
+    {
+     "lhs": "c1h",
+     "rhs": {
+      "op": "input_c1h",
+      "args": []
+     }
+    },
+    {
+     "lhs": "c2h",
+     "rhs": {
+      "op": "input_c2h",
+      "args": []
+     }
+    },
+    {
+     "lhs": "z_w",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "n"
+      ],
+      "args": [],
+      "ranges": {
+       "n": {
+        "from": "lev_nodes"
+       }
+      },
+      "expr": {
+       "op": "-",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "ze",
+          "n"
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "ze",
+          1
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "decay_g",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "n"
+      ],
+      "args": [],
+      "ranges": {
+       "n": {
+        "from": "lev_nodes"
+       }
+      },
+      "expr": {
+       "op": "exp",
+       "args": [
+        {
+         "op": "-",
+         "args": [
+          {
+           "op": "/",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "z_w",
+              "n"
+             ]
+            },
+            "alfg"
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "decay_c",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "n"
+      ],
+      "args": [],
+      "ranges": {
+       "n": {
+        "from": "lev_nodes"
+       }
+      },
+      "expr": {
+       "op": "ifelse",
+       "args": [
+        {
+         "op": "<",
+         "args": [
+          {
+           "op": "index",
+           "args": [
+            "z_w",
+            "n"
+           ]
+          },
+          "z1can"
+         ]
+        },
+        1.0,
+        {
+         "op": "exp",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "/",
+             "args": [
+              {
+               "op": "-",
+               "args": [
+                {
+                 "op": "index",
+                 "args": [
+                  "z_w",
+                  "n"
+                 ]
+                },
+                "z1can"
+               ]
+              },
+              "alfc"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "F_h",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "fire_atm_feedback",
+           "grnhfx",
+           "decay_g"
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "canhfx",
+           "decay_c"
+          ]
+         }
+        ]
+       },
+       "wrf.cp"
+      ]
+     }
+    },
+    {
+     "lhs": "F_q",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "fire_atm_feedback",
+           "grnqfx",
+           "decay_g"
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "canqfx",
+           "decay_c"
+          ]
+         }
+        ]
+       },
+       "wrf.xlv"
+      ]
+     }
+    },
+    {
+     "lhs": "dtheta_dt",
+     "rhs": {
+      "op": "*",
+      "args": [
+       -1.0,
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "D",
+          "args": [
+           "F_h"
+          ],
+          "wrt": "lev"
+         },
+         "rho"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "dqv_dt",
+     "rhs": {
+      "op": "*",
+      "args": [
+       -1.0,
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "D",
+          "args": [
+           "F_q"
+          ],
+          "wrt": "lev"
+         },
+         "rho"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "mass_factor",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         "c1h",
+         "mu"
+        ]
+       },
+       "c2h"
+      ]
+     }
+    },
+    {
+     "lhs": "rthfrten",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "mass_factor",
+       "dtheta_dt"
+      ]
+     }
+    },
+    {
+     "lhs": "rqvfrten",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "mass_factor",
+       "dqv_dt"
+      ]
+     }
+    },
+    {
+     "lhs": "rthfrten_wrf",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "k"
+      ],
+      "args": [],
+      "ranges": {
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "ifelse",
+       "args": [
+        {
+         "op": "<",
+         "args": [
+          "k",
+          "NLEV"
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "rthfrten",
+          "k"
+         ]
+        },
+        0.0
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "rqvfrten_wrf",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "k"
+      ],
+      "args": [],
+      "ranges": {
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "ifelse",
+       "args": [
+        {
+         "op": "<",
+         "args": [
+          "k",
+          "NLEV"
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "rqvfrten",
+          "k"
+         ]
+        },
+        0.0
+       ]
+      }
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "frame5_wrfnc_fluxes_col_6_16",
+       "description": "Reference: fire_behavior's Provide_atm_feedback/Fire_tendency (io/wrf_mod.F90) replayed by the EarthSciML feedback driver (data/eqwefic/fire_build/feedback_driver, instrumented firelib 8d519c6, default real32; alfg = alfc = 50 m, z1can = 15 m, fire_atm_feedback = 1, canopy fluxes 0) on the atmosphere column of test7/wrf.nc (WRF 4.x, 19 x 19 x 44 layers, dx = 100 m, sr = 4) with the strongest surface heat flux. The column geometry (z_at_w, dz8w, rho, mut, c1h, c2h) is the frame's end-of-step state. Single precision: rel 1e-5; Linf tolerances are 1e-5 of the column maximum. Regime: frame 5 (t = 5 s), atmosphere cell (i,j) = (6,16), fire-mesh fluxes as stored in wrf.nc (WRF-SFIRE's FGRNHFX; grnhfx 1.10e5 W/m^2).",
+       "parameter_overrides": {
+         "mu": 79500.8203125,
+         "alfg": 50.0,
+         "alfc": 50.0,
+         "z1can": 15.0,
+         "fire_atm_feedback": 1.0,
+         "canhfx": 0.0,
+         "canqfx": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/frame5_wrfnc_fluxes_col_6_16_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "grnhfx",
+           "time": 0.0,
+           "expected": 110332.90625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "grnqfx",
+           "time": 0.0,
+           "expected": 10126.349609375,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rthfrten_wrf",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [137739.640625, 72040.28125, 37683.52734375, 19443.494140625, 9749.4130859375, 4671.7998046875, 2101.6943359375, 873.73681640625, 330.2054748535156, 111.85107421875, 33.4923210144043, 8.729217529296875, 1.9527802467346191, 0.36793866753578186, 0.05738754943013191, 0.007269253488630056, 0.0007319336291402578, 5.723633148591034e-05, 3.390333404240664e-06, 1.4839815776213072e-07, 4.660875685402743e-09, 1.0162617969378118e-10, 1.4847642429774432e-12, 1.3979486818626544e-14, 8.096908380301045e-17, 2.7292265964273675e-19, 5.032120237904295e-22, 4.703707886010921e-25, 2.0438861719849056e-28, 3.716904027218854e-32, 2.4585651964496935e-36, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 2.0
+           }
+         },
+         {
+           "variable": "rqvfrten_wrf",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [5.079450607299805, 2.6566431522369385, 1.3896620273590088, 0.7170215249061584, 0.35953089594841003, 0.1722828447818756, 0.07750456035137177, 0.03222096338868141, 0.012177047319710255, 0.004124753177165985, 0.0012351025361567736, 0.0003219090576749295, 7.201304833870381e-05, 1.3568545909947716e-05, 2.1162913981243037e-06, 2.6806958430825034e-07, 2.6991655133201675e-08, 2.1107149361654365e-09, 1.25025961805747e-10, 5.472507429854501e-12, 1.718799934194784e-13, 3.7476875342477584e-15, 5.4753923628747184e-17, 5.155241867517297e-19, 2.9859123888858073e-21, 1.0064621905833482e-23, 1.8557045297134507e-26, 1.734595274333271e-29, 7.537276389628231e-33, 1.3720196221073372e-36, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 0.0001
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 137739.640625,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 72040.28125,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": 37683.52734375,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 5
+           },
+           "expected": 9749.4130859375,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 8
+           },
+           "expected": 873.73681640625,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 12
+           },
+           "expected": 8.729217529296875,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 20
+           },
+           "expected": 1.4839815776213072e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 30
+           },
+           "expected": 3.716904027218854e-32,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 43
+           },
+           "expected": -0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 5.079450607299805,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 2.6566431522369385,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 5
+           },
+           "expected": 0.35953089594841003,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 12
+           },
+           "expected": 0.0003219090576749295,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 30
+           },
+           "expected": 1.3720196221073372e-36,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         }
+       ]
+     },
+     {
+       "id": "frame10_wrfnc_fluxes_col_5_16",
+       "description": "Reference: fire_behavior's Provide_atm_feedback/Fire_tendency (io/wrf_mod.F90) replayed by the EarthSciML feedback driver (data/eqwefic/fire_build/feedback_driver, instrumented firelib 8d519c6, default real32; alfg = alfc = 50 m, z1can = 15 m, fire_atm_feedback = 1, canopy fluxes 0) on the atmosphere column of test7/wrf.nc (WRF 4.x, 19 x 19 x 44 layers, dx = 100 m, sr = 4) with the strongest surface heat flux. The column geometry (z_at_w, dz8w, rho, mut, c1h, c2h) is the frame's end-of-step state. Single precision: rel 1e-5; Linf tolerances are 1e-5 of the column maximum. Regime: frame 10 (t = 10 s), atmosphere cell (5,16), fire-mesh fluxes as stored in wrf.nc (grnhfx 7.1e5 W/m^2, rthfrten up to 9.3e5 Pa K/s).",
+       "parameter_overrides": {
+         "mu": 79477.9375,
+         "alfg": 50.0,
+         "alfc": 50.0,
+         "z1can": 15.0,
+         "fire_atm_feedback": 1.0,
+         "canhfx": 0.0,
+         "canqfx": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/frame10_wrfnc_fluxes_col_5_16_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "grnhfx",
+           "time": 0.0,
+           "expected": 710790.75,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "grnqfx",
+           "time": 0.0,
+           "expected": 65236.35546875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rthfrten_wrf",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [930068.0625, 454838.0, 229968.578125, 116589.65625, 57929.046875, 27629.361328125, 12399.9794921875, 5149.5087890625, 1945.25146484375, 658.8323974609375, 197.27931213378906, 51.42643356323242, 11.503874778747559, 2.1679344177246094, 0.33823513984680176, 0.04285815730690956, 0.004317828454077244, 0.0003378485271241516, 2.0033543478348292e-05, 8.780387474871532e-07, 2.761578699050915e-08, 6.029974297661056e-10, 8.824897410053545e-12, 8.32185543891105e-14, 4.830258850672443e-16, 1.6325660499410488e-18, 3.0202278635064703e-21, 2.833247583642819e-24, 1.235955623271295e-27, 2.2573088548501436e-31, 1.5179728793202155e-35, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 10.0
+           }
+         },
+         {
+           "variable": "rqvfrten_wrf",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [34.29829788208008, 16.773151397705078, 8.480595588684082, 4.29949951171875, 2.1362602710723877, 1.0188932418823242, 0.4572765529155731, 0.18989944458007812, 0.07173541188240051, 0.024295886978507042, 0.007275108247995377, 0.0018964626360684633, 0.0004242305876687169, 7.994733459781855e-05, 1.2473163224058226e-05, 1.5804885151737835e-06, 1.5922938700896339e-07, 1.2458905018775113e-08, 7.387808143022312e-10, 3.237960594093536e-11, 1.018392726918893e-12, 2.223684933834024e-14, 3.2543744340361106e-16, 3.0688663355561812e-18, 1.781263655768761e-20, 6.020445695861271e-23, 1.1137754557492449e-25, 1.0448220503961795e-28, 4.557856506153759e-32, 8.334417811842736e-36, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 0.0005
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 930068.0625,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 454838.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": 229968.578125,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 5
+           },
+           "expected": 57929.046875,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 8
+           },
+           "expected": 5149.5087890625,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 12
+           },
+           "expected": 51.42643356323242,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 20
+           },
+           "expected": 8.780387474871532e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 30
+           },
+           "expected": 2.2573088548501436e-31,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 43
+           },
+           "expected": -0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 34.29829788208008,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 16.773151397705078,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 5
+           },
+           "expected": 2.1362602710723877,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 12
+           },
+           "expected": 0.0018964626360684633,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 30
+           },
+           "expected": 8.334417811842736e-36,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         }
+       ]
+     },
+     {
+       "id": "frame5_cfbm_fluxes_col_6_16",
+       "description": "Reference: fire_behavior's Provide_atm_feedback/Fire_tendency (io/wrf_mod.F90) replayed by the EarthSciML feedback driver (data/eqwefic/fire_build/feedback_driver, instrumented firelib 8d519c6, default real32; alfg = alfc = 50 m, z1can = 15 m, fire_atm_feedback = 1, canopy fluxes 0) on the atmosphere column of test7/wrf.nc (WRF 4.x, 19 x 19 x 44 layers, dx = 100 m, sr = 4) with the strongest surface heat flux. The column geometry (z_at_w, dz8w, rho, mut, c1h, c2h) is the frame's end-of-step state. Single precision: rel 1e-5; Linf tolerances are 1e-5 of the column maximum. Regime: frame 5 (t = 5 s), atmosphere cell (6,16), fire-mesh fluxes = fire_behavior's own grnhft/grnqft of the standalone test7 run at step 10 (fire_flux dump; the CFBM-consistent coupled chain used by couplings/fire_atmosphere_column.esm).",
+       "parameter_overrides": {
+         "mu": 79500.8203125,
+         "alfg": 50.0,
+         "alfc": 50.0,
+         "z1can": 15.0,
+         "fire_atm_feedback": 1.0,
+         "canhfx": 0.0,
+         "canqfx": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/frame5_cfbm_fluxes_col_6_16_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "grnhfx",
+           "time": 0.0,
+           "expected": 109626.8515625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "grnqfx",
+           "time": 0.0,
+           "expected": 10061.546875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rthfrten_wrf",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [136858.21875, 71579.265625, 37442.375, 19319.0703125, 9687.0234375, 4641.9033203125, 2088.24462890625, 868.1456909179688, 328.0923767089844, 111.13531494140625, 33.277992248535156, 8.673357009887695, 1.9402837753295898, 0.3655841052532196, 0.05702030658721924, 0.007222733926028013, 0.0007272497750818729, 5.687005977961235e-05, 3.3686376355035463e-06, 1.4744853160664206e-07, 4.6310493218015836e-09, 1.0097584574042529e-10, 1.475262620398432e-12, 1.3890028280935229e-14, 8.045093124986233e-17, 2.711761711769076e-19, 4.999918557099939e-22, 4.673607419058016e-25, 2.030806940991329e-28, 3.6931184867771407e-32, 2.4428320899155173e-36, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 2.0
+           }
+         },
+         {
+           "variable": "rqvfrten_wrf",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [5.046945095062256, 2.6396420001983643, 1.38076913356781, 0.7124329805374146, 0.35723015666007996, 0.1711803525686264, 0.07700858265161514, 0.032014764845371246, 0.012099121697247028, 0.004098356701433659, 0.0012271985178813338, 0.000319849030347541, 7.155220373533666e-05, 1.3481715541274752e-05, 2.1027483398938784e-06, 2.6635410677045e-07, 2.6818923970495234e-08, 2.097207518758637e-09, 1.2422586570526306e-10, 5.437486398640612e-12, 1.7078007031549186e-13, 3.723705066895674e-15, 5.440352992126972e-17, 5.122250802761385e-19, 2.966804234008084e-21, 1.0000213779504902e-23, 1.843829245676359e-26, 1.723494695616309e-29, 7.489042917678115e-33, 1.3632395567661619e-36, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 0.0001
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 136858.21875,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 71579.265625,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": 37442.375,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 5
+           },
+           "expected": 9687.0234375,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 8
+           },
+           "expected": 868.1456909179688,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 12
+           },
+           "expected": 8.673357009887695,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 20
+           },
+           "expected": 1.4744853160664206e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 30
+           },
+           "expected": 3.6931184867771407e-32,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rthfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 43
+           },
+           "expected": -0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-06
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 5.046945095062256,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 2.6396420001983643,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 5
+           },
+           "expected": 0.35723015666007996,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 12
+           },
+           "expected": 0.000319849030347541,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rqvfrten",
+           "time": 0.0,
+           "coords": {
+             "lev": 30
+           },
+           "expected": 1.3632395567661619e-36,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}
