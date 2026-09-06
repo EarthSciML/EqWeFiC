@@ -1,0 +1,909 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "LevelSetTendencyWRFFire",
+  "description": "The level-set propagation equation of fire_behavior (physics/level_set_mod.F90 Calc_tend_ls; Munoz-Esparza et al. 2018) as a PDE on a uniform 2-D grid: d psi/dt = -R |grad psi| + nu |R| (dx d2psi/dx2 + dy d2psi/dy2), the Hamilton-Jacobi front propagation with the rate of spread R normal to the front plus a grid-scaled artificial viscosity. |grad psi| is written as the compound sqrt(D(psi,x)^2 + D(psi,y)^2) and lowered by EarthSciDiscretizations' first-order Godunov rule (grids/cartesian_uniform_2d/rules/godunov_norm_D2_dirichlet_bc), which is EXACTLY fire_behavior's fire_upwinding = 4 Hamiltonian; the second derivatives by the centred rules. fire_behavior's DEFAULT scheme (fire_upwinding = 9) is a hybrid: 5th-order WENO within fire_lsm_band_ngp = 4 cells of the front, first-order ENO (minmod of the one-sided differences) elsewhere and within BDY_ENO1 = 10 cells of the domain boundary, with the front normal taken from the same upwind derivatives (for option 4: diff2 = max(D-,0) - min(D+,0)); no EarthSciDiscretizations rule exists for WENO5, ENO1/minmod or the Godunov-upwind first derivative, so those are reported as the missing rules and this component is tested against a fire_behavior run with fire_upwinding = 4. Boundary treatment also differs (fire_behavior extrapolates linearly into a 5-cell halo; the rule uses a prescribed wall value), so the tests are interior spot checks. R is supplied as an input field (it depends on the upwind normal, tested in ROSWRFFire); the propagation term and viscosity are what this component asserts. Tests: the ls_tend dump of Runge-Kutta stage 1 of step 20 (t = 10 s) of test7 rerun with fire_upwinding = 4; the dumped grad and tend at interior cells, real32, rel 1e-5.",
+  "license": "MIT",
+  "tags": [
+   "wildland_fire",
+   "fire_behavior",
+   "wrf-fire",
+   "level-set",
+   "pde"
+  ],
+  "references": [
+   {
+    "citation": "NCAR Community Fire Behavior Model (fire_behavior), develop @ eb77580; instrumented fork ctessum-claude/fire_behavior branch earthsciml-instrumented (c9dda02)."
+   },
+   {
+    "citation": "Munoz-Esparza, D., Kosovic, B., Jimenez, P.A., Coen, J.L. (2018). An accurate fire-spread algorithm in the Weather Research and Forecasting model using the level-set method. J. Adv. Model. Earth Syst. 10, 908-926.",
+    "doi": "10.1002/2017MS001108"
+   },
+   {
+    "citation": "Osher, S., Sethian, J.A. (1988). Fronts propagating with curvature-dependent speed. J. Comput. Phys. 79, 12-49.",
+    "doi": "10.1016/0021-9991(88)90002-2"
+   }
+  ]
+ },
+ "metaparameters": {
+  "NX": {
+   "type": "integer",
+   "default": 80,
+   "description": "Fire-grid cells along x (test7: 80)."
+  },
+  "NY": {
+   "type": "integer",
+   "default": 80,
+   "description": "Fire-grid cells along y."
+  }
+ },
+ "models": {
+  "LevelSetTendencyWRFFire": {
+   "expression_template_imports": [
+    {
+     "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/grid.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    },
+    {
+     "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/godunov_norm_D2_dirichlet_bc.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    },
+    {
+     "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/central_D2x_dirichlet_bc.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    },
+    {
+     "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/central_D2y_dirichlet_bc.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    }
+   ],
+   "variables": {
+    "psi": {
+     "type": "unknown",
+     "units": "m",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Level-set function over the [x, y] fire grid (fire_behavior lfn; negative inside the burnt area, a signed distance after reinitialisation)."
+    },
+    "ros": {
+     "type": "unknown",
+     "units": "m/s",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Rate of spread normal to the front at each cell (ROSWRFFire ros, itself a function of the upwind normal); supplied as an input field here so that the operator assembly is tested independently of the normal computation."
+    },
+    "x0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Left domain edge (grid free name)."
+    },
+    "y0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Bottom domain edge (grid free name)."
+    },
+    "Lx": {
+     "type": "parameter",
+     "units": "m",
+     "default": 2000.0,
+     "description": "Domain width NX dx (test7: 80 x 25 m)."
+    },
+    "Ly": {
+     "type": "parameter",
+     "units": "m",
+     "default": 2000.0,
+     "description": "Domain height NY dy."
+    },
+    "dx": {
+     "type": "unknown",
+     "units": "m",
+     "description": "x spacing Lx/NX (grid free name)."
+    },
+    "dy": {
+     "type": "unknown",
+     "units": "m",
+     "description": "y spacing Ly/NY (grid free name)."
+    },
+    "fire_viscosity": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.4,
+     "description": "Artificial viscosity coefficient nu (namelist fire_viscosity = fire_viscosity_bg = 0.4 in test7, so the near-front band has the same value and the coefficient is uniform)."
+    },
+    "grad_mag": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "|grad psi| by the first-order Godunov (Osher-Sethian / Rouy-Tourin) upwind rule: sqrt(max(D-x,0)^2 + min(D+x,0)^2 + max(D-y,0)^2 + min(D+y,0)^2), which is exactly fire_behavior's fire_upwinding = 4 ('sethian') Hamiltonian; the level-set gradient norm diagnostic grad_norm_ls."
+    },
+    "psi_xx": {
+     "type": "unknown",
+     "units": "1/m",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "d2 psi/dx2 by the centred second-difference rule; fire_behavior's (diffrx - difflx) = dx psi_xx."
+    },
+    "psi_yy": {
+     "type": "unknown",
+     "units": "1/m",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "d2 psi/dy2 by the centred second-difference rule."
+    },
+    "tend_adv": {
+     "type": "unknown",
+     "units": "m/s",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Hamilton-Jacobi propagation term -ros |grad psi|."
+    },
+    "tend_visc": {
+     "type": "unknown",
+     "units": "m/s",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Artificial viscosity nu |ros| (dx psi_xx + dy psi_yy): fire_behavior adds fire_viscosity |ros| ((diffrx - difflx) + (diffry - diffly)), a grid-scaled Laplacian that vanishes with the mesh."
+    },
+    "tend": {
+     "type": "unknown",
+     "units": "m/s",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Level-set tendency d psi/dt = tend_adv + tend_visc (Calc_tend_ls tend)."
+    },
+    "gL": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Prescribed level-set value on the left x wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). fire_behavior instead extrapolates linearly into a 5-cell halo and uses first-order ENO within 10 cells of the boundary, so the boundary cells are not asserted."
+    },
+    "gR": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Prescribed level-set value on the right x wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). fire_behavior instead extrapolates linearly into a 5-cell halo and uses first-order ENO within 10 cells of the boundary, so the boundary cells are not asserted."
+    },
+    "gB": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Prescribed level-set value on the bottom y wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). fire_behavior instead extrapolates linearly into a 5-cell halo and uses first-order ENO within 10 cells of the boundary, so the boundary cells are not asserted."
+    },
+    "gT": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Prescribed level-set value on the top y wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). fire_behavior instead extrapolates linearly into a 5-cell halo and uses first-order ENO within 10 cells of the boundary, so the boundary cells are not asserted."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "dx",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "Lx",
+       "NX"
+      ]
+     }
+    },
+    {
+     "lhs": "dy",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "Ly",
+       "NY"
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "psi"
+      ]
+     },
+     "rhs": {
+      "op": "input_psi",
+      "args": []
+     }
+    },
+    {
+     "lhs": "ros",
+     "rhs": {
+      "op": "input_ros",
+      "args": []
+     }
+    },
+    {
+     "lhs": "grad_mag",
+     "rhs": {
+      "op": "sqrt",
+      "args": [
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "^",
+          "args": [
+           {
+            "op": "D",
+            "args": [
+             "psi"
+            ],
+            "wrt": "x"
+           },
+           2
+          ]
+         },
+         {
+          "op": "^",
+          "args": [
+           {
+            "op": "D",
+            "args": [
+             "psi"
+            ],
+            "wrt": "y"
+           },
+           2
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "psi_xx",
+     "rhs": {
+      "op": "D",
+      "args": [
+       {
+        "op": "D",
+        "args": [
+         "psi"
+        ],
+        "wrt": "x"
+       }
+      ],
+      "wrt": "x"
+     }
+    },
+    {
+     "lhs": "psi_yy",
+     "rhs": {
+      "op": "D",
+      "args": [
+       {
+        "op": "D",
+        "args": [
+         "psi"
+        ],
+        "wrt": "y"
+       }
+      ],
+      "wrt": "y"
+     }
+    },
+    {
+     "lhs": "tend_adv",
+     "rhs": {
+      "op": "*",
+      "args": [
+       {
+        "op": "-",
+        "args": [
+         "ros"
+        ]
+       },
+       "grad_mag"
+      ]
+     }
+    },
+    {
+     "lhs": "tend_visc",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "fire_viscosity",
+       {
+        "op": "abs",
+        "args": [
+         "ros"
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "dx",
+           "psi_xx"
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "dy",
+           "psi_yy"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "tend",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "tend_adv",
+       "tend_visc"
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "psi"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "tend"
+    }
+   ],
+   "tests": [
+    {
+     "id": "godunov_step20_stage1",
+     "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1) rerun with fire_upwinding = 4 (classical Godunov Hamiltonian, the scheme EarthSciDiscretizations' godunov_norm_D2 rule implements), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (c9dda02, -DESM_DUMP=ON): ls_tend dump call 58 = Runge-Kutta stage 1 of step 20 (t = 10 s). The inputs psi and ros are the full 80x80 dumped lfn and ros fields injected as [x, y] const fields; grad_mag, tend_adv and tend are spot-checked at 13 interior cells (11 <= i, j <= 70, inside fire_behavior's BDY_ENO1 = 10 boundary band where it switches to ENO1, and away from the walls whose treatment differs): 10 cells within 150 m of the front where the level set is moving, plus three far-field cells. fire_viscosity = fire_viscosity_bg = 0.4 in test7, so the viscosity coefficient is uniform. Single precision: rel 1e-5 on grad_mag and the propagation term, 2e-5 on the total tendency (a sum of the two). The dumped Godunov gradient equals the rule's formula to 2e-7 relative over the whole interior (checked offline), so a whole-field assertion would pass in the interior; it is not used because the wall cells differ by construction.",
+     "parameter_overrides": {
+      "Lx": 2000.0,
+      "Ly": 2000.0,
+      "fire_viscosity": 0.4
+     },
+     "expression_template_imports": [
+      {
+       "ref": "./tests/godunov_step20_stage1_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 56
+       },
+       "expected": 1.008783221244812,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 56
+       },
+       "expected": -0.5785404443740845,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 56
+       },
+       "expected": -0.5823176503181458,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 14,
+        "y": 55
+       },
+       "expected": 1.7142146825790405,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 14,
+        "y": 55
+       },
+       "expected": -1.5782140493392944,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 14,
+        "y": 55
+       },
+       "expected": -1.1295781135559082,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 15,
+        "y": 66
+       },
+       "expected": 0.921559751033783,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 15,
+        "y": 66
+       },
+       "expected": -0.7018488645553589,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 15,
+        "y": 66
+       },
+       "expected": -0.6666386127471924,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 62
+       },
+       "expected": 1.009670376777649,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 62
+       },
+       "expected": -0.2751450538635254,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 62
+       },
+       "expected": -0.25157710909843445,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 19,
+        "y": 57
+       },
+       "expected": 2.699244976043701,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 19,
+        "y": 57
+       },
+       "expected": -2.392396926879883,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 19,
+        "y": 57
+       },
+       "expected": -3.0914411544799805,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 65
+       },
+       "expected": 0.9558852910995483,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 65
+       },
+       "expected": -0.9046502113342285,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 65
+       },
+       "expected": -0.8088884353637695,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": 1.2604304552078247,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": -1.1193839311599731,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": -1.0631152391433716,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 66
+       },
+       "expected": 0.9706542491912842,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 66
+       },
+       "expected": -0.9187670946121216,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 66
+       },
+       "expected": -0.8613925576210022,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 58
+       },
+       "expected": 0.921127438545227,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 58
+       },
+       "expected": -0.4448780119419098,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 58
+       },
+       "expected": -0.38935917615890503,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 67
+       },
+       "expected": 0.9370625019073486,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 67
+       },
+       "expected": -0.8462659120559692,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 67
+       },
+       "expected": -0.7776193618774414,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": 0.9772482514381409,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": -0.9715944528579712,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": -0.9418787360191345,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": 1.0064423084259033,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": -0.8580030202865601,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": -0.8515026569366455,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": 1.0322295427322388,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": -0.4822290539741516,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": -0.4736826419830322,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

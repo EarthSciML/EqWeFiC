@@ -456,6 +456,26 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   at 1845/1845. Remaining single-consumer helpers stay beside their components
   (Beljaars w_c in `sfclayrev_thermo`; bulk flux / black-body / net radiation
   in `slab_templates`).
+- **fire_behavior done to the component level (2026-09-06).** Fork
+  ctessum-claude/fire_behavior@c9dda02 (`-DESM_DUMP=ON` CMake option, dumps of
+  ROS/level-set/fuel/flux/moisture internals; standalone CMake build in the
+  container; `tests/test7` rerun with `num_tiles = 1`, plus `fire_upwinding = 4`
+  and `fmoist_run` variants; dumps `data/eqwefic/dumps/fire/`). Nine components
+  under `components/wildland_fire/fire_behavior/` (parameters, Anderson13 table
+  incl. waf, Rothermel-WRFFire fuel-bed parameters, ROS with projection/caps/
+  chaparral, fuel-fraction cell with 2×2 submesh, five-class fuel moisture ODE,
+  ignition time, Byram flame length, level-set PDE) = 464 assertions, plus 4
+  PR-ready tests on a copy of `level_set/fire_heat_flux.esm` (22); 486/486
+  Rust. Only `fire_heat_flux` matches EarthSciModels algebraically;
+  `fuel_model_lookup`, `rothermel/fire_spread` and `level_set_fire_spread`
+  differ (see component descriptions). Missing EarthSciDiscretizations rules
+  for the default `fire_upwinding = 9`: WENO5/ENO1 hybrid |∇ψ| and the
+  Godunov-upwind first derivative; boundary = linear-extrapolation halo.
+  fire_behavior is real32 only (rel 1e-5). Gap (o): an observed named `t`
+  collides with the time variable without a validate error
+  (`esm-repro/fire/probe_observed_named_t.esm`). Not started: atmosphere→fire
+  wind (`Interp_profile`), the coupling file, reinitialisation, ignition lines,
+  smoke; the rain/wetting moisture branch is transcribed but untested.
 - **RRTM LW stage 1 done.** Heating-rate convention proved:
   `HTR(L−1) = HEATFAC (FNET(L−1) − FNET(L))/(PZ(L−1) − PZ(L))` is the heating
   of layer L; RRTM indexes bottom-up so `TOTUFLUX/TOTDFLUX(0..kte)` map onto

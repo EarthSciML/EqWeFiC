@@ -1,0 +1,594 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "FireHeatFlux",
+  "description": "Sensible and latent heat flux density released by burning fuel, per Eqs. 4–5 of Mandel et al. (2011). Migrated from WildlandFire.jl@126976f2 src/level_set_fire_spread.jl:295 (`FireHeatFlux` @component). Observed-only: fuel_burn_rate, w_l, h_fuel, M_f are inputs (parameters); phi_h and phi_q are algebraic outputs.",
+  "tags": [
+   "wildland_fire",
+   "level_set",
+   "fire_heat_flux",
+   "observed-only",
+   "mandel2011"
+  ],
+  "created": "2026-05-06T00:00:00Z",
+  "authors": [
+   "WildlandFire.jl contributors",
+   "EarthSciModels migration (mdl-gwf7)"
+  ],
+  "references": [
+   {
+    "citation": "Mandel, J., Beezley, J.D., and Kochanski, A.K. (2011). Coupled atmosphere-wildland fire modeling with WRF 3.3 and SFIRE 2011. Geosci. Model Dev., 4, 591–610. doi:10.5194/gmd-4-591-2011 — Equations 4 (sensible heat flux) and 5 (latent heat flux)."
+   }
+  ]
+ },
+ "models": {
+  "FireHeatFlux": {
+   "reference": {
+    "notes": "source_ref: WildlandFire.jl@126976f2508ceacca6c486b21ae6da5b168c6f46:src/level_set_fire_spread.jl:295\nUpstream `FireHeatFlux` is an MTK `@component` whose three driving inputs (w_l, h_fuel, M_f) are `@parameters`, whose `fuel_burn_rate(t)` is a `@variables` driven externally (in the parent system, the FuelConsumption component supplies it as is_burning*F/T_f, the magnitude of -dF/dt), and whose two outputs (phi_h, phi_q) are time-indexed `@variables` defined by the two algebraic equations. The standalone .esm here folds `fuel_burn_rate` into the parameter set so the component is well-posed without a parent — matching the pattern used elsewhere in the rig (see components/aerosol/aq_eq/water.esm and components/wildland_fire/rothermel/live_fuel_moisture_extinction.esm) where externally-driven `@variables` and `@constants` are unified into ESM `parameter` declarations. The three upstream `@constants` (one=1.0, water_combustion_ratio=0.56, L_water=2.5e6) are likewise preserved as parameters with the upstream defaults.\n\nThe equations are the Mandel et al. (2011) closed-form sensible/latent heat flux densities:\n  phi_h = fuel_burn_rate * w_l * h_fuel / (one + M_f)             (Eq. 4)\n  phi_q = fuel_burn_rate * (M_f + water_combustion_ratio) / (one + M_f) * L_water * w_l   (Eq. 5)\n— preserved verbatim (the ordering of the multiplications inside phi_q matches the upstream Julia source so float64 roundoff is bit-identical).\n\nTolerance rationale (model-level rel=1e-12): observed-only algebraic system (no ODE integration); both equations are short chains of multiply/divide on hardware-supported intrinsics, so float64 roundoff is at the ULP level (~1e-15). 1e-12 is comfortably above that and below any plausible physical-discrimination scale on heat-flux quantities (fluxes range ~1e2 to ~1e5 W/m² across realistic Anderson fuel models)."
+   },
+   "tolerance": {
+    "rel": 1e-12
+   },
+   "variables": {
+    "fuel_burn_rate": {
+     "type": "parameter",
+     "units": "1/s",
+     "default": 0.0,
+     "description": "Rate of fuel consumption (-dF/dt); driven externally by FuelConsumption in the coupled system"
+    },
+    "w_l": {
+     "type": "parameter",
+     "units": "kg/m^2",
+     "default": 0.166,
+     "description": "Total fuel load (Anderson fuel model 1 default)"
+    },
+    "h_fuel": {
+     "type": "parameter",
+     "units": "J/kg",
+     "default": 18608000.0,
+     "description": "Heat content of dry fuel (Anderson 1982 / WRF-SFIRE Table 1: 8000 BTU/lb = 1.8608e7 J/kg)"
+    },
+    "M_f": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.08,
+     "description": "Fuel moisture content (dimensionless mass fraction)"
+    },
+    "one": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Unity dimensionless constant (preserved from upstream MTK @constants for unit-balancing)"
+    },
+    "water_combustion_ratio": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.56,
+     "description": "Estimated mass ratio of water output from combustion to dry fuel (Mandel et al. 2011)"
+    },
+    "L_water": {
+     "type": "parameter",
+     "units": "J/kg",
+     "default": 2500000.0,
+     "description": "Latent heat of condensation of water at 0°C (Mandel et al. 2011)"
+    },
+    "phi_h": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Sensible heat flux density"
+    },
+    "phi_q": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Latent heat (moisture) flux density"
+    }
+   },
+   "equations": [
+    {
+     "lhs": "phi_h",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         "fuel_burn_rate",
+         "w_l",
+         "h_fuel"
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "one",
+         "M_f"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "phi_q",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "fuel_burn_rate",
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           "M_f",
+           "water_combustion_ratio"
+          ]
+         },
+         {
+          "op": "+",
+          "args": [
+           "one",
+           "M_f"
+          ]
+         }
+        ]
+       },
+       "L_water",
+       "w_l"
+      ]
+     }
+    }
+   ],
+   "tests": [
+    {
+     "id": "zero_burn_rate",
+     "description": "No fuel burning (fuel_burn_rate = 0). Both fluxes vanish independent of w_l, h_fuel, M_f. Sanity check that the algebraic prefactor is correctly multiplicative.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.0,
+      "w_l": 0.5,
+      "h_fuel": 18600000.0,
+      "M_f": 0.08
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 1e-15
+       }
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 1e-15
+       }
+      }
+     ]
+    },
+    {
+     "id": "dry_fuel_M_f_zero",
+     "description": "Dry fuel (M_f = 0). Eq. 4 simplifies to phi_h = fuel_burn_rate * w_l * h_fuel; Eq. 5 to phi_q = fuel_burn_rate * water_combustion_ratio * L_water * w_l. fbr=1e-3, w_l=1, h=1.86e7 → phi_h = 18600, phi_q = 0.56 * 2.5e6 * 1e-3 = 1400.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.001,
+      "w_l": 1.0,
+      "h_fuel": 18600000.0,
+      "M_f": 0.0
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 18600.0
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 1400.0000000000002
+      }
+     ]
+    },
+    {
+     "id": "moist_fuel_clean_arithmetic",
+     "description": "Moderate moisture (M_f = 0.1) with fbr=2e-3, w_l=2, h=1.86e7. phi_h = 2e-3·2·1.86e7 / 1.1 = 74400 / 1.1 = 67636.36…; phi_q = 2e-3·0.66/1.1·2.5e6·2 = 6600/1.1 = 6000 (exact rational).",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.002,
+      "w_l": 2.0,
+      "h_fuel": 18600000.0,
+      "M_f": 0.1
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 67636.36363636363
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 5999.999999999999
+      }
+     ]
+    },
+    {
+     "id": "saturated_moisture_M_f_one",
+     "description": "Saturated fuel (M_f = 1.0). The (one + M_f) denominator becomes 2; phi_h is halved relative to the dry case. fbr=1e-3, w_l=1, h=2e7 → phi_h = 1e-3·1·2e7/2 = 10000; phi_q = 1e-3·1.56/2·2.5e6·1 = 1950.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.001,
+      "w_l": 1.0,
+      "h_fuel": 20000000.0,
+      "M_f": 1.0
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 10000.0
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 1950.0000000000002
+      }
+     ]
+    },
+    {
+     "id": "low_load_high_burn",
+     "description": "Low fuel load (w_l=0.5) with fast burn rate (fbr=5e-3), light moisture (M_f=0.05), reduced heat content (h=1.0e7). phi_h = 5e-3·0.5·1.0e7/1.05 = 25000/1.05 = 23809.52…; phi_q = 5e-3·0.61/1.05·2.5e6·0.5 = 3812.5/1.05 = 3630.95….",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.005,
+      "w_l": 0.5,
+      "h_fuel": 10000000.0,
+      "M_f": 0.05
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 23809.52380952381
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 3630.9523809523816
+      }
+     ]
+    },
+    {
+     "id": "anderson_fuel_1_grass",
+     "description": "Representative grass-fuel scenario per Anderson (1982) fuel model 1 / Mandel et al. (2011) Table 1: w_l=0.166 kg/m², h=1.8608e7 J/kg (8000 BTU/lb), M_f=0.08 (8% moisture), fbr=1/119 s⁻¹ (T_f=119 s, F=1, is_burning=1). phi_h = (1/119)·0.166·1.8608e7/1.08 ≈ 24034.6 W/m²; phi_q ≈ 2066.6 W/m² — order of magnitude matches Mandel et al. (2011) §3.2.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.008403361344537815,
+      "w_l": 0.166,
+      "h_fuel": 18608000.0,
+      "M_f": 0.08
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 24034.60939931528
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 2066.604419545596
+      }
+     ]
+    },
+    {
+     "id": "ratio_phi_q_over_phi_h",
+     "description": "Cross-check the Mandel et al. (2011) ratio identity: phi_q / phi_h = (M_f + water_combustion_ratio) * L_water / h_fuel — independent of fuel_burn_rate and w_l. Pick fbr=4e-3, w_l=1.5, h=1.5e7, M_f=0.2. phi_h = 4e-3·1.5·1.5e7/1.2 = 90000/1.2 = 75000 exact; phi_q = 4e-3·0.76/1.2·2.5e6·1.5 = 11400/1.2 = 9500 exact; ratio = 9500/75000 = 0.7600/6.0 = 0.12666… = 0.76·2.5e6/1.5e7 ✓.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.004,
+      "w_l": 1.5,
+      "h_fuel": 15000000.0,
+      "M_f": 0.2
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 75000.0
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 9500.000000000002
+      }
+     ]
+    },
+    {
+     "id": "fire_behavior_step20_strongest_cell_cat2",
+     "description": "fire_behavior-derived test (EqWeFiC Phase 1, PLAN.md 1.3). Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: Calc_fire_fluxes (physics/fire_physics_mod.F90) at cell (i,j) = (17, 62) of the 20th step: grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M) are ALGEBRAICALLY IDENTICAL to Mandel et al. (2011) eqs 4-5 as written here (1 - bmst = 1/(1 + M_f); bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f)) with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g, h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not the 1.8608e7 default), M_f = fmc_g = 0.08, L_water = XLV = 2.5e6 J/kg.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.11735081672668457,
+      "w_l": 0.8960000276565552,
+      "h_fuel": 17433000.0,
+      "M_f": 0.07999999821186066,
+      "L_water": 2500000.0,
+      "water_combustion_ratio": 0.5600000023841858
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 1697237.0,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 155772.34375,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    },
+    {
+     "id": "fire_behavior_step20_cat2_cell",
+     "description": "fire_behavior-derived test (EqWeFiC Phase 1, PLAN.md 1.3). Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: Calc_fire_fluxes (physics/fire_physics_mod.F90) at cell (i,j) = (18, 64) of the 20th step: grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M) are ALGEBRAICALLY IDENTICAL to Mandel et al. (2011) eqs 4-5 as written here (1 - bmst = 1/(1 + M_f); bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f)) with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g, h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not the 1.8608e7 default), M_f = fmc_g = 0.08, L_water = XLV = 2.5e6 J/kg.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.10704100131988525,
+      "w_l": 0.8960000276565552,
+      "h_fuel": 17433000.0,
+      "M_f": 0.07999999821186066,
+      "L_water": 2500000.0,
+      "water_combustion_ratio": 0.5600000023841858
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 1548126.875,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 142087.03125,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    },
+    {
+     "id": "fire_behavior_step20_weak_edge_cell_cat1",
+     "description": "fire_behavior-derived test (EqWeFiC Phase 1, PLAN.md 1.3). Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: Calc_fire_fluxes (physics/fire_physics_mod.F90) at cell (i,j) = (26, 64) of the 20th step: grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M) are ALGEBRAICALLY IDENTICAL to Mandel et al. (2011) eqs 4-5 as written here (1 - bmst = 1/(1 + M_f); bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f)) with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g, h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not the 1.8608e7 default), M_f = fmc_g = 0.08, L_water = XLV = 2.5e6 J/kg.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.0007721185684204102,
+      "w_l": 0.16599999368190765,
+      "h_fuel": 17433000.0,
+      "M_f": 0.07999999821186066,
+      "L_water": 2500000.0,
+      "water_combustion_ratio": 0.5600000023841858
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 2068.904541015625,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 189.88397216796875,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    },
+    {
+     "id": "fire_behavior_step10_early_cell",
+     "description": "fire_behavior-derived test (EqWeFiC Phase 1, PLAN.md 1.3). Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: Calc_fire_fluxes (physics/fire_physics_mod.F90) at cell (i,j) = (19, 61) of the 10th step: grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M) are ALGEBRAICALLY IDENTICAL to Mandel et al. (2011) eqs 4-5 as written here (1 - bmst = 1/(1 + M_f); bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f)) with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g, h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not the 1.8608e7 default), M_f = fmc_g = 0.08, L_water = XLV = 2.5e6 J/kg.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.0662459135055542,
+      "w_l": 0.16599999368190765,
+      "h_fuel": 17433000.0,
+      "M_f": 0.07999999821186066,
+      "L_water": 2500000.0,
+      "water_combustion_ratio": 0.5600000023841858
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 177507.015625,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 16291.5869140625,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    }
+   ],
+   "analyses": [
+    {
+     "id": "phi_h_vs_M_f_sweep",
+     "description": "Sweep M_f over the realistic atmospheric range (0 to 0.5) at fixed fuel_burn_rate, w_l, h_fuel. Surfaces the (1 + M_f)⁻¹ damping of the sensible heat flux as fuel moisture rises — the dominant qualitative feature of Mandel et al. (2011) Eq. 4.",
+     "initial_state": {},
+     "parameters": {
+      "fuel_burn_rate": 0.01,
+      "w_l": 0.166,
+      "h_fuel": 18608000.0
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "parameter_sweep": {
+      "type": "cartesian",
+      "dimensions": [
+       {
+        "parameter": "M_f",
+        "range": {
+         "start": 0.0,
+         "stop": 0.5,
+         "count": 26,
+         "scale": "linear"
+        }
+       }
+      ]
+     },
+     "plots": [
+      {
+       "id": "phi_h_curve",
+       "type": "line",
+       "description": "Sensible heat flux as a function of fuel moisture content.",
+       "x": {
+        "variable": "M_f",
+        "label": "M_f (mass fraction)"
+       },
+       "y": {
+        "variable": "phi_h",
+        "label": "phi_h (W/m²)"
+       }
+      },
+      {
+       "id": "phi_q_curve",
+       "type": "line",
+       "description": "Latent heat flux as a function of fuel moisture content — increases with M_f because the (M_f + 0.56) numerator dominates over the (1 + M_f) denominator at low M_f.",
+       "x": {
+        "variable": "M_f",
+        "label": "M_f (mass fraction)"
+       },
+       "y": {
+        "variable": "phi_q",
+        "label": "phi_q (W/m²)"
+       }
+      }
+     ]
+    },
+    {
+     "id": "phi_h_heatmap_burn_rate_w_l",
+     "description": "Two-dimensional sweep over (fuel_burn_rate, w_l) at fixed h_fuel and M_f. Both fluxes are bilinear in (fbr, w_l), so the surface should be a smooth product map — useful for visual sanity-checking the equation structure.",
+     "initial_state": {},
+     "parameters": {
+      "h_fuel": 18608000.0,
+      "M_f": 0.08
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "parameter_sweep": {
+      "type": "cartesian",
+      "dimensions": [
+       {
+        "parameter": "fuel_burn_rate",
+        "range": {
+         "start": 0.0,
+         "stop": 0.02,
+         "count": 21,
+         "scale": "linear"
+        }
+       },
+       {
+        "parameter": "w_l",
+        "range": {
+         "start": 0.1,
+         "stop": 3.0,
+         "count": 21,
+         "scale": "linear"
+        }
+       }
+      ]
+     },
+     "plots": [
+      {
+       "id": "phi_h_surface",
+       "type": "heatmap",
+       "description": "Sensible heat flux as a function of fuel burn rate and fuel load.",
+       "x": {
+        "variable": "fuel_burn_rate",
+        "label": "fuel_burn_rate (1/s)"
+       },
+       "y": {
+        "variable": "w_l",
+        "label": "w_l (kg/m²)"
+       },
+       "value": {
+        "variable": "phi_h",
+        "reduce": "final"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,1061 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "ROSWRFFire",
+  "description": "Rate of spread normal to the fire front as evaluated by fire_behavior's Calc_ros_wrffire (physics/ros_wrffire_mod.F90) at one cell and time step, from the level-set normal (nvx, nvy), the mid-flame wind (uf, vf), the terrain slope and the cell's Rothermel constants (RothermelWRFFire). With FIRE_ADVECTION = 1 (the compiled setting) the wind and slope factors are evaluated from the TOTAL wind speed and TOTAL slope and then multiplied by the clipped cosines of their angles to the spread direction: ros = min(r_0 (1 + phi_w(|U|) cos_w + phi_s(|grad z|) cos_s), 6 m/s) with cos_w = max(0, U.n/|U|), cos_s = max(0, grad z . n/|grad z|). DIFFERENCE from EarthSciModels level_set_fire_spread.esm (Mandel 2011 form phi_W(max(0, U.n)), phi_S(max(0, grad z . n)^2)): there the PROJECTED speed enters the power laws, |U|^B cos_w vs (|U| cos_w)^B and |grad z|^2 cos_s vs (grad z . n)^2, and that file has neither the 30 m/s wind cap, the 6 m/s ROS cap nor the chaparral branch, so it is not reused. Chaparral (ischap > 0) uses the Clark et al. (2004) law ros_wind = max(1.2974 |U|^1.41, 0.033) m/s with no base or slope term. Tests: per-cell values of the instrumented test7 run (ls_tend dump, RK stage 1 of step 20, t = 10 s; real32; FORTRAN's speed and slope carry tiny(real32) additions reproduced here), rel 1e-5.",
+  "license": "MIT",
+  "tags": [
+   "wildland_fire",
+   "fire_behavior",
+   "wrf-fire",
+   "rate-of-spread",
+   "level-set"
+  ],
+  "references": [
+   {
+    "citation": "NCAR Community Fire Behavior Model (fire_behavior), develop @ eb77580 (WRF 4.8 phys/fire_behavior submodule), physics/ros_wrffire_mod.F90; instrumented fork ctessum-claude/fire_behavior branch earthsciml-instrumented."
+   },
+   {
+    "citation": "Rothermel, R.C. (1972). A mathematical model for predicting fire spread in wildland fuels. USDA Forest Service Res. Pap. INT-115."
+   },
+   {
+    "citation": "Mandel, J., Beezley, J.D., Kochanski, A.K. (2011). Coupled atmosphere-wildland fire modeling with WRF 3.3 and SFIRE 2011. Geosci. Model Dev. 4, 591-610.",
+    "doi": "10.5194/gmd-4-591-2011"
+   },
+   {
+    "citation": "Clark, T.L., Coen, J., Latham, D. (2004). Description of a coupled atmosphere-fire model. Int. J. Wildland Fire 13, 49-63 (chaparral spread-rate fit)."
+   }
+  ]
+ },
+ "models": {
+  "ROSWRFFire": {
+   "subsystems": {
+    "par": {
+     "ref": "./fire_behavior_parameters.esm"
+    }
+   },
+   "variables": {
+    "nvx": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "x-component of the fire-front normal (level-set gradient direction) at the cell."
+    },
+    "nvy": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "y-component of the fire-front normal."
+    },
+    "uf": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Mid-flame wind, x-component (fire_behavior uf)."
+    },
+    "vf": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Mid-flame wind, y-component (vf)."
+    },
+    "dzdxf": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Terrain slope dz/dx on the fire grid."
+    },
+    "dzdyf": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Terrain slope dz/dy."
+    },
+    "bbb": {
+     "type": "parameter",
+     "units": "1",
+     "default": 2.0,
+     "description": "Wind exponent B of the cell (RothermelWRFFire bbb)."
+    },
+    "betafl": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.001,
+     "description": "Packing ratio of the cell (RothermelWRFFire betafl)."
+    },
+    "phiwc": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Wind-factor coefficient of the cell (RothermelWRFFire phiwc)."
+    },
+    "r_0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "No-wind no-slope spread rate of the cell, ft/min (RothermelWRFFire r_0)."
+    },
+    "ischap": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Chaparral flag of the cell (> 0 selects the Clark et al. wind law)."
+    },
+    "speed": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Total wind speed sqrt(uf^2 + vf^2) + tiny."
+    },
+    "tanphi": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Total slope steepness sqrt(dzdx^2 + dzdy^2) + tiny."
+    },
+    "cor_wind": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Cosine of the angle between the wind and the spread direction, clipped at 0 (FIRE_ADVECTION = 1: the wind factor is evaluated with the total speed and projected)."
+    },
+    "cor_slope": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Cosine of the angle between the upslope direction and the spread direction, clipped at 0."
+    },
+    "spdms": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "max(speed, 0)."
+    },
+    "umidm": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Wind speed capped at 30 m/s."
+    },
+    "umid": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Capped wind speed in ft/min (umidm * 196.850)."
+    },
+    "phiw": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Rothermel wind factor umid^B phiwc."
+    },
+    "phis": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Rothermel slope factor 5.275 beta^-0.3 tanphi^2 (0 on flat ground)."
+    },
+    "ros_base": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "r_0 in m/s (r_0 * 0.00508); 0 for chaparral."
+    },
+    "ros_wind_unprojected": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Wind-driven spread ros_base phiw (Rothermel) or max(1.2974 U^1.41, 0.03333) (chaparral) before projection on the normal."
+    },
+    "ros_slope_unprojected": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Slope-driven spread ros_base phis before projection (0 for chaparral)."
+    },
+    "ros_wind": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Wind-driven spread projected on the normal, ros_wind_unprojected cor_wind."
+    },
+    "ros_slope": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Slope-driven spread projected on the normal, ros_slope_unprojected cor_slope."
+    },
+    "ros": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Rate of spread normal to the front: min(ros_base + ros_wind + SLOPE_FACTOR ros_slope, 6 m/s), floored at 0 (FIRE_GROWS_ONLY)."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "speed",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "sqrt",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "uf",
+             "uf"
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             "vf",
+             "vf"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       "par.tiny_speed"
+      ]
+     }
+    },
+    {
+     "lhs": "tanphi",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "sqrt",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "dzdxf",
+             "dzdxf"
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             "dzdyf",
+             "dzdyf"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       "par.tiny_slope"
+      ]
+     }
+    },
+    {
+     "lhs": "cor_wind",
+     "rhs": {
+      "op": "max",
+      "args": [
+       0.0,
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "uf",
+             "nvx"
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             "vf",
+             "nvy"
+            ]
+           }
+          ]
+         },
+         "speed"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "cor_slope",
+     "rhs": {
+      "op": "max",
+      "args": [
+       0.0,
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "dzdxf",
+             "nvx"
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             "dzdyf",
+             "nvy"
+            ]
+           }
+          ]
+         },
+         "tanphi"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "spdms",
+     "rhs": {
+      "op": "max",
+      "args": [
+       "speed",
+       {
+        "op": "*",
+        "args": [
+         0.0,
+         "par.unit_speed"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "umidm",
+     "rhs": {
+      "op": "min",
+      "args": [
+       "spdms",
+       "par.wind_speed_cap"
+      ]
+     }
+    },
+    {
+     "lhs": "umid",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "umidm",
+       "par.ftmin_per_ms"
+      ]
+     }
+    },
+    {
+     "lhs": "phiw",
+     "rhs": {
+      "op": "*",
+      "args": [
+       {
+        "op": "^",
+        "args": [
+         "umid",
+         "bbb"
+        ]
+       },
+       "phiwc"
+      ]
+     }
+    },
+    {
+     "lhs": "phis",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "tanphi",
+         0.0
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "par.c_phis",
+         {
+          "op": "^",
+          "args": [
+           "betafl",
+           "par.e_phis"
+          ]
+         },
+         {
+          "op": "^",
+          "args": [
+           "tanphi",
+           2
+          ]
+         }
+        ]
+       },
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "ros_base",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "ischap",
+         0.0
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.0,
+         "par.unit_speed"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "r_0",
+         "par.ms_per_ftmin"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "ros_wind_unprojected",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "ischap",
+         0.0
+        ]
+       },
+       {
+        "op": "max",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "par.c_chap_wind",
+           {
+            "op": "^",
+            "args": [
+             {
+              "op": "/",
+              "args": [
+               "spdms",
+               "par.unit_speed"
+              ]
+             },
+             "par.p_chap_wind"
+            ]
+           },
+           "par.unit_speed"
+          ]
+         },
+         "par.ros_back_chap"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "ros_base",
+         "phiw"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "ros_slope_unprojected",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "ischap",
+         0.0
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.0,
+         "par.unit_speed"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "ros_base",
+         "phis"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "ros_wind",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "ros_wind_unprojected",
+       "cor_wind"
+      ]
+     }
+    },
+    {
+     "lhs": "ros_slope",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "ros_slope_unprojected",
+       "cor_slope"
+      ]
+     }
+    },
+    {
+     "lhs": "ros",
+     "rhs": {
+      "op": "max",
+      "args": [
+       {
+        "op": "min",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           "ros_base",
+           "ros_wind",
+           {
+            "op": "*",
+            "args": [
+             "par.slope_factor",
+             "ros_slope"
+            ]
+           }
+          ]
+         },
+         "par.ros_max"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.0,
+         "par.unit_speed"
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "step20_stage1_heading_wind_and_upslope_cat1",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its own test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, 20 steps, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, -DESM_DUMP=ON; the dumped run's summary output is bit-identical to the uninstrumented build). Single-precision source, so rel 1e-5 (CLAUDE.md contract); a real64 re-evaluation of the same formulae agrees with the dumps to <= 8e-7 relative. Regime: cell (i,j) = (19, 66), Runge-Kutta stage 1 of step 20 (t = 10 s, ls_tend dump call 58): wind and slope both project positively on the normal (cos_w 0.78, cos_s 0.57); phi_w = 53, phi_s = 0.095; ros = 0.757 m/s. Inputs are the dumped normal, mid-flame wind and slope of the cell and its Rothermel constants (ros_params dump, which the same run's level-set dump also carries as ros_* intermediates).",
+       "parameter_overrides": {
+         "nvx": -0.4239600896835327,
+         "nvy": 0.9056808352470398,
+         "uf": 0.8035871982574463,
+         "vf": 3.343745708465576,
+         "dzdxf": 0.023835448548197746,
+         "dzdyf": 0.04111327975988388,
+         "bbb": 2.0712385177612305,
+         "betafl": 0.0009833043441176414,
+         "phiwc": 7.287419430213049e-05,
+         "r_0": 3.4989562034606934,
+         "ischap": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/step20_stage1_heading_wind_and_upslope_cat1_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "speed",
+           "time": 0.0,
+           "expected": 3.4389514923095703,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "tanphi",
+           "time": 0.0,
+           "expected": 0.04752294719219208,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "cor_wind",
+           "time": 0.0,
+           "expected": 0.781539797782898,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "cor_slope",
+           "time": 0.0,
+           "expected": 0.5708869695663452,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "umid",
+           "time": 0.0,
+           "expected": 676.9576416015625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phiw",
+           "time": 0.0,
+           "expected": 53.1302375793457,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phis",
+           "time": 0.0,
+           "expected": 0.09510926902294159,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ros_base",
+           "time": 0.0,
+           "expected": 0.01777469739317894,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ros_wind",
+           "time": 0.0,
+           "expected": 0.738065779209137,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "ros_slope",
+           "time": 0.0,
+           "expected": 0.0009651064174249768,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "ros",
+           "time": 0.0,
+           "expected": 0.7568055987358093,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "step20_stage1_heading_cat2",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its own test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, 20 steps, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, -DESM_DUMP=ON; the dumped run's summary output is bit-identical to the uninstrumented build). Single-precision source, so rel 1e-5 (CLAUDE.md contract); a real64 re-evaluation of the same formulae agrees with the dumps to <= 8e-7 relative. Regime: cell (i,j) = (18, 64), Runge-Kutta stage 1 of step 20 (t = 10 s, ls_tend dump call 58): category 2 cell at the fire edge; cos_w 0.51, cos_s 0.20. Inputs are the dumped normal, mid-flame wind and slope of the cell and its Rothermel constants (ros_params dump, which the same run's level-set dump also carries as ros_* intermediates).",
+       "parameter_overrides": {
+         "nvx": -0.718267560005188,
+         "nvy": 0.6957668662071228,
+         "uf": 0.7921292781829834,
+         "vf": 3.2887778282165527,
+         "dzdxf": 0.04451172053813934,
+         "dzdyf": 0.07022461295127869,
+         "bbb": 1.8304370641708374,
+         "betafl": 0.005307474639266729,
+         "phiwc": 0.00021712227317038924,
+         "r_0": 4.117192268371582,
+         "ischap": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/step20_stage1_heading_cat2_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "speed",
+           "time": 0.0,
+           "expected": 3.3828284740448,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "tanphi",
+           "time": 0.0,
+           "expected": 0.0831431895494461,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "cor_wind",
+           "time": 0.0,
+           "expected": 0.5082319974899292,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "cor_slope",
+           "time": 0.0,
+           "expected": 0.20312708616256714,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "umid",
+           "time": 0.0,
+           "expected": 665.9097900390625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phiw",
+           "time": 0.0,
+           "expected": 31.97338104248047,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phis",
+           "time": 0.0,
+           "expected": 0.17555347084999084,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ros_base",
+           "time": 0.0,
+           "expected": 0.020915336906909943,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ros_wind",
+           "time": 0.0,
+           "expected": 0.3398720324039459,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "ros_slope",
+           "time": 0.0,
+           "expected": 0.0007458339096046984,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "ros",
+           "time": 0.0,
+           "expected": 0.36153319478034973,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "step20_stage1_backing_no_wind_no_slope_projection",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its own test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, 20 steps, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, -DESM_DUMP=ON; the dumped run's summary output is bit-identical to the uninstrumented build). Single-precision source, so rel 1e-5 (CLAUDE.md contract); a real64 re-evaluation of the same formulae agrees with the dumps to <= 8e-7 relative. Regime: cell (i,j) = (30, 30), Runge-Kutta stage 1 of step 20 (t = 10 s, ls_tend dump call 58): the normal points against the wind and the upslope direction, so both cosines clip to 0 and ros = ros_base = r_0 * 0.00508. Inputs are the dumped normal, mid-flame wind and slope of the cell and its Rothermel constants (ros_params dump, which the same run's level-set dump also carries as ros_* intermediates).",
+       "parameter_overrides": {
+         "nvx": 0.22047516703605652,
+         "nvy": -0.9753925204277039,
+         "uf": 0.8230411410331726,
+         "vf": 3.3967514038085938,
+         "dzdxf": -0.029475100338459015,
+         "dzdyf": -0.0006079102167859674,
+         "bbb": 2.0712385177612305,
+         "betafl": 0.0009833043441176414,
+         "phiwc": 7.287419430213049e-05,
+         "r_0": 3.4989562034606934,
+         "ischap": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/step20_stage1_backing_no_wind_no_slope_projection_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "speed",
+           "time": 0.0,
+           "expected": 3.495041847229004,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "tanphi",
+           "time": 0.0,
+           "expected": 0.029481368139386177,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "cor_wind",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "cor_slope",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "umid",
+           "time": 0.0,
+           "expected": 687.9990234375,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phiw",
+           "time": 0.0,
+           "expected": 54.940799713134766,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phis",
+           "time": 0.0,
+           "expected": 0.036602556705474854,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ros_base",
+           "time": 0.0,
+           "expected": 0.01777469739317894,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ros_wind",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "ros_slope",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "ros",
+           "time": 0.0,
+           "expected": 0.01777469739317894,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "step20_stage1_backing_far_from_fire",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its own test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, 20 steps, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, -DESM_DUMP=ON; the dumped run's summary output is bit-identical to the uninstrumented build). Single-precision source, so rel 1e-5 (CLAUDE.md contract); a real64 re-evaluation of the same formulae agrees with the dumps to <= 8e-7 relative. Regime: cell (i,j) = (60, 20), Runge-Kutta stage 1 of step 20 (t = 10 s, ls_tend dump call 58): far-field cell, same backing geometry (grad_norm ~ 1, ros = ros_base). Inputs are the dumped normal, mid-flame wind and slope of the cell and its Rothermel constants (ros_params dump, which the same run's level-set dump also carries as ros_* intermediates).",
+       "parameter_overrides": {
+         "nvx": 0.7115633487701416,
+         "nvy": -0.7026219367980957,
+         "uf": 0.7703484296798706,
+         "vf": 3.4367966651916504,
+         "dzdxf": -0.053535159677267075,
+         "dzdyf": 0.002194824395701289,
+         "bbb": 2.0712385177612305,
+         "betafl": 0.0009833043441176414,
+         "phiwc": 7.287419430213049e-05,
+         "r_0": 3.4989562034606934,
+         "ischap": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/step20_stage1_backing_far_from_fire_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "speed",
+           "time": 0.0,
+           "expected": 3.5220744609832764,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "tanphi",
+           "time": 0.0,
+           "expected": 0.05358013138175011,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "cor_wind",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "cor_slope",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "umid",
+           "time": 0.0,
+           "expected": 693.3203735351562,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phiw",
+           "time": 0.0,
+           "expected": 55.8245964050293,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phis",
+           "time": 0.0,
+           "expected": 0.1208992674946785,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ros_base",
+           "time": 0.0,
+           "expected": 0.01777469739317894,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ros_wind",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "ros_slope",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "ros",
+           "time": 0.0,
+           "expected": 0.01777469739317894,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}

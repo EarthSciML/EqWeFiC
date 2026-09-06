@@ -1,0 +1,1855 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "RothermelWRFFire",
+  "description": "Rothermel (1972) fuel-bed spread parameters as evaluated by fire_behavior's Set_ros_parameters_wrffire (physics/ros_wrffire_mod.F90) for one cell: from the category's fuel properties and the ground fuel moisture, the packing ratio, optimum packing ratio, reaction velocity, moisture and mineral damping, reaction intensity, propagating flux ratio, heat of preignition and effective heating number, and hence the no-wind no-slope spread rate r_0 (ft/min, and ros_base in m/s), the wind-factor coefficients bbb (exponent B) and phiwc, and I_R t_r (iboros) for Byram's flame length. The fits are evaluated in US customary units exactly as the Fortran does (SI load and depth converted with 0.3048 and 2.205), so the intermediates are dimensionless carriers of lb/ft^2, ft, 1/ft, Btu/lb quantities. DIFFERENCES from the EarthSciModels rothermel/fire_spread.esm (Andrews 2018 SI form), which is therefore NOT reused: (1) the reaction-velocity exponent is Rothermel's original A = 1/(4.774 savr^0.1 - 7.27), not Albini's 133 savr^-0.7913; (2) the net load is w_0/(1 + S_T), not w_0 (1 - S_T); (3) the moisture ratio and the mineral damping are not capped at 1; (4) the load entering the fits is the DRY part (1 - M/(1+M)) of fgi, fire_behavior treating fgi as the moist load; (5) the wind factor is split into the cell constants B and phiwc = C (beta/beta_op)^-E applied per time step in ROSWRFFire. The no-fuel category (has_fuel = 0) returns betafl = bbb = 1, phiwc = r_0 = iboros = 0 as the Fortran does. Tests are the dumped per-cell intermediates of the instrumented fire_behavior test7 run (real32; a real64 re-evaluation of the same formulae agrees to <= 8e-7 relative), rel 1e-5.",
+  "license": "MIT",
+  "tags": [
+   "wildland_fire",
+   "fire_behavior",
+   "wrf-fire",
+   "rothermel",
+   "rate-of-spread"
+  ],
+  "references": [
+   {
+    "citation": "NCAR Community Fire Behavior Model (fire_behavior), develop @ eb77580 (WRF 4.8 phys/fire_behavior submodule), physics/ros_wrffire_mod.F90; instrumented fork ctessum-claude/fire_behavior branch earthsciml-instrumented."
+   },
+   {
+    "citation": "Rothermel, R.C. (1972). A mathematical model for predicting fire spread in wildland fuels. USDA Forest Service Res. Pap. INT-115."
+   },
+   {
+    "citation": "Mandel, J., Beezley, J.D., Kochanski, A.K. (2011). Coupled atmosphere-wildland fire modeling with WRF 3.3 and SFIRE 2011. Geosci. Model Dev. 4, 591-610.",
+    "doi": "10.5194/gmd-4-591-2011"
+   },
+   {
+    "citation": "Clark, T.L., Coen, J., Latham, D. (2004). Description of a coupled atmosphere-fire model. Int. J. Wildland Fire 13, 49-63 (chaparral spread-rate fit)."
+   }
+  ]
+ },
+ "models": {
+  "RothermelWRFFire": {
+   "subsystems": {
+    "par": {
+     "ref": "./fire_behavior_parameters.esm"
+    }
+   },
+   "variables": {
+    "fgi": {
+     "type": "parameter",
+     "units": "kg/m^2",
+     "default": 0.166,
+     "description": "Total (moist) surface fuel load of the cell's category (Anderson13FuelTable fgi)."
+    },
+    "fueldepthm": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.305,
+     "description": "Fuel bed depth (Anderson13FuelTable fueldepthm)."
+    },
+    "fueldens": {
+     "type": "parameter",
+     "units": "1",
+     "default": 32.0,
+     "description": "Oven-dry particle density, lb/ft^3 (dimensionless carrier of a US-unit quantity)."
+    },
+    "savr": {
+     "type": "parameter",
+     "units": "1",
+     "default": 3500.0,
+     "description": "Surface-area-to-volume ratio, 1/ft (dimensionless carrier)."
+    },
+    "st": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0555,
+     "description": "Total mineral content."
+    },
+    "se": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.01,
+     "description": "Effective mineral content."
+    },
+    "fuelmce": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.12,
+     "description": "Dead fuel moisture of extinction."
+    },
+    "ischap": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Chaparral flag of the category (Anderson13FuelTable ichap)."
+    },
+    "has_fuel": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "1 for a fuel category 1-13, 0 for the no-fuel category 14, for which fire_behavior sets betafl = bbb = 1 and phiwc = r_0 = iboros = 0."
+    },
+    "fmc_g": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.08,
+     "description": "Ground (dead) fuel moisture content, dry-mass fraction (fire_behavior fmc_g, namelist fuelmc_g or the fuel-moisture model)."
+    },
+    "bmst": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Moisture mass fraction of the wet fuel, M/(1 + M)."
+    },
+    "fuelloadm": {
+     "type": "unknown",
+     "units": "kg/m^2",
+     "description": "Dry fuel load (1 - bmst) fgi: fire_behavior treats fgi as the moist load and removes the water."
+    },
+    "fuelload": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Dry fuel load in lb/ft^2 (fuelloadm * 0.3048^2 * 2.205)."
+    },
+    "fueldepth": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Fuel bed depth in ft."
+    },
+    "betafl": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Packing ratio beta = fuelload/(fueldepth fueldens) (1 for the no-fuel category, to keep beta^-0.3 finite)."
+    },
+    "betaop": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Optimum packing ratio 3.348 savr^-0.8189."
+    },
+    "qig": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Heat of preignition 250 + 1116 M, Btu/lb."
+    },
+    "epsilon": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Effective heating number exp(-138/savr)."
+    },
+    "rhob": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Oven-dry bulk density fuelload/fueldepth, lb/ft^3."
+    },
+    "c": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Wind coefficient C = 7.47 exp(-0.133 savr^0.55)."
+    },
+    "bbb": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Wind exponent B = 0.02526 savr^0.54 (1 for the no-fuel category)."
+    },
+    "e": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Packing-ratio exponent E = 0.715 exp(-3.59e-4 savr)."
+    },
+    "phiwc": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Wind-factor coefficient C (beta/beta_op)^-E, so that phi_w = phiwc U^B with U in ft/min (0 for the no-fuel category)."
+    },
+    "rtemp2": {
+     "type": "unknown",
+     "units": "1",
+     "description": "savr^1.5."
+    },
+    "gammax": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Maximum reaction velocity savr^1.5/(495 + 0.0594 savr^1.5), 1/min."
+    },
+    "a": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Reaction-velocity exponent 1/(4.774 savr^0.1 - 7.27) (Rothermel 1972)."
+    },
+    "ratio": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Relative packing ratio beta/beta_op."
+    },
+    "gamma": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Optimum reaction velocity gammax ratio^a exp(a (1 - ratio)), 1/min."
+    },
+    "wn": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Net fuel load fuelload/(1 + st), lb/ft^2 (Rothermel 1972 form; Albini's w0 (1 - S_T) is not used)."
+    },
+    "rtemp1": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Moisture ratio M/M_x (not capped)."
+    },
+    "etam": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Moisture damping coefficient 1 - 2.59 r + 5.11 r^2 - 3.52 r^3 (not clipped to [0,1])."
+    },
+    "etas": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Mineral damping coefficient 0.174 se^-0.19 (not capped at 1)."
+    },
+    "fuelheat": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Fuel low heat content cmbcnst * 4.30e-4 = 7496.19 Btu/lb."
+    },
+    "ir": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Reaction intensity gamma wn fuelheat etam etas, Btu/ft^2/min."
+    },
+    "iboros": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Reaction intensity times residence time, I_R t_r, in kJ/m^2: ir * 1055/(0.3048^2 60) * 1e-3 * (60 * 384/savr) (0 for the no-fuel category); feeds Byram's flame length as I_B = iboros * ros."
+    },
+    "xifr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Propagating flux ratio exp((0.792 + 0.681 savr^0.5)(beta + 0.1))/(192 + 0.2595 savr)."
+    },
+    "r_0": {
+     "type": "unknown",
+     "units": "1",
+     "description": "No-wind, no-slope spread rate ir xifr/(rhob epsilon qig), ft/min (0 for the no-fuel category)."
+    },
+    "ros_base": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "r_0 converted to m/s (r_0 * 0.00508), the base spread rate used by ROSWRFFire."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "bmst",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "fmc_g",
+       {
+        "op": "+",
+        "args": [
+         1.0,
+         "fmc_g"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fuelloadm",
+     "rhs": {
+      "op": "*",
+      "args": [
+       {
+        "op": "-",
+        "args": [
+         1.0,
+         "bmst"
+        ]
+       },
+       "fgi"
+      ]
+     }
+    },
+    {
+     "lhs": "fuelload",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "fuelloadm",
+       {
+        "op": "^",
+        "args": [
+         "par.m_per_ft",
+         2
+        ]
+       },
+       "par.lb_per_kg"
+      ]
+     }
+    },
+    {
+     "lhs": "fueldepth",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "fueldepthm",
+       "par.m_per_ft"
+      ]
+     }
+    },
+    {
+     "lhs": "betafl",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "has_fuel",
+         0.5
+        ]
+       },
+       {
+        "op": "/",
+        "args": [
+         "fuelload",
+         {
+          "op": "*",
+          "args": [
+           "fueldepth",
+           "fueldens"
+          ]
+         }
+        ]
+       },
+       1.0
+      ]
+     }
+    },
+    {
+     "lhs": "betaop",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "par.c_betaop",
+       {
+        "op": "^",
+        "args": [
+         "savr",
+         "par.e_betaop"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "qig",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "par.c_qig_dry",
+       {
+        "op": "*",
+        "args": [
+         "par.c_qig_moist",
+         "fmc_g"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "epsilon",
+     "rhs": {
+      "op": "exp",
+      "args": [
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           "par.c_epsilon"
+          ]
+         },
+         "savr"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "rhob",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "fuelload",
+       "fueldepth"
+      ]
+     }
+    },
+    {
+     "lhs": "c",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "par.c_wind_c",
+       {
+        "op": "exp",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "par.e_wind_c",
+           {
+            "op": "^",
+            "args": [
+             "savr",
+             "par.p_wind_c"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "bbb",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "has_fuel",
+         0.5
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "par.c_wind_b",
+         {
+          "op": "^",
+          "args": [
+           "savr",
+           "par.p_wind_b"
+          ]
+         }
+        ]
+       },
+       1.0
+      ]
+     }
+    },
+    {
+     "lhs": "e",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "par.c_wind_e",
+       {
+        "op": "exp",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "par.e_wind_e",
+           "savr"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "phiwc",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "has_fuel",
+         0.5
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "c",
+         {
+          "op": "^",
+          "args": [
+           {
+            "op": "/",
+            "args": [
+             "betafl",
+             "betaop"
+            ]
+           },
+           {
+            "op": "-",
+            "args": [
+             "e"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "rtemp2",
+     "rhs": {
+      "op": "^",
+      "args": [
+       "savr",
+       "par.p_gammax"
+      ]
+     }
+    },
+    {
+     "lhs": "gammax",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "rtemp2",
+       {
+        "op": "+",
+        "args": [
+         "par.c_gammax_1",
+         {
+          "op": "*",
+          "args": [
+           "par.c_gammax_2",
+           "rtemp2"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "a",
+     "rhs": {
+      "op": "/",
+      "args": [
+       1.0,
+       {
+        "op": "-",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "par.c_a_1",
+           {
+            "op": "^",
+            "args": [
+             "savr",
+             "par.p_a"
+            ]
+           }
+          ]
+         },
+         "par.c_a_2"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "ratio",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "betafl",
+       "betaop"
+      ]
+     }
+    },
+    {
+     "lhs": "gamma",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "gammax",
+       {
+        "op": "^",
+        "args": [
+         "ratio",
+         "a"
+        ]
+       },
+       {
+        "op": "exp",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "a",
+           {
+            "op": "-",
+            "args": [
+             1.0,
+             "ratio"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "wn",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "fuelload",
+       {
+        "op": "+",
+        "args": [
+         1.0,
+         "st"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "rtemp1",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "fmc_g",
+       "fuelmce"
+      ]
+     }
+    },
+    {
+     "lhs": "etam",
+     "rhs": {
+      "op": "-",
+      "args": [
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           {
+            "op": "*",
+            "args": [
+             "par.c_etam_1",
+             "rtemp1"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "par.c_etam_2",
+           {
+            "op": "^",
+            "args": [
+             "rtemp1",
+             2
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "par.c_etam_3",
+         {
+          "op": "^",
+          "args": [
+           "rtemp1",
+           3
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "etas",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "par.c_etas",
+       {
+        "op": "^",
+        "args": [
+         "se",
+         "par.e_etas"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fuelheat",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "par.cmbcnst",
+       "par.convert_j_per_kg_to_btu_per_pound"
+      ]
+     }
+    },
+    {
+     "lhs": "ir",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "gamma",
+       "wn",
+       "fuelheat",
+       "etam",
+       "etas"
+      ]
+     }
+    },
+    {
+     "lhs": "iboros",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "has_fuel",
+         0.5
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "ir",
+         {
+          "op": "/",
+          "args": [
+           "par.j_per_btu",
+           {
+            "op": "*",
+            "args": [
+             {
+              "op": "/",
+              "args": [
+               {
+                "op": "^",
+                "args": [
+                 "par.m_per_ft",
+                 2
+                ]
+               },
+               {
+                "op": "*",
+                "args": [
+                 "par.unit_length",
+                 "par.unit_length"
+                ]
+               }
+              ]
+             },
+             "par.s_per_min"
+            ]
+           }
+          ]
+         },
+         "par.kj_per_j",
+         {
+          "op": "/",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "par.s_per_min",
+             "par.residence_time_coef"
+            ]
+           },
+           "savr"
+          ]
+         }
+        ]
+       },
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "xifr",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "exp",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           {
+            "op": "+",
+            "args": [
+             "par.c_xifr_1",
+             {
+              "op": "*",
+              "args": [
+               "par.c_xifr_2",
+               {
+                "op": "^",
+                "args": [
+                 "savr",
+                 0.5
+                ]
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "op": "+",
+            "args": [
+             "betafl",
+             "par.c_xifr_3"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "par.c_xifr_4",
+         {
+          "op": "*",
+          "args": [
+           "par.c_xifr_5",
+           "savr"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "r_0",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "has_fuel",
+         0.5
+        ]
+       },
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "ir",
+           "xifr"
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "rhob",
+           "epsilon",
+           "qig"
+          ]
+         }
+        ]
+       },
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "ros_base",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "r_0",
+       "par.ms_per_ftmin"
+      ]
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "category_1_short_grass_fmc008",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its own test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, 20 steps, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, -DESM_DUMP=ON; the dumped run's summary output is bit-identical to the uninstrumented build). Single-precision source, so rel 1e-5 (CLAUDE.md contract); a real64 re-evaluation of the same formulae agrees with the dumps to <= 8e-7 relative. Regime: Anderson category 1 (short grass) at cell (i,j) = (19, 66) with fmc_g = 0.08 (namelist fuelmc_g; the test7 run has uniform moisture), from the ros_params dump written by Set_ros_parameters_wrffire at initialisation; every intermediate of the routine is asserted.",
+       "parameter_overrides": {
+         "fgi": 0.16599999368190765,
+         "fueldepthm": 0.3050000071525574,
+         "fueldens": 32.0,
+         "savr": 3500.0,
+         "st": 0.05550000071525574,
+         "se": 0.009999999776482582,
+         "fuelmce": 0.11999999731779099,
+         "ischap": 0.0,
+         "fmc_g": 0.07999999821186066,
+         "has_fuel": 1.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/category_1_short_grass_fmc008_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "bmst",
+           "time": 0.0,
+           "expected": 0.07407406717538834,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelloadm",
+           "time": 0.0,
+           "expected": 0.1537036895751953,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelload",
+           "time": 0.0,
+           "expected": 0.0314863845705986,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fueldepth",
+           "time": 0.0,
+           "expected": 1.0006561279296875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "betafl",
+           "time": 0.0,
+           "expected": 0.0009833043441176414,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "betaop",
+           "time": 0.0,
+           "expected": 0.00419322494417429,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "qig",
+           "time": 0.0,
+           "expected": 339.2799987792969,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "epsilon",
+           "time": 0.0,
+           "expected": 0.9613386392593384,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rhob",
+           "time": 0.0,
+           "expected": 0.031465739011764526,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "c",
+           "time": 0.0,
+           "expected": 5.424781556939706e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "bbb",
+           "time": 0.0,
+           "expected": 2.0712385177612305,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "e",
+           "time": 0.0,
+           "expected": 0.20352372527122498,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phiwc",
+           "time": 0.0,
+           "expected": 7.287419430213049e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "gammax",
+           "time": 0.0,
+           "expected": 16.183696746826172,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "a",
+           "time": 0.0,
+           "expected": 0.2835547626018524,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ratio",
+           "time": 0.0,
+           "expected": 0.23449835181236267,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "gamma",
+           "time": 0.0,
+           "expected": 13.327433586120605,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "wn",
+           "time": 0.0,
+           "expected": 0.029830776154994965,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rtemp1",
+           "time": 0.0,
+           "expected": 0.6666666865348816,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "etam",
+           "time": 0.0,
+           "expected": 0.5014815330505371,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "etas",
+           "time": 0.0,
+           "expected": 0.4173969030380249,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ir",
+           "time": 0.0,
+           "expected": 623.8150024414062,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "iboros",
+           "time": 0.0,
+           "expected": 777.2156372070312,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "xifr",
+           "time": 0.0,
+           "expected": 0.057564567774534225,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "r_0",
+           "time": 0.0,
+           "expected": 3.4989562034606934,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelheat",
+           "time": 0.0,
+           "expected": 7496.18994140625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "category_2_timber_grass_understory_fmc008",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its own test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, 20 steps, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, -DESM_DUMP=ON; the dumped run's summary output is bit-identical to the uninstrumented build). Single-precision source, so rel 1e-5 (CLAUDE.md contract); a real64 re-evaluation of the same formulae agrees with the dumps to <= 8e-7 relative. Regime: Anderson category 2 (timber grass understory) at cell (i,j) = (18, 64) with fmc_g = 0.08 (namelist fuelmc_g; the test7 run has uniform moisture), from the ros_params dump written by Set_ros_parameters_wrffire at initialisation; every intermediate of the routine is asserted.",
+       "parameter_overrides": {
+         "fgi": 0.8960000276565552,
+         "fueldepthm": 0.3050000071525574,
+         "fueldens": 32.0,
+         "savr": 2784.0,
+         "st": 0.05550000071525574,
+         "se": 0.009999999776482582,
+         "fuelmce": 0.15000000596046448,
+         "ischap": 0.0,
+         "fmc_g": 0.07999999821186066,
+         "has_fuel": 1.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/category_2_timber_grass_understory_fmc008_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "bmst",
+           "time": 0.0,
+           "expected": 0.07407406717538834,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelloadm",
+           "time": 0.0,
+           "expected": 0.82962965965271,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelload",
+           "time": 0.0,
+           "expected": 0.16995061933994293,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fueldepth",
+           "time": 0.0,
+           "expected": 1.0006561279296875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "betafl",
+           "time": 0.0,
+           "expected": 0.005307474639266729,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "betaop",
+           "time": 0.0,
+           "expected": 0.005057616159319878,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "qig",
+           "time": 0.0,
+           "expected": 339.2799987792969,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "epsilon",
+           "time": 0.0,
+           "expected": 0.9516395330429077,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rhob",
+           "time": 0.0,
+           "expected": 0.16983918845653534,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "c",
+           "time": 0.0,
+           "expected": 0.00021989524248056114,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "bbb",
+           "time": 0.0,
+           "expected": 1.8304370641708374,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "e",
+           "time": 0.0,
+           "expected": 0.26317691802978516,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phiwc",
+           "time": 0.0,
+           "expected": 0.00021712227317038924,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "gammax",
+           "time": 0.0,
+           "expected": 15.931233406066895,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "a",
+           "time": 0.0,
+           "expected": 0.3046593964099884,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ratio",
+           "time": 0.0,
+           "expected": 1.0494024753570557,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "gamma",
+           "time": 0.0,
+           "expected": 15.925498962402344,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "wn",
+           "time": 0.0,
+           "expected": 0.16101431846618652,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rtemp1",
+           "time": 0.0,
+           "expected": 0.5333333015441895,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "etam",
+           "time": 0.0,
+           "expected": 0.5381807684898376,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "etas",
+           "time": 0.0,
+           "expected": 0.4173969030380249,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ir",
+           "time": 0.0,
+           "expected": 4317.92919921875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "iboros",
+           "time": 0.0,
+           "expected": 6763.322265625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "xifr",
+           "time": 0.0,
+           "expected": 0.052287064492702484,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "r_0",
+           "time": 0.0,
+           "expected": 4.117192268371582,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelheat",
+           "time": 0.0,
+           "expected": 7496.18994140625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "category_5_brush_fmc008",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its own test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, 20 steps, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, -DESM_DUMP=ON; the dumped run's summary output is bit-identical to the uninstrumented build). Single-precision source, so rel 1e-5 (CLAUDE.md contract); a real64 re-evaluation of the same formulae agrees with the dumps to <= 8e-7 relative. Regime: Anderson category 5 (brush) at cell (i,j) = (4, 53) with fmc_g = 0.08 (namelist fuelmc_g; the test7 run has uniform moisture), from the ros_params dump written by Set_ros_parameters_wrffire at initialisation; every intermediate of the routine is asserted.",
+       "parameter_overrides": {
+         "fgi": 0.7839999794960022,
+         "fueldepthm": 0.6100000143051147,
+         "fueldens": 32.0,
+         "savr": 1683.0,
+         "st": 0.05550000071525574,
+         "se": 0.009999999776482582,
+         "fuelmce": 0.20000000298023224,
+         "ischap": 0.0,
+         "fmc_g": 0.07999999821186066,
+         "has_fuel": 1.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/category_5_brush_fmc008_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "bmst",
+           "time": 0.0,
+           "expected": 0.07407406717538834,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelloadm",
+           "time": 0.0,
+           "expected": 0.7259259223937988,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelload",
+           "time": 0.0,
+           "expected": 0.14870679378509521,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fueldepth",
+           "time": 0.0,
+           "expected": 2.001312255859375,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "betafl",
+           "time": 0.0,
+           "expected": 0.002322020009160042,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "betaop",
+           "time": 0.0,
+           "expected": 0.00763739412650466,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "qig",
+           "time": 0.0,
+           "expected": 339.2799987792969,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "epsilon",
+           "time": 0.0,
+           "expected": 0.92127525806427,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rhob",
+           "time": 0.0,
+           "expected": 0.07430464029312134,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "c",
+           "time": 0.0,
+           "expected": 0.0027408262249082327,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "bbb",
+           "time": 0.0,
+           "expected": 1.394822120666504,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "e",
+           "time": 0.0,
+           "expected": 0.39075684547424316,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phiwc",
+           "time": 0.0,
+           "expected": 0.004364492371678352,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "gammax",
+           "time": 0.0,
+           "expected": 15.021931648254395,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "a",
+           "time": 0.0,
+           "expected": 0.3617437779903412,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ratio",
+           "time": 0.0,
+           "expected": 0.3040330111980438,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "gamma",
+           "time": 0.0,
+           "expected": 12.560712814331055,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "wn",
+           "time": 0.0,
+           "expected": 0.1408875286579132,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rtemp1",
+           "time": 0.0,
+           "expected": 0.3999999761581421,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "etam",
+           "time": 0.0,
+           "expected": 0.556320071220398,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "etas",
+           "time": 0.0,
+           "expected": 0.4173969030380249,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ir",
+           "time": 0.0,
+           "expected": 3080.359375,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "iboros",
+           "time": 0.0,
+           "expected": 7981.25341796875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "xifr",
+           "time": 0.0,
+           "expected": 0.03007550723850727,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "r_0",
+           "time": 0.0,
+           "expected": 3.988877773284912,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelheat",
+           "time": 0.0,
+           "expected": 7496.18994140625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "category_8_closed_timber_litter_fmc008",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its own test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, 20 steps, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, -DESM_DUMP=ON; the dumped run's summary output is bit-identical to the uninstrumented build). Single-precision source, so rel 1e-5 (CLAUDE.md contract); a real64 re-evaluation of the same formulae agrees with the dumps to <= 8e-7 relative. Regime: Anderson category 8 (closed timber litter) at cell (i,j) = (5, 51) with fmc_g = 0.08 (namelist fuelmc_g; the test7 run has uniform moisture), from the ros_params dump written by Set_ros_parameters_wrffire at initialisation; every intermediate of the routine is asserted.",
+       "parameter_overrides": {
+         "fgi": 1.1200000047683716,
+         "fueldepthm": 0.061000000685453415,
+         "fueldens": 32.0,
+         "savr": 1889.0,
+         "st": 0.05550000071525574,
+         "se": 0.009999999776482582,
+         "fuelmce": 0.30000001192092896,
+         "ischap": 0.0,
+         "fmc_g": 0.07999999821186066,
+         "has_fuel": 1.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/category_8_closed_timber_litter_fmc008_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "bmst",
+           "time": 0.0,
+           "expected": 0.07407406717538834,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelloadm",
+           "time": 0.0,
+           "expected": 1.0370370149612427,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelload",
+           "time": 0.0,
+           "expected": 0.21243827044963837,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fueldepth",
+           "time": 0.0,
+           "expected": 0.20013123750686646,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "betafl",
+           "time": 0.0,
+           "expected": 0.03317171335220337,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "betaop",
+           "time": 0.0,
+           "expected": 0.006948309019207954,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "qig",
+           "time": 0.0,
+           "expected": 339.2799987792969,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "epsilon",
+           "time": 0.0,
+           "expected": 0.9295501112937927,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rhob",
+           "time": 0.0,
+           "expected": 1.0614948272705078,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "c",
+           "time": 0.0,
+           "expected": 0.001631644438020885,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "bbb",
+           "time": 0.0,
+           "expected": 1.4845631122589111,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "e",
+           "time": 0.0,
+           "expected": 0.362901508808136,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "phiwc",
+           "time": 0.0,
+           "expected": 0.0009252429008483887,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "gammax",
+           "time": 0.0,
+           "expected": 15.283703804016113,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "a",
+           "time": 0.0,
+           "expected": 0.347110778093338,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ratio",
+           "time": 0.0,
+           "expected": 4.774069786071777,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "gamma",
+           "time": 0.0,
+           "expected": 7.0948567390441895,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "wn",
+           "time": 0.0,
+           "expected": 0.20126789808273315,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rtemp1",
+           "time": 0.0,
+           "expected": 0.2666666507720947,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "etam",
+           "time": 0.0,
+           "expected": 0.6059615015983582,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "etas",
+           "time": 0.0,
+           "expected": 0.4173969030380249,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "ir",
+           "time": 0.0,
+           "expected": 2707.403564453125,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "iboros",
+           "time": 0.0,
+           "expected": 6249.92529296875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "xifr",
+           "time": 0.0,
+           "expected": 0.08389230072498322,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "r_0",
+           "time": 0.0,
+           "expected": 0.6784629821777344,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "fuelheat",
+           "time": 0.0,
+           "expected": 7496.18994140625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}

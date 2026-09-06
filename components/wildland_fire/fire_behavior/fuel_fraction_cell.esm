@@ -1,0 +1,1738 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "FuelFractionCellWRFFire",
+  "description": "Fuel fraction remaining and burning area fraction of one fire-grid cell as computed by fire_behavior's Calc_fuel_left (physics/level_set_mod.F90): the cell is split into a 2x2 submesh (fuel_left_irl = fuel_left_jrl = 2); at the four corners of every subcell the level-set function and the ignition time are bilinearly interpolated from the 3x3 node neighbourhood of the cell (the node values are the cell-centred lfn and tign_g of the cell and its eight neighbours; subcell (1,1) uses nodes (i-1..i, j-1..j) at fractions 1/2..1, subcell (2,1) nodes (i..i+1, j-1..j) at fractions 0..1/2 and so on); each subcell's burning area is the level-set sign fraction (1 - sum lfn/sum|lfn|)/2 (Mandel et al. 2011 Sect. 3.2) and its remaining fuel is area exp(-(time_now - tign_mean)/fuel_time) + (1 - area) with the mean of the four corner times since ignition (zero for unburnt or not-yet-ignited corners); the cell values are the subcell means. The per-step burnt fraction fuel_frac_before - fuel_frac feeds Calc_fire_fluxes. For a cell that is entirely burning with uniform ignition time this is the exact solution of dF/dt = -F/fuel_time (EarthSciModels level_set/fuel_consumption.esm, Mandel eq. 3), exposed as dfuel_frac_dt_burning; for partly burning cells the subgrid integration has no single-ODE equivalent, which is why this component is transcribed rather than reusing FuelConsumption. Tests: cells of the instrumented test7 run at step 20 (real32), rel 1e-5 (abs 1e-7 where a subcell fraction is exactly 0 or 1).",
+  "license": "MIT",
+  "tags": [
+   "wildland_fire",
+   "fire_behavior",
+   "wrf-fire",
+   "level-set",
+   "fuel-consumption"
+  ],
+  "references": [
+   {
+    "citation": "NCAR Community Fire Behavior Model (fire_behavior), develop @ eb77580, physics/level_set_mod.F90 Calc_fuel_left / Calc_fuel_left_at_grid_point; instrumented fork ctessum-claude/fire_behavior branch earthsciml-instrumented."
+   },
+   {
+    "citation": "Mandel, J., Beezley, J.D., Kochanski, A.K. (2011). Coupled atmosphere-wildland fire modeling with WRF 3.3 and SFIRE 2011. Geosci. Model Dev. 4, 591-610, eq. 3 and Sect. 3.2 (fuel fraction and its subgrid integration).",
+    "doi": "10.5194/gmd-4-591-2011"
+   }
+  ]
+ },
+ "models": {
+  "FuelFractionCellWRFFire": {
+   "expression_templates": {
+    "bilinear": {
+     "params": [
+      "a00",
+      "a01",
+      "a10",
+      "a11",
+      "tx",
+      "ty"
+     ],
+     "description": "Bilinear interpolation between the four coarse nodes (i2,j2), (i2,j2+1), (i2+1,j2), (i2+1,j2+1) at fractional position (tx, ty).",
+     "body": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           "tx"
+          ]
+         },
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           "ty"
+          ]
+         },
+         "a00"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           "tx"
+          ]
+         },
+         "ty",
+         "a01"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "tx",
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           "ty"
+          ]
+         },
+         "a10"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "tx",
+         "ty",
+         "a11"
+        ]
+       }
+      ]
+     }
+    },
+    "corner_time_since_ignition": {
+     "params": [
+      "lfn",
+      "tign",
+      "time_now"
+     ],
+     "description": "Minus the time since ignition at a subcell corner, 0 if the corner is unburnt (lfn > 0) or ignites later than time_now (Calc_fuel_left_at_grid_point t00..t11).",
+     "body": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "or",
+        "args": [
+         {
+          "op": ">",
+          "args": [
+           "lfn",
+           0.0
+          ]
+         },
+         {
+          "op": ">",
+          "args": [
+           {
+            "op": "-",
+            "args": [
+             "tign",
+             "time_now"
+            ]
+           },
+           0.0
+          ]
+         }
+        ]
+       },
+       0.0,
+       {
+        "op": "-",
+        "args": [
+         "tign",
+         "time_now"
+        ]
+       }
+      ]
+     }
+    },
+    "subcell_area": {
+     "params": [
+      "l00",
+      "l01",
+      "l10",
+      "l11",
+      "tiny"
+     ],
+     "description": "Burning area fraction of a subcell from its corner level-set values: (-sum lfn / max(sum |lfn|, tiny) + 1)/2 clipped to [0, 1].",
+     "body": {
+      "op": "min",
+      "args": [
+       1.0,
+       {
+        "op": "max",
+        "args": [
+         0.0,
+         {
+          "op": "/",
+          "args": [
+           {
+            "op": "+",
+            "args": [
+             {
+              "op": "/",
+              "args": [
+               {
+                "op": "-",
+                "args": [
+                 {
+                  "op": "+",
+                  "args": [
+                   "l00",
+                   "l01",
+                   "l10",
+                   "l11"
+                  ]
+                 }
+                ]
+               },
+               {
+                "op": "max",
+                "args": [
+                 {
+                  "op": "+",
+                  "args": [
+                   {
+                    "op": "abs",
+                    "args": [
+                     "l00"
+                    ]
+                   },
+                   {
+                    "op": "abs",
+                    "args": [
+                     "l01"
+                    ]
+                   },
+                   {
+                    "op": "abs",
+                    "args": [
+                     "l10"
+                    ]
+                   },
+                   {
+                    "op": "abs",
+                    "args": [
+                     "l11"
+                    ]
+                   }
+                  ]
+                 },
+                 "tiny"
+                ]
+               }
+              ]
+             },
+             1.0
+            ]
+           },
+           2.0
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    "subcell_fuel_left": {
+     "params": [
+      "area",
+      "ta",
+      "fuel_time"
+     ],
+     "description": "Fuel fraction left in a subcell: area exp(ta/fuel_time) + (1 - area) where the subcell burns, else 1.",
+     "body": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "area",
+         0.0
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "area",
+           {
+            "op": "exp",
+            "args": [
+             {
+              "op": "/",
+              "args": [
+               "ta",
+               "fuel_time"
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           "area"
+          ]
+         }
+        ]
+       },
+       1.0
+      ]
+     }
+    }
+   },
+   "variables": {
+    "lfn_mm": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i-1, j-1) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_mm": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node mm (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "lfn_m0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i-1, j) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_m0": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node m0 (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "lfn_mp": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i-1, j+1) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_mp": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node mp (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "lfn_0m": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i, j-1) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_0m": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node 0m (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "lfn_00": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i, j) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_00": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node 00 (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "lfn_0p": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i, j+1) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_0p": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node 0p (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "lfn_pm": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i+1, j-1) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_pm": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node pm (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "lfn_p0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i+1, j) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_p0": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node p0 (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "lfn_pp": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Level-set function at node (i+1, j+1) of the 3x3 node neighbourhood of cell (i,j) (fire_behavior lfn; nodes carry the cell-centred values of the neighbouring cells)."
+    },
+    "tign_pp": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Ignition time at node pp (fire_behavior tign_g; time_now for unignited nodes)."
+    },
+    "time_now": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.0,
+     "description": "Time at the end of the step (ts + dt) at which the fuel fraction is evaluated."
+    },
+    "fuel_time": {
+     "type": "parameter",
+     "units": "s",
+     "default": 8.235294,
+     "description": "Fuel e-folding time of the cell (Anderson13FuelTable fuel_time = weight/0.85)."
+    },
+    "fuel_frac_before": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Fuel fraction remaining at the start of the step."
+    },
+    "tiny_lfn": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.1754944e-38,
+     "description": "tiny(real32): floor of the sum of |lfn| over a subcell's corners."
+    },
+    "area_11": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Burning area fraction of subcell 11 (isubcl, jsubcl): (1 - sum lfn / sum |lfn|)/2 over its four corners, clipped to [0, 1]."
+    },
+    "ta_11": {
+     "type": "unknown",
+     "units": "s",
+     "description": "Mean of the four corner times since ignition of subcell 11, each zeroed where the corner is unburnt (lfn > 0) or not yet ignited (tign > time_now); <= 0."
+    },
+    "left_11": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Fuel fraction left in subcell 11: area exp(ta/fuel_time) + (1 - area), or 1 where area = 0."
+    },
+    "area_21": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Burning area fraction of subcell 21 (isubcl, jsubcl): (1 - sum lfn / sum |lfn|)/2 over its four corners, clipped to [0, 1]."
+    },
+    "ta_21": {
+     "type": "unknown",
+     "units": "s",
+     "description": "Mean of the four corner times since ignition of subcell 21, each zeroed where the corner is unburnt (lfn > 0) or not yet ignited (tign > time_now); <= 0."
+    },
+    "left_21": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Fuel fraction left in subcell 21: area exp(ta/fuel_time) + (1 - area), or 1 where area = 0."
+    },
+    "area_12": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Burning area fraction of subcell 12 (isubcl, jsubcl): (1 - sum lfn / sum |lfn|)/2 over its four corners, clipped to [0, 1]."
+    },
+    "ta_12": {
+     "type": "unknown",
+     "units": "s",
+     "description": "Mean of the four corner times since ignition of subcell 12, each zeroed where the corner is unburnt (lfn > 0) or not yet ignited (tign > time_now); <= 0."
+    },
+    "left_12": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Fuel fraction left in subcell 12: area exp(ta/fuel_time) + (1 - area), or 1 where area = 0."
+    },
+    "area_22": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Burning area fraction of subcell 22 (isubcl, jsubcl): (1 - sum lfn / sum |lfn|)/2 over its four corners, clipped to [0, 1]."
+    },
+    "ta_22": {
+     "type": "unknown",
+     "units": "s",
+     "description": "Mean of the four corner times since ignition of subcell 22, each zeroed where the corner is unburnt (lfn > 0) or not yet ignited (tign > time_now); <= 0."
+    },
+    "left_22": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Fuel fraction left in subcell 22: area exp(ta/fuel_time) + (1 - area), or 1 where area = 0."
+    },
+    "fire_area": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Burning area fraction of the cell, mean of the four subcell fractions (fire_behavior fire_area)."
+    },
+    "fuel_frac": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Fuel fraction remaining at time_now, mean of the four subcell fractions (fire_behavior fuel_frac after Calc_fuel_left)."
+    },
+    "fuel_frac_burnt_dt": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Fuel fraction burnt during the step, fuel_frac_before - fuel_frac; drives the heat and moisture fluxes (Calc_fire_fluxes) and the smoke emission."
+    },
+    "dfuel_frac_dt_burning": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Continuous rate form for a fully burning cell: -fuel_frac/fuel_time, i.e. Mandel et al. (2011) eq. 3 dF/dt = -F/T_f, which the subcell exponentials integrate exactly. Where fire_area < 1 the cell rate is not a single exponential, so this is a diagnostic of the fully-burning limit only."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "area_11",
+     "rhs": {
+      "op": "apply_expression_template",
+      "name": "subcell_area",
+      "args": [],
+      "bindings": {
+       "l00": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_mm",
+         "a01": "lfn_m0",
+         "a10": "lfn_0m",
+         "a11": "lfn_00",
+         "tx": 0.5,
+         "ty": 0.5
+        }
+       },
+       "l01": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_mm",
+         "a01": "lfn_m0",
+         "a10": "lfn_0m",
+         "a11": "lfn_00",
+         "tx": 0.5,
+         "ty": 1.0
+        }
+       },
+       "l10": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_mm",
+         "a01": "lfn_m0",
+         "a10": "lfn_0m",
+         "a11": "lfn_00",
+         "tx": 1.0,
+         "ty": 0.5
+        }
+       },
+       "l11": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_mm",
+         "a01": "lfn_m0",
+         "a10": "lfn_0m",
+         "a11": "lfn_00",
+         "tx": 1.0,
+         "ty": 1.0
+        }
+       },
+       "tiny": "tiny_lfn"
+      }
+     }
+    },
+    {
+     "lhs": "ta_11",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.25,
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_mm",
+             "a01": "lfn_m0",
+             "a10": "lfn_0m",
+             "a11": "lfn_00",
+             "tx": 0.5,
+             "ty": 0.5
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_mm",
+             "a01": "tign_m0",
+             "a10": "tign_0m",
+             "a11": "tign_00",
+             "tx": 0.5,
+             "ty": 0.5
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_mm",
+             "a01": "lfn_m0",
+             "a10": "lfn_0m",
+             "a11": "lfn_00",
+             "tx": 1.0,
+             "ty": 0.5
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_mm",
+             "a01": "tign_m0",
+             "a10": "tign_0m",
+             "a11": "tign_00",
+             "tx": 1.0,
+             "ty": 0.5
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_mm",
+             "a01": "lfn_m0",
+             "a10": "lfn_0m",
+             "a11": "lfn_00",
+             "tx": 0.5,
+             "ty": 1.0
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_mm",
+             "a01": "tign_m0",
+             "a10": "tign_0m",
+             "a11": "tign_00",
+             "tx": 0.5,
+             "ty": 1.0
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_mm",
+             "a01": "lfn_m0",
+             "a10": "lfn_0m",
+             "a11": "lfn_00",
+             "tx": 1.0,
+             "ty": 1.0
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_mm",
+             "a01": "tign_m0",
+             "a10": "tign_0m",
+             "a11": "tign_00",
+             "tx": 1.0,
+             "ty": 1.0
+            }
+           },
+           "time_now": "time_now"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "left_11",
+     "rhs": {
+      "op": "apply_expression_template",
+      "name": "subcell_fuel_left",
+      "args": [],
+      "bindings": {
+       "area": "area_11",
+       "ta": "ta_11",
+       "fuel_time": "fuel_time"
+      }
+     }
+    },
+    {
+     "lhs": "area_21",
+     "rhs": {
+      "op": "apply_expression_template",
+      "name": "subcell_area",
+      "args": [],
+      "bindings": {
+       "l00": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_0m",
+         "a01": "lfn_00",
+         "a10": "lfn_pm",
+         "a11": "lfn_p0",
+         "tx": 0.0,
+         "ty": 0.5
+        }
+       },
+       "l01": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_0m",
+         "a01": "lfn_00",
+         "a10": "lfn_pm",
+         "a11": "lfn_p0",
+         "tx": 0.0,
+         "ty": 1.0
+        }
+       },
+       "l10": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_0m",
+         "a01": "lfn_00",
+         "a10": "lfn_pm",
+         "a11": "lfn_p0",
+         "tx": 0.5,
+         "ty": 0.5
+        }
+       },
+       "l11": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_0m",
+         "a01": "lfn_00",
+         "a10": "lfn_pm",
+         "a11": "lfn_p0",
+         "tx": 0.5,
+         "ty": 1.0
+        }
+       },
+       "tiny": "tiny_lfn"
+      }
+     }
+    },
+    {
+     "lhs": "ta_21",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.25,
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_0m",
+             "a01": "lfn_00",
+             "a10": "lfn_pm",
+             "a11": "lfn_p0",
+             "tx": 0.0,
+             "ty": 0.5
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_0m",
+             "a01": "tign_00",
+             "a10": "tign_pm",
+             "a11": "tign_p0",
+             "tx": 0.0,
+             "ty": 0.5
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_0m",
+             "a01": "lfn_00",
+             "a10": "lfn_pm",
+             "a11": "lfn_p0",
+             "tx": 0.5,
+             "ty": 0.5
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_0m",
+             "a01": "tign_00",
+             "a10": "tign_pm",
+             "a11": "tign_p0",
+             "tx": 0.5,
+             "ty": 0.5
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_0m",
+             "a01": "lfn_00",
+             "a10": "lfn_pm",
+             "a11": "lfn_p0",
+             "tx": 0.0,
+             "ty": 1.0
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_0m",
+             "a01": "tign_00",
+             "a10": "tign_pm",
+             "a11": "tign_p0",
+             "tx": 0.0,
+             "ty": 1.0
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_0m",
+             "a01": "lfn_00",
+             "a10": "lfn_pm",
+             "a11": "lfn_p0",
+             "tx": 0.5,
+             "ty": 1.0
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_0m",
+             "a01": "tign_00",
+             "a10": "tign_pm",
+             "a11": "tign_p0",
+             "tx": 0.5,
+             "ty": 1.0
+            }
+           },
+           "time_now": "time_now"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "left_21",
+     "rhs": {
+      "op": "apply_expression_template",
+      "name": "subcell_fuel_left",
+      "args": [],
+      "bindings": {
+       "area": "area_21",
+       "ta": "ta_21",
+       "fuel_time": "fuel_time"
+      }
+     }
+    },
+    {
+     "lhs": "area_12",
+     "rhs": {
+      "op": "apply_expression_template",
+      "name": "subcell_area",
+      "args": [],
+      "bindings": {
+       "l00": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_m0",
+         "a01": "lfn_mp",
+         "a10": "lfn_00",
+         "a11": "lfn_0p",
+         "tx": 0.5,
+         "ty": 0.0
+        }
+       },
+       "l01": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_m0",
+         "a01": "lfn_mp",
+         "a10": "lfn_00",
+         "a11": "lfn_0p",
+         "tx": 0.5,
+         "ty": 0.5
+        }
+       },
+       "l10": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_m0",
+         "a01": "lfn_mp",
+         "a10": "lfn_00",
+         "a11": "lfn_0p",
+         "tx": 1.0,
+         "ty": 0.0
+        }
+       },
+       "l11": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_m0",
+         "a01": "lfn_mp",
+         "a10": "lfn_00",
+         "a11": "lfn_0p",
+         "tx": 1.0,
+         "ty": 0.5
+        }
+       },
+       "tiny": "tiny_lfn"
+      }
+     }
+    },
+    {
+     "lhs": "ta_12",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.25,
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_m0",
+             "a01": "lfn_mp",
+             "a10": "lfn_00",
+             "a11": "lfn_0p",
+             "tx": 0.5,
+             "ty": 0.0
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_m0",
+             "a01": "tign_mp",
+             "a10": "tign_00",
+             "a11": "tign_0p",
+             "tx": 0.5,
+             "ty": 0.0
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_m0",
+             "a01": "lfn_mp",
+             "a10": "lfn_00",
+             "a11": "lfn_0p",
+             "tx": 1.0,
+             "ty": 0.0
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_m0",
+             "a01": "tign_mp",
+             "a10": "tign_00",
+             "a11": "tign_0p",
+             "tx": 1.0,
+             "ty": 0.0
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_m0",
+             "a01": "lfn_mp",
+             "a10": "lfn_00",
+             "a11": "lfn_0p",
+             "tx": 0.5,
+             "ty": 0.5
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_m0",
+             "a01": "tign_mp",
+             "a10": "tign_00",
+             "a11": "tign_0p",
+             "tx": 0.5,
+             "ty": 0.5
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_m0",
+             "a01": "lfn_mp",
+             "a10": "lfn_00",
+             "a11": "lfn_0p",
+             "tx": 1.0,
+             "ty": 0.5
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_m0",
+             "a01": "tign_mp",
+             "a10": "tign_00",
+             "a11": "tign_0p",
+             "tx": 1.0,
+             "ty": 0.5
+            }
+           },
+           "time_now": "time_now"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "left_12",
+     "rhs": {
+      "op": "apply_expression_template",
+      "name": "subcell_fuel_left",
+      "args": [],
+      "bindings": {
+       "area": "area_12",
+       "ta": "ta_12",
+       "fuel_time": "fuel_time"
+      }
+     }
+    },
+    {
+     "lhs": "area_22",
+     "rhs": {
+      "op": "apply_expression_template",
+      "name": "subcell_area",
+      "args": [],
+      "bindings": {
+       "l00": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_00",
+         "a01": "lfn_0p",
+         "a10": "lfn_p0",
+         "a11": "lfn_pp",
+         "tx": 0.0,
+         "ty": 0.0
+        }
+       },
+       "l01": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_00",
+         "a01": "lfn_0p",
+         "a10": "lfn_p0",
+         "a11": "lfn_pp",
+         "tx": 0.0,
+         "ty": 0.5
+        }
+       },
+       "l10": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_00",
+         "a01": "lfn_0p",
+         "a10": "lfn_p0",
+         "a11": "lfn_pp",
+         "tx": 0.5,
+         "ty": 0.0
+        }
+       },
+       "l11": {
+        "op": "apply_expression_template",
+        "name": "bilinear",
+        "args": [],
+        "bindings": {
+         "a00": "lfn_00",
+         "a01": "lfn_0p",
+         "a10": "lfn_p0",
+         "a11": "lfn_pp",
+         "tx": 0.5,
+         "ty": 0.5
+        }
+       },
+       "tiny": "tiny_lfn"
+      }
+     }
+    },
+    {
+     "lhs": "ta_22",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.25,
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_00",
+             "a01": "lfn_0p",
+             "a10": "lfn_p0",
+             "a11": "lfn_pp",
+             "tx": 0.0,
+             "ty": 0.0
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_00",
+             "a01": "tign_0p",
+             "a10": "tign_p0",
+             "a11": "tign_pp",
+             "tx": 0.0,
+             "ty": 0.0
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_00",
+             "a01": "lfn_0p",
+             "a10": "lfn_p0",
+             "a11": "lfn_pp",
+             "tx": 0.5,
+             "ty": 0.0
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_00",
+             "a01": "tign_0p",
+             "a10": "tign_p0",
+             "a11": "tign_pp",
+             "tx": 0.5,
+             "ty": 0.0
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_00",
+             "a01": "lfn_0p",
+             "a10": "lfn_p0",
+             "a11": "lfn_pp",
+             "tx": 0.0,
+             "ty": 0.5
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_00",
+             "a01": "tign_0p",
+             "a10": "tign_p0",
+             "a11": "tign_pp",
+             "tx": 0.0,
+             "ty": 0.5
+            }
+           },
+           "time_now": "time_now"
+          }
+         },
+         {
+          "op": "apply_expression_template",
+          "name": "corner_time_since_ignition",
+          "args": [],
+          "bindings": {
+           "lfn": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "lfn_00",
+             "a01": "lfn_0p",
+             "a10": "lfn_p0",
+             "a11": "lfn_pp",
+             "tx": 0.5,
+             "ty": 0.5
+            }
+           },
+           "tign": {
+            "op": "apply_expression_template",
+            "name": "bilinear",
+            "args": [],
+            "bindings": {
+             "a00": "tign_00",
+             "a01": "tign_0p",
+             "a10": "tign_p0",
+             "a11": "tign_pp",
+             "tx": 0.5,
+             "ty": 0.5
+            }
+           },
+           "time_now": "time_now"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "left_22",
+     "rhs": {
+      "op": "apply_expression_template",
+      "name": "subcell_fuel_left",
+      "args": [],
+      "bindings": {
+       "area": "area_22",
+       "ta": "ta_22",
+       "fuel_time": "fuel_time"
+      }
+     }
+    },
+    {
+     "lhs": "fire_area",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.25,
+       {
+        "op": "+",
+        "args": [
+         "area_11",
+         "area_21",
+         "area_12",
+         "area_22"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fuel_frac",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.25,
+       {
+        "op": "+",
+        "args": [
+         "left_11",
+         "left_21",
+         "left_12",
+         "left_22"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fuel_frac_burnt_dt",
+     "rhs": {
+      "op": "-",
+      "args": [
+       "fuel_frac_before",
+       "fuel_frac"
+      ]
+     }
+    },
+    {
+     "lhs": "dfuel_frac_dt_burning",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "-",
+        "args": [
+         "fuel_frac"
+        ]
+       },
+       "fuel_time"
+      ]
+     }
+    }
+   ],
+   "tests": [
+    {
+     "id": "step20_front_cell_area_0p19",
+     "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: cell (i,j) = (16, 60) at the end of step 20 (time_now = 10.5 s), a cell the front has just entered (fire_area 0.19, fuel_frac 0.9916, all ignition within the last steps); inputs are the 3x3 node neighbourhood of lfn and tign_g and the cell's fuel_time and previous fuel fraction from the fuel_left dump.",
+     "parameter_overrides": {
+      "lfn_mm": 35.504486083984375,
+      "lfn_m0": 30.6441650390625,
+      "lfn_mp": 29.562484741210938,
+      "lfn_0m": 12.986724853515625,
+      "lfn_00": 7.3419189453125,
+      "lfn_0p": 6.0775146484375,
+      "lfn_pm": -11.590614318847656,
+      "lfn_p0": -18.453147888183594,
+      "lfn_pp": -20.008995056152344,
+      "tign_mm": 10.50000286102295,
+      "tign_m0": 10.50000286102295,
+      "tign_mp": 10.50000286102295,
+      "tign_0m": 10.50000286102295,
+      "tign_00": 10.50000286102295,
+      "tign_0p": 10.50000286102295,
+      "tign_pm": 9.589017868041992,
+      "tign_p0": 8.99034309387207,
+      "tign_pp": 8.85060977935791,
+      "time_now": 10.5,
+      "fuel_time": 8.235294342041016,
+      "fuel_frac_before": 1.0
+     },
+     "expression_template_imports": [
+      {
+       "ref": "./tests/step20_front_cell_area_0p19_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "fire_area",
+       "time": 0.0,
+       "expected": 0.19250541925430298,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "fuel_frac",
+       "time": 0.0,
+       "expected": 0.991601824760437,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "fuel_frac_burnt_dt",
+       "time": 0.0,
+       "expected": 0.008398175239562988,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      }
+     ]
+    },
+    {
+     "id": "step20_mostly_burning_area_0p93",
+     "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: cell (i,j) = (17, 59) at the end of step 20 (time_now = 10.5 s), a nearly engulfed cell (fire_area 0.93, fuel_frac_before 0.947 already below 1); inputs are the 3x3 node neighbourhood of lfn and tign_g and the cell's fuel_time and previous fuel fraction from the fuel_left dump.",
+     "parameter_overrides": {
+      "lfn_mm": 22.531967163085938,
+      "lfn_m0": 12.986724853515625,
+      "lfn_mp": 7.3419189453125,
+      "lfn_0m": -0.24945068359375,
+      "lfn_00": -11.590614318847656,
+      "lfn_0p": -18.453147888183594,
+      "lfn_pm": -1.4908447265625,
+      "lfn_p0": -35.35760498046875,
+      "lfn_pp": -44.060279846191406,
+      "tign_mm": 10.50000286102295,
+      "tign_m0": 10.50000286102295,
+      "tign_mp": 10.50000286102295,
+      "tign_0m": 10.480124473571777,
+      "tign_00": 9.589017868041992,
+      "tign_0p": 8.99034309387207,
+      "tign_pm": 10.381208419799805,
+      "tign_p0": 7.636563777923584,
+      "tign_pp": 6.953971862792969,
+      "time_now": 10.5,
+      "fuel_time": 8.235294342041016,
+      "fuel_frac_before": 0.946826159954071
+     },
+     "expression_template_imports": [
+      {
+       "ref": "./tests/step20_mostly_burning_area_0p93_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "fire_area",
+       "time": 0.0,
+       "expected": 0.9255641102790833,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "fuel_frac",
+       "time": 0.0,
+       "expected": 0.8999848365783691,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "fuel_frac_burnt_dt",
+       "time": 0.0,
+       "expected": 0.046841323375701904,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      }
+     ]
+    },
+    {
+     "id": "step20_fully_burning_nonuniform_tign",
+     "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: cell (i,j) = (17, 60) at the end of step 20 (time_now = 10.5 s), a fully burning cell (fire_area 1) whose nine node ignition times differ (6.8 .. 10.5 s), so the cell fuel fraction 0.832 is the mean of four different exponentials -- the case FuelConsumption's single ODE cannot represent; inputs are the 3x3 node neighbourhood of lfn and tign_g and the cell's fuel_time and previous fuel fraction from the fuel_left dump.",
+     "parameter_overrides": {
+      "lfn_mm": 12.986724853515625,
+      "lfn_m0": 7.3419189453125,
+      "lfn_mp": 6.0775146484375,
+      "lfn_0m": -11.590614318847656,
+      "lfn_00": -18.453147888183594,
+      "lfn_0p": -20.008995056152344,
+      "lfn_pm": -35.35760498046875,
+      "lfn_p0": -44.060279846191406,
+      "lfn_pp": -46.07978820800781,
+      "tign_mm": 10.50000286102295,
+      "tign_m0": 10.50000286102295,
+      "tign_mp": 10.50000286102295,
+      "tign_0m": 9.589017868041992,
+      "tign_00": 8.99034309387207,
+      "tign_0p": 8.85060977935791,
+      "tign_pm": 7.636563777923584,
+      "tign_p0": 6.953971862792969,
+      "tign_pp": 6.772350788116455,
+      "time_now": 10.5,
+      "fuel_time": 8.235294342041016,
+      "fuel_frac_before": 0.8935697078704834
+     },
+     "expression_template_imports": [
+      {
+       "ref": "./tests/step20_fully_burning_nonuniform_tign_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "fire_area",
+       "time": 0.0,
+       "expected": 1.0,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "fuel_frac",
+       "time": 0.0,
+       "expected": 0.8321961760520935,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "fuel_frac_burnt_dt",
+       "time": 0.0,
+       "expected": 0.06137353181838989,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      }
+     ]
+    },
+    {
+     "id": "step20_barely_touched_area_0p02",
+     "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: cell (i,j) = (16, 59) at the end of step 20 (time_now = 10.5 s), a cell the front barely touches (fire_area 0.023); inputs are the 3x3 node neighbourhood of lfn and tign_g and the cell's fuel_time and previous fuel fraction from the fuel_left dump.",
+     "parameter_overrides": {
+      "lfn_mm": 43.829986572265625,
+      "lfn_m0": 35.504486083984375,
+      "lfn_mp": 30.6441650390625,
+      "lfn_0m": 22.531967163085938,
+      "lfn_00": 12.986724853515625,
+      "lfn_0p": 7.3419189453125,
+      "lfn_pm": -0.24945068359375,
+      "lfn_p0": -11.590614318847656,
+      "lfn_pp": -18.453147888183594,
+      "tign_mm": 10.50000286102295,
+      "tign_m0": 10.50000286102295,
+      "tign_mp": 10.50000286102295,
+      "tign_0m": 10.50000286102295,
+      "tign_00": 10.50000286102295,
+      "tign_0p": 10.50000286102295,
+      "tign_pm": 10.480124473571777,
+      "tign_p0": 9.589017868041992,
+      "tign_pp": 8.99034309387207,
+      "time_now": 10.5,
+      "fuel_time": 8.235294342041016,
+      "fuel_frac_before": 1.0
+     },
+     "expression_template_imports": [
+      {
+       "ref": "./tests/step20_barely_touched_area_0p02_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "fire_area",
+       "time": 0.0,
+       "expected": 0.023106694221496582,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "fuel_frac",
+       "time": 0.0,
+       "expected": 0.9995793700218201,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "fuel_frac_burnt_dt",
+       "time": 0.0,
+       "expected": 0.00042062997817993164,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,3132 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "FuelMoistureWRFFire",
+  "description": "Dead and live fuel moisture of the five WRF-SFIRE moisture classes (1-h, 10-h, 100-h, 1000-h dead fuel and live fuel) for one fire-grid cell, as advanced by fire_behavior's Advance_moisture_classes and averaged by Average_moisture_classes (physics/fmc_wrffire_mod.F90; Mandel et al. 2014). From the step-mean 2 m temperature, humidity and surface pressure the relative humidity follows Murphy & Koop (2005) eq. 10; without rain the Van Wagner & Pickett (1972) drying and wetting equilibrium moisture contents bracket the class moisture, which relaxes with its class time lag towards the nearer bracket (a class already between them does not move); with rain above 0.05 mm/h both brackets become the saturation moisture 2.5 and the rate is the wetting lag scaled by 1 - exp(-r/8 mm/h). The physics is the time-lag ODE d m_k/dt = (equi_k - m_k)/tau_k (dfmc_dt); fire_behavior integrates it exactly over its moisture step (exponential form, or the 2nd-order Taylor form when the step covers less than 1 % of the lag), reproduced as fmc_new so the Fortran step can be tested. The cell's ground fuel moisture fmc_g is the load-weighted mean of the classes (Anderson13FuelTable w_1h .. w_live). The assimilation adjustments deltae/deltas (fmep) and their decay are transcribed; the fmc_gc initialisation branches (from the equilibrium or from the namelist) are the consumer's initial condition and are not transcribed. The EarthSciModels wildland_fire/nfdrs moisture components (NFDRS 1-h/10-h/100-h/1000-h models) are a different formulation and are not reused. Tests: cells of the instrumented test7 run with the moisture model on (fmoist_run, fmoist_freq = 1, dt_moisture = 0.5 s, so every class is in the Taylor branch; the 10 s case has no rain, so the wetting branch is transcribed but untested), real32, rel 1e-5.",
+  "license": "MIT",
+  "tags": [
+   "wildland_fire",
+   "fire_behavior",
+   "wrf-fire",
+   "fuel-moisture"
+  ],
+  "references": [
+   {
+    "citation": "NCAR Community Fire Behavior Model (fire_behavior), develop @ eb77580, physics/fmc_wrffire_mod.F90 Advance_moisture_classes / Average_moisture_classes; instrumented fork ctessum-claude/fire_behavior branch earthsciml-instrumented."
+   },
+   {
+    "citation": "Mandel, J., Amram, S., Beezley, J.D., Kelman, G., Kochanski, A.K., Kondratenko, V.Y., Lynn, B.H., Regev, B., Vejmelka, M. (2014). Recent advances and applications of WRF-SFIRE. Nat. Hazards Earth Syst. Sci. 14, 2829-2845 (fuel moisture model).",
+    "doi": "10.5194/nhess-14-2829-2014"
+   },
+   {
+    "citation": "Van Wagner, C.E., Pickett, T.L. (1972/1985). Equations and FORTRAN program for the Canadian Forest Fire Weather Index System; Viney (1991) eqs 7-8 (equilibrium moisture content fits)."
+   },
+   {
+    "citation": "Murphy, D.M., Koop, T. (2005). Review of the vapour pressures of ice and supercooled water for atmospheric applications. Q.J.R. Meteorol. Soc. 131, 1539-1565, eq. 10.",
+    "doi": "10.1256/qj.04.94"
+   }
+  ]
+ },
+ "index_sets": {
+  "fmc_class": {
+   "kind": "interval",
+   "size": 5
+  }
+ },
+ "models": {
+  "FuelMoistureWRFFire": {
+   "subsystems": {
+    "par": {
+     "ref": "./fire_behavior_parameters.esm"
+    }
+   },
+   "variables": {
+    "rain": {
+     "type": "parameter",
+     "units": "mm",
+     "default": 0.0,
+     "description": "Accumulated rain at the end of the moisture step (fire_rain, mm)."
+    },
+    "rain_old": {
+     "type": "parameter",
+     "units": "mm",
+     "default": 0.0,
+     "description": "Accumulated rain at the previous moisture step."
+    },
+    "t2": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "2 m temperature now."
+    },
+    "t2_old": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "2 m temperature at the previous moisture step."
+    },
+    "q2": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.005,
+     "description": "2 m specific humidity now."
+    },
+    "q2_old": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.005,
+     "description": "2 m specific humidity at the previous moisture step."
+    },
+    "psfc": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 85000.0,
+     "description": "Surface pressure now."
+    },
+    "psfc_old": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 85000.0,
+     "description": "Surface pressure at the previous moisture step."
+    },
+    "dt_moisture": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.5,
+     "description": "Moisture model time step (time since the previous moisture update)."
+    },
+    "deltae": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Assimilated adjustment of the drying/wetting equilibria, fmep(1) (0 without data assimilation)."
+    },
+    "deltas": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Assimilated adjustment of the rain saturation moisture, fmep(2)."
+    },
+    "rain_int": {
+     "type": "unknown",
+     "units": "mm/h",
+     "description": "Rain intensity from the accumulated rain difference over the moisture step (0 if dt_moisture = 0)."
+    },
+    "pw": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Water vapour pressure q p/(eps + (1 - eps) q), eps = 0.622."
+    },
+    "pws": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Saturation vapour pressure over water, Murphy & Koop (2005) eq. 10."
+    },
+    "rh": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Relative humidity pw/pws (the diagnostic rh_fire; not capped)."
+    },
+    "rh_c": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Relative humidity capped at 1 for the equilibrium fits (CHECK_RH = .false.)."
+    },
+    "hpct": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Relative humidity in per cent, 100 rh_c."
+    },
+    "emc_drying_pct": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Van Wagner & Pickett equilibrium moisture for drying (desorption), per cent: 0.942 H^0.679 + 0.000499 e^{0.1 H} + 0.18 (21.1 + 273.15 - T)(1 - e^{-0.115 H})."
+    },
+    "emc_wetting_pct": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Equilibrium moisture for adsorption, per cent: 0.618 H^0.753 + 0.000454 e^{0.1 H} + 0.18 (21.1 + 273.15 - T)(1 - e^{-0.115 H})."
+    },
+    "drying_lag_h": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Drying time lag of each class, h (1, 10, 100, 1000, 1e9 for 1-h, 10-h, 100-h, 1000-h, live).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "wetting_lag_h": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Wetting time lag of each class in rain, h (1.4, 14, 140, 1400, 1e9).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "saturation_moisture": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Saturation moisture content reached in rain (2.5 for every class).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "saturation_rain": {
+     "type": "unknown",
+     "units": "mm/h",
+     "description": "Rain intensity scale of the wetting rate (8 mm/h for every class).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "rain_threshold": {
+     "type": "unknown",
+     "units": "mm/h",
+     "description": "Rain intensity below which a class sees no rain (0.05 mm/h).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "r": {
+     "type": "unknown",
+     "units": "mm/h",
+     "description": "Excess rain intensity rain_int - rain_threshold of each class.",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "raining": {
+     "type": "unknown",
+     "units": "1",
+     "description": "1 where r > 0 (wetting model active), else 0 (drying model).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "emc_d": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Upper equilibrium: in rain saturation_moisture + deltas; otherwise max(max(d, w) + deltae, 0).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "emc_w": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Lower equilibrium: in rain saturation_moisture + deltas; otherwise max(min(d, w) + deltae, 0).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "rlag": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Inverse time lag of each class: 1/(3600 drying_lag) when dry, 1/(3600 wetting_lag) (1 - exp(-r/saturation_rain)) in rain.",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "fmc_old": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Moisture content of each class at the start of the step (fmc_gc).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "equi": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Equilibrium the class relaxes towards: fmc_old clipped into [emc_w, emc_d] (a class already between the two equilibria does not move).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "dfmc_dt": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Time-lag ODE of the class moisture: d fmc/dt = (equi - fmc) rlag, evaluated at fmc_old (Mandel et al. 2014 eq. 6). This is the physics; fire_behavior integrates it over dt_moisture with the exact exponential (or its 2nd-order Taylor form when dt rlag < 0.01), see fmc_new.",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "change": {
+     "type": "unknown",
+     "units": "1",
+     "description": "dt_moisture rlag, the fraction of the time lag covered by the step.",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "fmc_new": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Moisture content after the step as fire_behavior computes it: fmc_old + (equi - fmc_old)(change (1 - change/2)) for change < TOL, else fmc_old + (equi - fmc_old)(1 - exp(-change)) -- the exact solution of dfmc_dt over the step (Taylor form to 2nd order).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "fmc_lag_h": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Diagnostic time lag 1/(3600 rlag), h (fmc_lag).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "fmep_decay": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Factor by which the assimilated adjustments fmep decay over the step: 1 - c (1 - c/2) for c = dt/(3600 FMEP_DECAY_TLAG) < TOL, else exp(-c)."
+    },
+    "class_weight": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Load fraction of each moisture class for the cell's fuel category (Anderson13FuelTable w_1h .. w_live).",
+     "shape": [
+      "fmc_class"
+     ]
+    },
+    "fmc_g": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Ground fuel moisture of the cell after the step, the class-weighted mean sum_k w_k fmc_new_k (Average_moisture_classes)."
+    },
+    "t_mean": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Step-mean 2 m temperature (t2_old + t2)/2 (second-order averaging of the forcing). Named t_mean because `t` is the time variable."
+    },
+    "p_mean": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Step-mean surface pressure."
+    },
+    "q_mean": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Step-mean 2 m specific humidity."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "rain_int",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "dt_moisture",
+         0.0
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "par.s_per_h",
+         {
+          "op": "/",
+          "args": [
+           {
+            "op": "-",
+            "args": [
+             "rain",
+             "rain_old"
+            ]
+           },
+           "dt_moisture"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.0,
+         {
+          "op": "/",
+          "args": [
+           "rain",
+           "dt_moisture"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "t_mean",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.5,
+       {
+        "op": "+",
+        "args": [
+         "t2_old",
+         "t2"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "p_mean",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.5,
+       {
+        "op": "+",
+        "args": [
+         "psfc_old",
+         "psfc"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "q_mean",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.5,
+       {
+        "op": "+",
+        "args": [
+         "q2_old",
+         "q2"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "pw",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         "q_mean",
+         "p_mean"
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "par.fmc_eps_mw",
+         {
+          "op": "*",
+          "args": [
+           {
+            "op": "-",
+            "args": [
+             1.0,
+             "par.fmc_eps_mw"
+            ]
+           },
+           "q_mean"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "pws",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "par.unit_pressure",
+       {
+        "op": "exp",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           54.842763,
+           {
+            "op": "/",
+            "args": [
+             -6763.22,
+             {
+              "op": "/",
+              "args": [
+               "t_mean",
+               "par.unit_kelvin"
+              ]
+             }
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             -4.21,
+             {
+              "op": "log",
+              "args": [
+               {
+                "op": "/",
+                "args": [
+                 "t_mean",
+                 "par.unit_kelvin"
+                ]
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             0.000367,
+             {
+              "op": "/",
+              "args": [
+               "t_mean",
+               "par.unit_kelvin"
+              ]
+             }
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             {
+              "op": "tanh",
+              "args": [
+               {
+                "op": "*",
+                "args": [
+                 0.0415,
+                 {
+                  "op": "-",
+                  "args": [
+                   {
+                    "op": "/",
+                    "args": [
+                     "t_mean",
+                     "par.unit_kelvin"
+                    ]
+                   },
+                   218.8
+                  ]
+                 }
+                ]
+               }
+              ]
+             },
+             {
+              "op": "+",
+              "args": [
+               53.878,
+               {
+                "op": "/",
+                "args": [
+                 -1331.22,
+                 {
+                  "op": "/",
+                  "args": [
+                   "t_mean",
+                   "par.unit_kelvin"
+                  ]
+                 }
+                ]
+               },
+               {
+                "op": "*",
+                "args": [
+                 -9.44523,
+                 {
+                  "op": "log",
+                  "args": [
+                   {
+                    "op": "/",
+                    "args": [
+                     "t_mean",
+                     "par.unit_kelvin"
+                    ]
+                   }
+                  ]
+                 }
+                ]
+               },
+               {
+                "op": "*",
+                "args": [
+                 0.014025,
+                 {
+                  "op": "/",
+                  "args": [
+                   "t_mean",
+                   "par.unit_kelvin"
+                  ]
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "rh",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "pw",
+       "pws"
+      ]
+     }
+    },
+    {
+     "lhs": "rh_c",
+     "rhs": {
+      "op": "min",
+      "args": [
+       "rh",
+       1.0
+      ]
+     }
+    },
+    {
+     "lhs": "hpct",
+     "rhs": {
+      "op": "*",
+      "args": [
+       100.0,
+       "rh_c"
+      ]
+     }
+    },
+    {
+     "lhs": "emc_drying_pct",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         0.942,
+         {
+          "op": "^",
+          "args": [
+           "hpct",
+           0.679
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.000499,
+         {
+          "op": "exp",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             0.1,
+             "hpct"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.18,
+         {
+          "op": "-",
+          "args": [
+           "par.t_ref_vwp",
+           {
+            "op": "/",
+            "args": [
+             "t_mean",
+             "par.unit_kelvin"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           {
+            "op": "exp",
+            "args": [
+             {
+              "op": "*",
+              "args": [
+               -0.115,
+               "hpct"
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "emc_wetting_pct",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         0.618,
+         {
+          "op": "^",
+          "args": [
+           "hpct",
+           0.753
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.000454,
+         {
+          "op": "exp",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             0.1,
+             "hpct"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.18,
+         {
+          "op": "-",
+          "args": [
+           "par.t_ref_vwp",
+           {
+            "op": "/",
+            "args": [
+             "t_mean",
+             "par.unit_kelvin"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           {
+            "op": "exp",
+            "args": [
+             {
+              "op": "*",
+              "args": [
+               -0.115,
+               "hpct"
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "drying_lag_h",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "k"
+      ],
+      "args": [],
+      "ranges": {
+       "k": {
+        "from": "fmc_class"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        {
+         "op": "const",
+         "args": [],
+         "value": [
+          1.0,
+          10.0,
+          100.0,
+          1000.0,
+          1000000000.0
+         ]
+        },
+        "k"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "wetting_lag_h",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "k"
+      ],
+      "args": [],
+      "ranges": {
+       "k": {
+        "from": "fmc_class"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        {
+         "op": "const",
+         "args": [],
+         "value": [
+          1.4,
+          14.0,
+          140.0,
+          1400.0,
+          1000000000.0
+         ]
+        },
+        "k"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "saturation_moisture",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "k"
+      ],
+      "args": [],
+      "ranges": {
+       "k": {
+        "from": "fmc_class"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        {
+         "op": "const",
+         "args": [],
+         "value": [
+          2.5,
+          2.5,
+          2.5,
+          2.5,
+          2.5
+         ]
+        },
+        "k"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "saturation_rain",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "k"
+      ],
+      "args": [],
+      "ranges": {
+       "k": {
+        "from": "fmc_class"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        {
+         "op": "const",
+         "args": [],
+         "value": [
+          8.0,
+          8.0,
+          8.0,
+          8.0,
+          8.0
+         ]
+        },
+        "k"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "rain_threshold",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "k"
+      ],
+      "args": [],
+      "ranges": {
+       "k": {
+        "from": "fmc_class"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        {
+         "op": "const",
+         "args": [],
+         "value": [
+          0.05,
+          0.05,
+          0.05,
+          0.05,
+          0.05
+         ]
+        },
+        "k"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "r",
+     "rhs": {
+      "op": "-",
+      "args": [
+       "rain_int",
+       "rain_threshold"
+      ]
+     }
+    },
+    {
+     "lhs": "raining",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "r",
+         0.0
+        ]
+       },
+       1.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "emc_d",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "r",
+         0.0
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "saturation_moisture",
+         "deltas"
+        ]
+       },
+       {
+        "op": "max",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             0.01,
+             {
+              "op": "max",
+              "args": [
+               "emc_drying_pct",
+               "emc_wetting_pct"
+              ]
+             }
+            ]
+           },
+           "deltae"
+          ]
+         },
+         0.0
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "emc_w",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "r",
+         0.0
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "saturation_moisture",
+         "deltas"
+        ]
+       },
+       {
+        "op": "max",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             0.01,
+             {
+              "op": "min",
+              "args": [
+               "emc_drying_pct",
+               "emc_wetting_pct"
+              ]
+             }
+            ]
+           },
+           "deltae"
+          ]
+         },
+         0.0
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "rlag",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "r",
+         0.0
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "/",
+          "args": [
+           1.0,
+           {
+            "op": "*",
+            "args": [
+             "par.s_per_h",
+             "wetting_lag_h"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           {
+            "op": "exp",
+            "args": [
+             {
+              "op": "/",
+              "args": [
+               {
+                "op": "-",
+                "args": [
+                 "r"
+                ]
+               },
+               "saturation_rain"
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "/",
+        "args": [
+         1.0,
+         {
+          "op": "*",
+          "args": [
+           "par.s_per_h",
+           "drying_lag_h"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fmc_old",
+     "rhs": {
+      "op": "input_fmc_old",
+      "args": []
+     }
+    },
+    {
+     "lhs": "equi",
+     "rhs": {
+      "op": "max",
+      "args": [
+       {
+        "op": "min",
+        "args": [
+         "fmc_old",
+         "emc_d"
+        ]
+       },
+       "emc_w"
+      ]
+     }
+    },
+    {
+     "lhs": "dfmc_dt",
+     "rhs": {
+      "op": "*",
+      "args": [
+       {
+        "op": "-",
+        "args": [
+         "equi",
+         "fmc_old"
+        ]
+       },
+       "rlag"
+      ]
+     }
+    },
+    {
+     "lhs": "change",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "dt_moisture",
+       "rlag"
+      ]
+     }
+    },
+    {
+     "lhs": "fmc_new",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "<",
+        "args": [
+         "change",
+         "par.fmc_tol"
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "fmc_old",
+         {
+          "op": "*",
+          "args": [
+           {
+            "op": "-",
+            "args": [
+             "equi",
+             "fmc_old"
+            ]
+           },
+           "change",
+           {
+            "op": "-",
+            "args": [
+             1.0,
+             {
+              "op": "*",
+              "args": [
+               0.5,
+               "change"
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "fmc_old",
+         {
+          "op": "*",
+          "args": [
+           {
+            "op": "-",
+            "args": [
+             "equi",
+             "fmc_old"
+            ]
+           },
+           {
+            "op": "-",
+            "args": [
+             1.0,
+             {
+              "op": "exp",
+              "args": [
+               {
+                "op": "-",
+                "args": [
+                 "change"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fmc_lag_h",
+     "rhs": {
+      "op": "/",
+      "args": [
+       1.0,
+       {
+        "op": "*",
+        "args": [
+         "par.s_per_h",
+         "rlag"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fmep_decay",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "<",
+        "args": [
+         {
+          "op": "/",
+          "args": [
+           "dt_moisture",
+           {
+            "op": "*",
+            "args": [
+             "par.fmep_decay_tlag_h",
+             "par.s_per_h"
+            ]
+           }
+          ]
+         },
+         "par.fmc_tol"
+        ]
+       },
+       {
+        "op": "-",
+        "args": [
+         1.0,
+         {
+          "op": "*",
+          "args": [
+           {
+            "op": "/",
+            "args": [
+             "dt_moisture",
+             {
+              "op": "*",
+              "args": [
+               "par.fmep_decay_tlag_h",
+               "par.s_per_h"
+              ]
+             }
+            ]
+           },
+           {
+            "op": "-",
+            "args": [
+             1.0,
+             {
+              "op": "*",
+              "args": [
+               0.5,
+               {
+                "op": "/",
+                "args": [
+                 "dt_moisture",
+                 {
+                  "op": "*",
+                  "args": [
+                   "par.fmep_decay_tlag_h",
+                   "par.s_per_h"
+                  ]
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "exp",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           {
+            "op": "/",
+            "args": [
+             "dt_moisture",
+             {
+              "op": "*",
+              "args": [
+               "par.fmep_decay_tlag_h",
+               "par.s_per_h"
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "class_weight",
+     "rhs": {
+      "op": "input_class_weight",
+      "args": []
+     }
+    },
+    {
+     "lhs": "fmc_g",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [],
+      "args": [],
+      "ranges": {
+       "k": {
+        "from": "fmc_class"
+       }
+      },
+      "expr": {
+       "op": "*",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "class_weight",
+          "k"
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "fmc_new",
+          "k"
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "moisture_run_step20_short_grass_dry_air",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: moisture run (namelist fmoist_run = .true., fmoist_freq = 1: the moisture model advances every 0.5 s step), fmc dump at step 20, cell (i,j) = (40, 40) (Anderson category 1); dry, hot afternoon air (rh 0.08-0.11, T 310-320 K), no rain, so every class is in the drying branch with change = dt rlag << TOL (2nd-order Taylor step); the dead classes sit at the drying equilibrium, the live class relaxes from 0.30 with its 1e9 h lag. Class inputs (fmc_gc before the step) and the category's class weights (fmc_avg dump) are injected as fmc_class-shaped fields.",
+       "parameter_overrides": {
+         "rain": 0.0,
+         "rain_old": 0.0,
+         "t2": 310.29180908203125,
+         "t2_old": 310.29180908203125,
+         "q2": 0.0052487109787762165,
+         "q2_old": 0.0052487109787762165,
+         "psfc": 84570.015625,
+         "psfc_old": 84570.015625,
+         "dt_moisture": 0.5,
+         "deltae": 0.0,
+         "deltas": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/moisture_run_step20_short_grass_dry_air_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "rain_int",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "t_mean",
+           "time": 0.0,
+           "expected": 310.29180908203125,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "p_mean",
+           "time": 0.0,
+           "expected": 84570.015625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_mean",
+           "time": 0.0,
+           "expected": 0.0052487109787762165,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "pw",
+           "time": 0.0,
+           "expected": 711.3701171875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "pws",
+           "time": 0.0,
+           "expected": 6330.513671875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rh",
+           "time": 0.0,
+           "expected": 0.11237162351608276,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.027761340141296387,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.027761340141296387,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.027761340141296387,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.027761340141296387,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.027761340141296387,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.017275290563702583,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.017275290563702583,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.017275290563702583,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.017275290563702583,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.017275290563702583,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.00027777778450399637,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 2.7777778086601757e-05,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 2.7777778086601757e-06,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 2.7777778655035945e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 2.7777777365615985e-13,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.027761340141296387,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.00013888889225199819,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 1.3888889043300878e-05,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 1.3888889043300878e-06,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 1.3888889327517973e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 1.3888888682807993e-13,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.30000001192092896,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 1.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 10.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 100.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 999.9999389648438,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 1000000000.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_g",
+           "time": 0.0,
+           "expected": 0.02374621480703354,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "moisture_run_step20_timber_grass_understory",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: moisture run (namelist fmoist_run = .true., fmoist_freq = 1: the moisture model advances every 0.5 s step), fmc dump at step 20, cell (i,j) = (18, 64) (Anderson category 2); dry, hot afternoon air (rh 0.08-0.11, T 310-320 K), no rain, so every class is in the drying branch with change = dt rlag << TOL (2nd-order Taylor step); the dead classes sit at the drying equilibrium, the live class relaxes from 0.30 with its 1e9 h lag. Class inputs (fmc_gc before the step) and the category's class weights (fmc_avg dump) are injected as fmc_class-shaped fields.",
+       "parameter_overrides": {
+         "rain": 0.0,
+         "rain_old": 0.0,
+         "t2": 318.25555419921875,
+         "t2_old": 318.25555419921875,
+         "q2": 0.005505851469933987,
+         "q2_old": 0.005505851469933987,
+         "psfc": 84605.171875,
+         "psfc_old": 84605.171875,
+         "dt_moisture": 0.5,
+         "deltae": 0.0,
+         "deltas": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/moisture_run_step20_timber_grass_understory_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "rain_int",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "t_mean",
+           "time": 0.0,
+           "expected": 318.25555419921875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "p_mean",
+           "time": 0.0,
+           "expected": 84605.171875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_mean",
+           "time": 0.0,
+           "expected": 0.005505851469933987,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "pw",
+           "time": 0.0,
+           "expected": 746.4149169921875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "pws",
+           "time": 0.0,
+           "expected": 9646.5673828125,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rh",
+           "time": 0.0,
+           "expected": 0.07737621665000916,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.003394970903173089,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.003394970903173089,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.003394970903173089,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.003394970903173089,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.003394970903173089,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.00027777778450399637,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 2.7777778086601757e-05,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 2.7777778086601757e-06,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 2.7777778655035945e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 2.7777777365615985e-13,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.012341680005192757,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.00013888889225199819,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 1.3888889043300878e-05,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 1.3888889043300878e-06,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 1.3888889327517973e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 1.3888888682807993e-13,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.023829618468880653,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.023833200335502625,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.023833557963371277,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.02383359521627426,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.30000001192092896,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 1.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 10.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 100.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 999.9999389648438,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 1000000000.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_g",
+           "time": 0.0,
+           "expected": 0.058352306485176086,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "moisture_run_step20_brush",
+       "description": "Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: moisture run (namelist fmoist_run = .true., fmoist_freq = 1: the moisture model advances every 0.5 s step), fmc dump at step 20, cell (i,j) = (4, 53) (Anderson category 5); dry, hot afternoon air (rh 0.08-0.11, T 310-320 K), no rain, so every class is in the drying branch with change = dt rlag << TOL (2nd-order Taylor step); the dead classes sit at the drying equilibrium, the live class relaxes from 0.30 with its 1e9 h lag. Class inputs (fmc_gc before the step) and the category's class weights (fmc_avg dump) are injected as fmc_class-shaped fields.",
+       "parameter_overrides": {
+         "rain": 0.0,
+         "rain_old": 0.0,
+         "t2": 310.3646240234375,
+         "t2_old": 310.3646240234375,
+         "q2": 0.005284447688609362,
+         "q2_old": 0.005284447688609362,
+         "psfc": 84633.6796875,
+         "psfc_old": 84633.6796875,
+         "dt_moisture": 0.5,
+         "deltae": 0.0,
+         "deltas": 0.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/moisture_run_step20_brush_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "rain_int",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "t_mean",
+           "time": 0.0,
+           "expected": 310.3646240234375,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "p_mean",
+           "time": 0.0,
+           "expected": 84633.6796875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_mean",
+           "time": 0.0,
+           "expected": 0.005284447688609362,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "pw",
+           "time": 0.0,
+           "expected": 716.7372436523438,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "pws",
+           "time": 0.0,
+           "expected": 6355.61767578125,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "rh",
+           "time": 0.0,
+           "expected": 0.11277224123477936,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.027747519314289093,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.027747519314289093,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.027747519314289093,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.027747519314289093,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_d",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.027747519314289093,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.017246181145310402,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.017246181145310402,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.017246181145310402,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.017246181145310402,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "emc_w",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.017246181145310402,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.00027777778450399637,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 2.7777778086601757e-05,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 2.7777778086601757e-06,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 2.7777778655035945e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "rlag",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 2.7777777365615985e-13,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.023851914331316948,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.023851914331316948,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.023851914331316948,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.023851914331316948,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "equi",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.027747519314289093,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.00013888889225199819,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 1.3888889043300878e-05,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 1.3888889043300878e-06,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 1.3888889327517973e-07,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "change",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 1.3888888682807993e-13,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 0.023851914331316948,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 0.023851914331316948,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 0.023851914331316948,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 0.023851914331316948,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_new",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 0.30000001192092896,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": 1.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": 10.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": 100.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": 999.9999389648438,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_lag_h",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": 1000000000.0,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 1
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 2
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 3
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 4
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "r",
+           "time": 0.0,
+           "coords": {
+             "fmc_class": 5
+           },
+           "expected": -0.05000000074505806,
+           "tolerance": {
+             "rel": 1e-05,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fmc_g",
+           "time": 0.0,
+           "expected": 0.18165084719657898,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}

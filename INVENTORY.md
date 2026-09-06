@@ -43,12 +43,12 @@ Status values: `not started` · `instrumented` · `stub` (tests written, on this
 
 | Component | Fortran source | Existing | Status |
 |---|---|---|---|
-| Fuel categories table (Anderson 13) | `physics/fuel_anderson_mod.F90` | `wildland_fire/fuel_model_lookup.esm` | not started |
-| Fuel moisture model | `physics/fmc_wrffire_mod.F90` | `wildland_fire/nfdrs/*` (related) | not started |
-| Rate of spread (Rothermel + limits) | `physics/ros_wrffire_mod.F90` | `wildland_fire/rothermel/*` | not started |
-| Level-set front propagation | `physics/level_set_mod.F90` | `wildland_fire/level_set_fire_spread.esm` | not started |
-| Fire → atmosphere heat/moisture flux | `physics/fire_model_mod.F90`, `fire_driver_mod.F90` | `wildland_fire/level_set/fire_heat_flux.esm` | not started |
-| Atmosphere → fire wind | `physics/fire_driver_mod.F90` | `wildland_fire/midflame_wind.esm` | not started |
+| Fuel categories table (Anderson 13) | `physics/fuel_anderson_mod.F90` | `wildland_fire/fuel_model_lookup.esm` (not reused: different loads/depths/T_f divisor) | physics (Phase 1, 2026-09-06): `components/wildland_fire/fire_behavior/anderson13_fuel_table.esm` (incl. waf), 107/107 |
+| Fuel moisture model | `physics/fmc_wrffire_mod.F90` | `wildland_fire/nfdrs/*` (different formulation) | physics: `fuel_moisture_wrffire.esm` (five-class time-lag ODE + Fortran step), 144/144, drying branch only (no rain in test7) |
+| Rate of spread (Rothermel + limits) | `physics/ros_wrffire_mod.F90` | `wildland_fire/rothermel/*` (not reused: Rothermel-1972 A, w0/(1+st), moist fgi, projection form, 6 m/s cap, chaparral) | physics: `rothermel_wrffire.esm` 104/104 + `ros_wrffire.esm` 44/44 |
+| Level-set front propagation | `physics/level_set_mod.F90` | `wildland_fire/level_set_fire_spread.esm` (PDE structure matches, wind/slope factors differ) | physics, partial: `level_set_tendency_wrffire.esm` (PDE on `cartesian_uniform_2d`, Godunov ∣∇ψ∣, grid-scaled viscosity) 39/39 vs a `fire_upwinding = 4` run; `ignition_time_wrffire.esm` 6/6; ESD rules missing for the default WENO5/ENO1 hybrid and the Godunov-upwind normal |
+| Fire → atmosphere heat/moisture flux | `physics/fire_model_mod.F90`, `fire_driver_mod.F90` | `wildland_fire/level_set/fire_heat_flux.esm` (MATCH) | tests added to a copy of `fire_heat_flux.esm` (PR-ready per PLAN 1.3, 22/22, identical algebra); `flame_length_wrffire.esm` 8/8; `fuel_fraction_cell.esm` 12/12 |
+| Atmosphere → fire wind | `physics/fire_driver_mod.F90` | `wildland_fire/midflame_wind.esm` (form matches for opt 1; reduction factor differs) | not started (`Interp_profile` log interpolation; waf transcribed in the fuel table) |
 | Fire–atmosphere coupling file | `driver/fire_behavior.F90`, `tests/` | `couplings/wildlandfire_behavior.esm`, `../wildlandfire.esm` | not started |
 
 ## Dynamics (stage 3)
