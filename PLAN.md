@@ -441,6 +441,20 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   issue #188), so tables
   are spelled as `fn interp.linear` on `const` arrays; also `ifelse` branches
   evaluate eagerly, so index gathers in inactive branches must be clamped.
+  Stage 2 done 2026-09-06 (fork 0e52608 dumps TAUG/PFRAC/ITR, SETCOEF
+  coefficients, RTRN Planck integrals, clear-sky and per-band fluxes; dumps
+  `scm_ref2_<call>.json`): `rtrn_sweep.esm` transcribes RTRN as two esm
+  §4.3.1.1 rank-2 recurrences over the level index (one cell frame
+  `[gpts, rlev]`; the downward sweep on a top-counted index since a self-read
+  must be strictly earlier), TF/TAU as closed forms of the quantised ITR,
+  TOTPLNK/DELWAVE/NGB as a script-transcribed table file; 112 assertions in 4
+  regimes, residuals ≤ 7e-7 relative on fluxes and 4e-5 on HTR. Stage 3 (gas
+  optics) needs: the 16 TAUGBn k-tables ABSA/ABSB/SELFREF/FORREF/FRACREFA/B
+  (≈1e5 coefficients, `data_sources`) and the SETCOEF interpolation (dumped
+  fac00..fac11, forfac, selffac, selffrac, jp, jt, jt1, indself, laytrop,
+  layswtch, laylow, co2mult now available as inputs/references), plus the
+  GASABS quantisation `ITR = INT(5000 od/(BPADE+od) + 0.5)`. Tooling: the
+  filler has no rank-2 fields (flattened `gl` inputs) or rank-2 reductions.
 
 ## 4. Phase 2 — physics and subassemblies
 
