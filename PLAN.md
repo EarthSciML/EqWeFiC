@@ -465,6 +465,19 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   layswtch, laylow, co2mult now available as inputs/references), plus the
   GASABS quantisation `ITR = INT(5000 od/(BPADE+od) + 0.5)`. Tooling: the
   filler has no rank-2 fields (flattened `gl` inputs) or rank-2 reductions.
+  Stage 3 done 2026-09-06: `rrtm_setcoef.esm` (SETCOEF, 140 assertions) and
+  `rrtm_gas_optics.esm` (TAUGB1–16 + GASABS ITR, 340 assertions, all 16 bands,
+  50 s in the Rust CLI); k-tables transcribed by script from RRTM_DATA
+  (big-endian real32 sequential file) + module DATA statements after the CMBGB
+  256→140 g-point reduction into 16 `const` template libraries (1.5 MB;
+  `data_sources`/`from_file` are not usable in inline tests, gap (f)); `colo3`
+  added to `rrtm_column.esm` as the O3DATA layer integral (240 assertions) and
+  WRF's off-by-one ozone layer confirmed (B5). Residuals: taug ≤ 2e-7 of band
+  maxima, pfrac ≤ 9e-8, itr exact up to quantisation flips. Remaining:
+  mounting setcoef → gas optics → rtrn_sweep → heating into one RRTMLW
+  assembly (Phase 2 subassembly; each interface is currently fed from the
+  dumps), and the RTRN cloud-overlap path in regimes with fractional cloud
+  (all SCM clouds are overcast).
 
 ## 4. Phase 2 — physics and subassemblies
 

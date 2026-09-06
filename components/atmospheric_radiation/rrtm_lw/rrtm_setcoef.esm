@@ -1,0 +1,3849 @@
+{
+  "esm": "1.0.0",
+  "metadata": {
+    "name": "RRTMSetcoef",
+    "description": "The pressure/temperature interpolation coefficients of WRF's RRTM longwave scheme (SUBROUTINE SETCOEF of phys/module_ra_rrtm.F, WRF 4.8) for the RRTM column of rrtm_column.esm. For every RRTM layer the reference-pressure bin JP of ln(pavel) on the 0.2-wide grid PREFLOG, the reference-temperature bins JT (at PREF(JP)) and JT1 (at PREF(JP+1)) on the 15 K grid around TREF, the four bilinear weights FAC00, FAC10, FAC01, FAC11 that the band routines TAUGBn apply to the k-tables, the foreign- and self-continuum scalings FORFAC and SELFFAC with the self-continuum temperature row INDSELF and fraction SELFFRAC, the CO2 excess weighting CO2MULT, and the three layer counts LAYTROP (lower-atmosphere k-tables), LAYSWTCH (band 8) and LAYLOW (band 9). Inputs are the column's layer pressures and temperatures and the dry-air, water-vapour and CO2 columns (rrtm_column.esm pavel, tavel, coldry, colh2o, colco2). The scheme is diagnostic. Fortran INT() truncations are written as floor(): every truncated argument is either positive or is followed by a clamp that makes floor and truncation agree (documented per variable). SELFFAC, SELFFRAC and INDSELF are assigned by SETCOEF only below LAYTROP and are left undefined above it; here they are defined on every layer by the same formula, and the tests compare them below LAYTROP only. Reference: real32 WRF dumps (no standalone driver), tolerance contract rel 1e-5; the residual is dominated by the real32 PREFLOG/TREF table values and ln(). Reference: Mlawer, E. J., S. J. Taubman, P. D. Brown, M. J. Iacono and S. A. Clough (1997), RRTM, a validated correlated-k model for the longwave, J. Geophys. Res. 102, 16663-16682; WRF 4.8 phys/module_ra_rrtm.F SUBROUTINE SETCOEF (lines 4267-4450)."
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 59,
+      "description": "Number of model layers (WRF kte); 59 for the em_scm_xy reference column."
+    },
+    "NBUF": {
+      "type": "integer",
+      "default": 44,
+      "description": "Buffer layers MM5ATM adds above the model top (see rrtm_column.esm); 44 for the reference column. NLAYERS = NLEV + NBUF."
+    }
+  },
+  "index_sets": {
+    "rlay": {
+      "kind": "interval",
+      "size": {
+        "op": "+",
+        "args": [
+          "NLEV",
+          "NBUF"
+        ]
+      }
+    }
+  },
+  "models": {
+    "RRTMSetcoef": {
+      "subsystems": {
+        "par": {
+          "ref": "./rrtm_parameters.esm"
+        }
+      },
+      "expression_template_imports": [
+        {
+          "ref": "./rrtm_reference_atmosphere.esm"
+        }
+      ],
+      "expression_templates": {
+        "reference_pressure_bin": {
+          "params": [
+            "plog",
+            "plog_top",
+            "step",
+            "jp_max"
+          ],
+          "description": "SETCOEF JP = INT(36 - 5 (PLOG + 0.04)) clamped to 1..jp_max: the bin of ln p on the reference grid PREFLOG(k) = plog_top - step (k - 1), i.e. 1 + floor((plog_top - plog)/step) (the argument 36 - 5(PLOG + 0.04) = 1 + (6.96 - PLOG)/0.2 is positive for every atmospheric pressure, so INT = floor).",
+          "body": {
+            "op": "min",
+            "args": [
+              "jp_max",
+              {
+                "op": "max",
+                "args": [
+                  1.0,
+                  {
+                    "op": "+",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "floor",
+                        "args": [
+                          {
+                            "op": "/",
+                            "args": [
+                              {
+                                "op": "-",
+                                "args": [
+                                  "plog_top",
+                                  "plog"
+                                ]
+                              },
+                              "step"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "reference_temperature_bin": {
+          "params": [
+            "T",
+            "T_ref",
+            "dT",
+            "jt_max"
+          ],
+          "description": "SETCOEF JT = INT(3 + (TAVEL - TREF(JP))/15) clamped to 1..jt_max: the bin of T on the five reference temperatures T_ref - 2 dT .. T_ref + 2 dT. INT truncates toward zero while floor rounds down; they differ only for arguments below 0, which the clamp to 1 maps to the same bin.",
+          "body": {
+            "op": "min",
+            "args": [
+              "jt_max",
+              {
+                "op": "max",
+                "args": [
+                  1.0,
+                  {
+                    "op": "floor",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          3.0,
+                          {
+                            "op": "/",
+                            "args": [
+                              {
+                                "op": "-",
+                                "args": [
+                                  "T",
+                                  "T_ref"
+                                ]
+                              },
+                              "dT"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "reference_temperature_fraction": {
+          "params": [
+            "T",
+            "T_ref",
+            "dT",
+            "jt"
+          ],
+          "description": "SETCOEF FT = (TAVEL - TREF)/15 - (JT - 3): the position of T within its (clamped) reference-temperature bin; outside the table it extrapolates linearly, exactly as the Fortran.",
+          "body": {
+            "op": "-",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      "T",
+                      "T_ref"
+                    ]
+                  },
+                  "dT"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  "jt",
+                  3.0
+                ]
+              }
+            ]
+          }
+        },
+        "layer_count": {
+          "params": [
+            "indicator"
+          ],
+          "description": "Number of RRTM layers with a true indicator (SETCOEF's LAYTROP/LAYSWTCH/LAYLOW counters; the column is monotone in pressure, so the count is also the index of the last such layer).",
+          "body": {
+            "op": "aggregate",
+            "args": [],
+            "output_idx": [],
+            "ranges": {
+              "L": {
+                "from": "rlay"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "indicator",
+                "L"
+              ]
+            }
+          }
+        }
+      },
+      "variables": {
+        "pavel": {
+          "type": "unknown",
+          "units": "hPa",
+          "shape": [
+            "rlay"
+          ],
+          "description": "RRTM layer pressure (rrtm_column.esm pavel), consumer-supplied through `input_pavel`."
+        },
+        "tavel": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "rlay"
+          ],
+          "description": "RRTM layer temperature (rrtm_column.esm tavel), consumer-supplied through `input_tavel`."
+        },
+        "coldry": {
+          "type": "unknown",
+          "units": "1/cm^2",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Dry-air molecular column of the layer (rrtm_column.esm coldry), consumer-supplied through `input_coldry`."
+        },
+        "colh2o": {
+          "type": "unknown",
+          "units": "1/cm^2",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Scaled water-vapour column 1e-20 coldry w_h2o (rrtm_column.esm colh2o), consumer-supplied through `input_colh2o`."
+        },
+        "colco2": {
+          "type": "unknown",
+          "units": "1/cm^2",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Scaled CO2 column 1e-20 coldry co2vmr (rrtm_column.esm colco2), consumer-supplied through `input_colco2`."
+        },
+        "plog": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "ln of the layer pressure in hPa (SETCOEF PLOG)."
+        },
+        "jp": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Reference-pressure bin of the layer, 1..58 (SETCOEF JP): PREF(JP) >= pavel > PREF(JP+1)."
+        },
+        "jp1": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "The next reference pressure, JP + 1 (SETCOEF JP1)."
+        },
+        "fp": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Fraction of the way from PREFLOG(JP) to PREFLOG(JP+1) at which ln p lies, FP = 5 (PREFLOG(JP) - PLOG) = (PREFLOG(JP) - PLOG)/step (SETCOEF)."
+        },
+        "jt": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Reference-temperature bin at PREF(JP), 1..4 (SETCOEF JT)."
+        },
+        "ft": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Temperature fraction within bin JT (SETCOEF FT)."
+        },
+        "jt1": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Reference-temperature bin at PREF(JP+1), 1..4 (SETCOEF JT1)."
+        },
+        "ft1": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Temperature fraction within bin JT1 (SETCOEF FT1)."
+        },
+        "fac00": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Bilinear k-table weight of node (JP, JT): (1 - FP)(1 - FT) (SETCOEF FAC00)."
+        },
+        "fac10": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Bilinear k-table weight of node (JP, JT + 1): (1 - FP) FT (SETCOEF FAC10)."
+        },
+        "fac01": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Bilinear k-table weight of node (JP + 1, JT1): FP (1 - FT1) (SETCOEF FAC01)."
+        },
+        "fac11": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Bilinear k-table weight of node (JP + 1, JT1 + 1): FP FT1 (SETCOEF FAC11)."
+        },
+        "water": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Water-vapour volume mixing ratio relative to dry air, WKL(1)/COLDRY = colh2o/(1e-20 coldry) (SETCOEF WATER)."
+        },
+        "scalefac": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Continuum pressure/temperature scaling pavel (296 K/1013 hPa)/tavel (SETCOEF SCALEFAC)."
+        },
+        "forfac": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Foreign-broadened water-vapour continuum scaling SCALEFAC/(1 + WATER) (SETCOEF FORFAC)."
+        },
+        "selffac": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Self-broadened water-vapour continuum scaling WATER FORFAC (SETCOEF SELFFAC; defined only below LAYTROP in the Fortran)."
+        },
+        "self_temperature_index": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Position of the layer temperature on the self-continuum temperature grid, (TAVEL - 188 K)/7.2 K (SETCOEF FACTOR)."
+        },
+        "indself": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Lower interpolation row of the SELFREF tables, min(9, max(1, INT(FACTOR) - 7)) (SETCOEF INDSELF). INT and floor differ only for FACTOR < 0, where the clamp gives 1 in both cases."
+        },
+        "selffrac": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Interpolation fraction between SELFREF rows INDSELF and INDSELF + 1, FACTOR - (INDSELF + 7) (SETCOEF SELFFRAC)."
+        },
+        "co2reg": {
+          "type": "unknown",
+          "units": "1/cm^2",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Scaled CO2 column of the reference atmosphere the k-tables were built for, 1e-20 coldry 3.55e-4 (SETCOEF CO2REG = 3.55E-24 COLDRY)."
+        },
+        "co2mult": {
+          "type": "unknown",
+          "units": "1/cm^2",
+          "shape": [
+            "rlay"
+          ],
+          "description": "Weight of the CO2 minor-absorption terms of bands 6-8: the excess CO2 column over the reference times 272.63 exp(-1919.4 K/T)/(8.7604e-4 T/K) (SETCOEF CO2MULT)."
+        },
+        "in_lower_atmosphere": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "1 where PLOG > 4.56 (p > 95.6 hPa): the layer uses the lower-atmosphere k-tables ABSA (SETCOEF's LAYTROP branch)."
+        },
+        "below_switch": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "1 where PLOG > 5.76 (p > 317 hPa): counted in LAYSWTCH (band 8's lower/upper split)."
+        },
+        "in_lowest_block": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "1 where PLOG >= 6.62 (p >= 750 hPa): counted in LAYLOW (band 9's first N2O block)."
+        },
+        "laytrop": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Number of lower-atmosphere layers (SETCOEF LAYTROP): layers 1..LAYTROP use ABSA."
+        },
+        "layswtch_count": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Number of layers with PLOG > 5.76 before SETCOEF's round-off correction."
+        },
+        "layswtch": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Band 8's switch layer (SETCOEF LAYSWTCH): the count of layers with PLOG > 5.76, moved up by one when JP(LAYSWTCH + 1) <= 6 (the round-off guard SETCOEF applies after the loop)."
+        },
+        "laylow": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Band 9's lowest-block layer (SETCOEF LAYLOW): the count of layers with PLOG >= 6.62, at least 1 (profiles with surface pressure below 750 hPa)."
+        },
+        "selffac_lower": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "SELFFAC on the lower-atmosphere layers and 0 above: the part of selffac that SETCOEF assigns (test view)."
+        },
+        "selffrac_lower": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "SELFFRAC on the lower-atmosphere layers and 0 above (test view)."
+        },
+        "indself_lower": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "rlay"
+          ],
+          "description": "INDSELF on the lower-atmosphere layers and 0 above (test view)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "pavel",
+          "rhs": {
+            "op": "input_pavel",
+            "args": []
+          }
+        },
+        {
+          "lhs": "tavel",
+          "rhs": {
+            "op": "input_tavel",
+            "args": []
+          }
+        },
+        {
+          "lhs": "coldry",
+          "rhs": {
+            "op": "input_coldry",
+            "args": []
+          }
+        },
+        {
+          "lhs": "colh2o",
+          "rhs": {
+            "op": "input_colh2o",
+            "args": []
+          }
+        },
+        {
+          "lhs": "colco2",
+          "rhs": {
+            "op": "input_colco2",
+            "args": []
+          }
+        },
+        {
+          "lhs": "plog",
+          "rhs": {
+            "op": "log",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  "pavel",
+                  "par.unit_hpa"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "jp",
+          "rhs": {
+            "op": "aggregate",
+            "args": [],
+            "output_idx": [
+              "L"
+            ],
+            "ranges": {
+              "L": {
+                "from": "rlay"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "reference_pressure_bin",
+              "bindings": {
+                "plog": {
+                  "op": "index",
+                  "args": [
+                    "plog",
+                    "L"
+                  ]
+                },
+                "plog_top": "par.plog_ref_top",
+                "step": "par.plog_ref_step",
+                "jp_max": "par.jp_max"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "jp1",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "jp",
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "fp",
+          "rhs": {
+            "op": "aggregate",
+            "args": [],
+            "output_idx": [
+              "L"
+            ],
+            "ranges": {
+              "L": {
+                "from": "rlay"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "-",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "rrtm_preflog",
+                          "bindings": {}
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "jp",
+                            "L"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "plog",
+                        "L"
+                      ]
+                    }
+                  ]
+                },
+                "par.plog_ref_step"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "jt",
+          "rhs": {
+            "op": "aggregate",
+            "args": [],
+            "output_idx": [
+              "L"
+            ],
+            "ranges": {
+              "L": {
+                "from": "rlay"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "reference_temperature_bin",
+              "bindings": {
+                "T": {
+                  "op": "index",
+                  "args": [
+                    "tavel",
+                    "L"
+                  ]
+                },
+                "T_ref": {
+                  "op": "*",
+                  "args": [
+                    "par.unit_kelvin",
+                    {
+                      "op": "index",
+                      "args": [
+                        {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "rrtm_tref",
+                          "bindings": {}
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "jp",
+                            "L"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "dT": "par.dt_ref",
+                "jt_max": "par.jt_max"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "ft",
+          "rhs": {
+            "op": "aggregate",
+            "args": [],
+            "output_idx": [
+              "L"
+            ],
+            "ranges": {
+              "L": {
+                "from": "rlay"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "reference_temperature_fraction",
+              "bindings": {
+                "T": {
+                  "op": "index",
+                  "args": [
+                    "tavel",
+                    "L"
+                  ]
+                },
+                "T_ref": {
+                  "op": "*",
+                  "args": [
+                    "par.unit_kelvin",
+                    {
+                      "op": "index",
+                      "args": [
+                        {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "rrtm_tref",
+                          "bindings": {}
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "jp",
+                            "L"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "dT": "par.dt_ref",
+                "jt": {
+                  "op": "index",
+                  "args": [
+                    "jt",
+                    "L"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "lhs": "jt1",
+          "rhs": {
+            "op": "aggregate",
+            "args": [],
+            "output_idx": [
+              "L"
+            ],
+            "ranges": {
+              "L": {
+                "from": "rlay"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "reference_temperature_bin",
+              "bindings": {
+                "T": {
+                  "op": "index",
+                  "args": [
+                    "tavel",
+                    "L"
+                  ]
+                },
+                "T_ref": {
+                  "op": "*",
+                  "args": [
+                    "par.unit_kelvin",
+                    {
+                      "op": "index",
+                      "args": [
+                        {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "rrtm_tref",
+                          "bindings": {}
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "jp1",
+                            "L"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "dT": "par.dt_ref",
+                "jt_max": "par.jt_max"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "ft1",
+          "rhs": {
+            "op": "aggregate",
+            "args": [],
+            "output_idx": [
+              "L"
+            ],
+            "ranges": {
+              "L": {
+                "from": "rlay"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "reference_temperature_fraction",
+              "bindings": {
+                "T": {
+                  "op": "index",
+                  "args": [
+                    "tavel",
+                    "L"
+                  ]
+                },
+                "T_ref": {
+                  "op": "*",
+                  "args": [
+                    "par.unit_kelvin",
+                    {
+                      "op": "index",
+                      "args": [
+                        {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "rrtm_tref",
+                          "bindings": {}
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "jp1",
+                            "L"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "dT": "par.dt_ref",
+                "jt": {
+                  "op": "index",
+                  "args": [
+                    "jt1",
+                    "L"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "lhs": "fac00",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "fp"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "ft"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "fac10",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "fp"
+                ]
+              },
+              "ft"
+            ]
+          }
+        },
+        {
+          "lhs": "fac01",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "fp",
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "ft1"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "fac11",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "fp",
+              "ft1"
+            ]
+          }
+        },
+        {
+          "lhs": "water",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "colh2o",
+              {
+                "op": "*",
+                "args": [
+                  "par.col_scale",
+                  "coldry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "scalefac",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "pavel",
+                  "par.t_stp"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.p_stp",
+                  "tavel"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "forfac",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "scalefac",
+              {
+                "op": "+",
+                "args": [
+                  1.0,
+                  "water"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "selffac",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "water",
+              "forfac"
+            ]
+          }
+        },
+        {
+          "lhs": "self_temperature_index",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  "tavel",
+                  "par.t_self_ref"
+                ]
+              },
+              "par.dt_self"
+            ]
+          }
+        },
+        {
+          "lhs": "indself",
+          "rhs": {
+            "op": "min",
+            "args": [
+              "par.indself_max",
+              {
+                "op": "max",
+                "args": [
+                  1.0,
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "floor",
+                        "args": [
+                          "self_temperature_index"
+                        ]
+                      },
+                      "par.indself_offset"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "selffrac",
+          "rhs": {
+            "op": "-",
+            "args": [
+              "self_temperature_index",
+              {
+                "op": "+",
+                "args": [
+                  "indself",
+                  "par.indself_offset"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "co2reg",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "par.col_scale",
+              "coldry",
+              "par.co2_reference_vmr"
+            ]
+          }
+        },
+        {
+          "lhs": "co2mult",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      "colco2",
+                      "co2reg"
+                    ]
+                  },
+                  "par.co2mult_coef",
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "neg",
+                        "args": [
+                          {
+                            "op": "/",
+                            "args": [
+                              "par.co2mult_energy",
+                              "tavel"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.co2mult_partition",
+                  "tavel"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "in_lower_atmosphere",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "plog",
+                  "par.plog_troposphere"
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "below_switch",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "plog",
+                  "par.plog_switch"
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "in_lowest_block",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">=",
+                "args": [
+                  "plog",
+                  "par.plog_low"
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "laytrop",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "layer_count",
+            "bindings": {
+              "indicator": "in_lower_atmosphere"
+            }
+          }
+        },
+        {
+          "lhs": "layswtch_count",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "layer_count",
+            "bindings": {
+              "indicator": "below_switch"
+            }
+          }
+        },
+        {
+          "lhs": "layswtch",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "layswtch_count",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": "<=",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "jp",
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "op": "+",
+                                "args": [
+                                  "layswtch_count",
+                                  1.0
+                                ]
+                              },
+                              {
+                                "op": "+",
+                                "args": [
+                                  "NLEV",
+                                  "NBUF"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      "par.jp_switch_check"
+                    ]
+                  },
+                  1.0,
+                  0.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "laylow",
+          "rhs": {
+            "op": "max",
+            "args": [
+              1.0,
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "layer_count",
+                "bindings": {
+                  "indicator": "in_lowest_block"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "selffac_lower",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "in_lower_atmosphere",
+              "selffac"
+            ]
+          }
+        },
+        {
+          "lhs": "selffrac_lower",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "in_lower_atmosphere",
+              "selffrac"
+            ]
+          }
+        },
+        {
+          "lhs": "indself_lower",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "in_lower_atmosphere",
+              "indself"
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "scm_call1_evening_clear",
+          "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, mp=6 ra_lw=1 ra_sw=1 sf_sfclay=1 sf_surface=1 bl_pbl=1, radt = 30 min) dumped by the instrumented fork ctessum-claude/WRF (module_esm_dump hooks inside SUBROUTINE RRTM after GASABS of phys/module_ra_rrtm.F; dump scm_ref2_1.json). RRTM has no standalone real64 driver, so every expected value is the real32 in-model value and the tolerance contract is rel 1e-5. Inputs are the dumped RRTM column (PAVEL, TAVEL, COLDRY, COLH2O, COLCO2 of the 103-layer extended column); expected values are SETCOEF's outputs JP, JT, JT1, FAC00/10/01/11, FORFAC, SELFFAC, SELFFRAC, INDSELF, CO2MULT and the counts LAYTROP, LAYSWTCH, LAYLOW. SELFFAC/SELFFRAC/INDSELF are compared through the *_lower views (zero above LAYTROP) because SETCOEF leaves them unassigned there and the dump holds stale memory. The scheme is diagnostic (no time step). Regime: call 1, 19:00 UTC (12:34 LST), first radiation call, clear sky; tbound 288 K. Tolerances: measured against a NumPy replica the component's integer bins are exact; FAC00..FAC11 agree to 2.4e-6 of their maximum (real32 PREFLOG/TREF/ln), FORFAC to 1.5e-7, SELFFAC/SELFFRAC to 1.2e-7, CO2MULT to 1.4e-6 relative; tolerances 3-5x above: integers Linf abs 1e-9, weights Linf abs 1e-5, continuum factors Linf abs 1e-6 (SELFFRAC 5e-6, it spans -8.4..1), CO2MULT Linf abs 5e-7 (max 0.072), spot checks rel 1e-5 on FORFAC and CO2MULT and abs 1e-5 on FAC00/FAC01 (whose real32 values near a reference pressure are as small as 1.6e-3 with a 5e-4 relative error).",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/setcoef_scm_call1_evening_clear_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 5.0, 5.0, 5.0, 5.0, 5.0, 6.0, 6.0, 6.0, 7.0, 7.0, 7.0, 8.0, 8.0, 9.0, 9.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 11.0, 11.0, 11.0, 11.0, 11.0, 11.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 13.0, 13.0, 13.0, 13.0, 14.0, 14.0, 14.0, 15.0, 15.0, 15.0, 16.0, 16.0, 16.0, 17.0, 17.0, 18.0, 19.0, 19.0, 20.0, 22.0, 23.0, 25.0, 30.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jt",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jt1",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 2.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.4167039394378662, 0.4125538766384125, 0.40602362155914307, 0.3968966603279114, 0.38493746519088745, 0.3698919415473938, 0.3514872193336487, 0.3294243812561035, 0.0065819574519991875, 0.016694065183401108, 0.023470094427466393, 0.026558808982372284, 0.025577114894986153, 0.02010868303477764, 0.003544081002473831, 0.5433844923973083, 0.5238969922065735, 0.5031997561454773, 0.481094628572464, 0.4573405385017395, 0.4316692650318146, 0.40377336740493774, 0.3733009696006775, 0.33983656764030457, 0.302916556596756, 0.26200297474861145, 0.21716243028640747, 0.16667848825454712, 0.10970564931631088, 0.045281533151865005, 0.23826265335083008, 0.24804943799972534, 0.25197893381118774, 0.24877069890499115, 0.2369365394115448, 0.21472878754138947, 0.18592901527881622, 0.13935840129852295, 0.07031772285699844, 0.19169335067272186, 0.2812497317790985, 0.33116620779037476, 0.3347771167755127, 0.284258097410202, 0.17040607333183289, 0.5295741558074951, 0.5717313289642334, 0.5304908752441406, 0.049318745732307434, 0.034427713602781296, 0.8004560470581055, 0.12175944447517395, 0.11126133799552917, 0.15098416805267334, 0.24408896267414093, 0.06150678172707558, 0.371986448764801, 0.06415460258722305, 0.40897199511528015, 0.04887061566114426, 0.6633751392364502, 0.5963598489761353, 0.5220932960510254, 0.4402795135974884, 0.35060200095176697, 0.2526005804538727, 0.1460740864276886, 0.03081698901951313, 0.787674605846405, 0.6752260327339172, 0.5534299612045288, 0.4218529462814331, 0.2783318758010864, 0.12129998207092285, 0.9758736491203308, 0.8091356754302979, 0.6224505305290222, 0.424746036529541, 0.2180463820695877, 0.00163558148778975, 0.8292426466941833, 0.5912681818008423, 0.3443754315376282, 0.08807216584682465, 0.9060343503952026, 0.5961217284202576, 0.28120627999305725, 1.0776993036270142, 0.695010244846344, 0.30761611461639404, 1.0333459377288818, 0.5612889528274536, 0.08091733604669571, 0.6701416969299316, 0.06939945369958878, 0.5421116948127747, 0.9637758135795593, 0.010465436615049839, 0.09643543511629105, 1.275710940361023, 0.617633044719696, 0.48392409086227417, 0.810715913772583]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac10",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.16074679791927338, 0.13359488546848297, 0.10782420635223389, 0.08361548185348511, 0.06116373464465141, 0.040677737444639206, 0.022387443110346794, 0.006544122006744146, 0.29022151231765747, 0.23963069915771484, 0.19100983440876007, 0.14464814960956573, 0.10086913406848907, 0.06002475693821907, 0.02866722270846367, 0.4392586052417755, 0.4074384272098541, 0.37496596574783325, 0.3419511020183563, 0.30853718519210815, 0.27489230036735535, 0.24121421575546265, 0.20774273574352264, 0.17476466298103333, 0.14261242747306824, 0.11168094724416733, 0.08176296204328537, 0.05442231893539429, 0.030332837253808975, 0.010261411778628826, 0.7291479110717773, 0.6273625493049622, 0.5273217558860779, 0.4300413131713867, 0.3367138206958771, 0.24876265227794647, 0.16205339133739471, 0.08737622946500778, 0.02899172157049179, 0.773528516292572, 0.5426757335662842, 0.34364038705825806, 0.1824014037847519, 0.06599882990121841, 0.00274636666290462, 0.4552719295024872, 0.21241642534732819, 0.03917310759425163, 0.29044297337532043, 0.05809633806347847, 0.025200380012392998, 0.41463562846183777, 0.1100778877735138, 0.7252908945083618, 0.2517845034599304, 0.011748280376195908, 0.22734636068344116, -0.0024151562247425318, 0.03410128131508827, -0.00745397200807929, 0.26283904910087585, 0.21193252503871918, 0.16543051600456238, 0.12348601222038269, 0.08626283705234528, 0.05405911058187485, 0.026899553835392, 0.004798931535333395, 0.10670117288827896, 0.0738026425242424, 0.04590286687016487, 0.023161066696047783, 0.007449502591043711, 1.0730332178354729e-05, -0.024627860635519028, -0.033945295959711075, -0.029741009697318077, -0.02142906002700329, -0.011579706333577633, -8.729117689654231e-05, -0.04137079417705536, -0.026615764945745468, -0.013373210094869137, -0.002178537892177701, -0.07788646221160889, -0.03973288834095001, -0.012197637930512428, -0.11360275000333786, -0.05563264340162277, -0.015521403402090073, -0.1144689992070198, -0.045749515295028687, -0.004130099434405565, -0.0743422582745552, -0.005831337999552488, -0.07425364851951599, -0.17232413589954376, -0.0014570290222764015, -0.015447267331182957, -0.33515942096710205, -0.15696445107460022, -0.13457314670085907, -0.45093774795532227]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.12998683750629425, 0.15493841469287872, 0.18287181854248047, 0.21402135491371155, 0.2486402839422226, 0.2870067059993744, 0.329416424036026, 0.3761872351169586, 0.4276662766933441, 0.48422709107398987, 0.5462713837623596, 0.6142396330833435, 0.6886007189750671, 0.769871711730957, 0.6736047267913818, 0.01648295484483242, 0.06586233526468277, 0.11814023554325104, 0.17362701892852783, 0.232673779129982, 0.0022333881352096796, 0.008053368888795376, 0.016395321115851402, 0.027694743126630783, 0.04245619475841522, 0.06125544011592865, 0.08633348345756531, 0.11724373698234558, 0.15484802424907684, 0.20014947652816772, 0.01956307515501976, 0.07940635830163956, 0.1494884043931961, 0.23140931129455566, 0.3270241916179657, 0.4384804964065552, 0.5791909098625183, 0.7490095496177673, 0.0559028685092926, 0.01984437182545662, 0.12560318410396576, 0.2805626690387726, 0.009325007908046246, 0.11927288770675659, 0.2944719195365906, 0.013543384149670601, 0.01837172731757164, 0.12360777705907822, 0.3308834433555603, 0.6607291102409363, 0.05976708233356476, 0.2783157527446747, 0.6821123361587524, 0.07097293436527252, 0.4504738748073578, 0.22330625355243683, 0.015492917969822884, 0.4288964867591858, 0.243767648935318, 0.6658724546432495, 0.05245347321033478, 0.1404198259115219, 0.23562224209308624, 0.3383559584617615, 0.4489356279373169, 0.5674177408218384, 0.6940025091171265, 0.8292983770370483, 0.09302297979593277, 0.2262428253889084, 0.369980126619339, 0.5261013507843018, 0.6956009864807129, 0.8786115646362305, 0.05001646652817726, 0.23465397953987122, 0.42772749066352844, 0.6283860206604004, 0.8380387425422668, 1.0547435283660889, 0.24249988794326782, 0.4953397810459137, 0.7566825747489929, 1.0201700925827026, 0.20542901754379272, 0.5202430486679077, 0.8382106423377991, 0.04396376013755798, 0.43046656250953674, 0.8210316300392151, 0.09966588765382767, 0.5778364539146423, 1.0688837766647339, 0.49613332748413086, 1.1184743642807007, 0.6701667904853821, 0.2784256637096405, 1.2675527334213257, 1.2039676904678345, 0.09204663336277008, 0.8316843509674072, 1.0526697635650635, 1.6065579652786255]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac11",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.29256242513656616, 0.29891282320022583, 0.3032803535461426, 0.30546650290489197, 0.30525854229927063, 0.3024236261844635, 0.2967089116573334, 0.2878442704677582, 0.27553024888038635, 0.2594481408596039, 0.23924867808818817, 0.21455341577529907, 0.18495306372642517, 0.14999482035636902, 0.29418396949768066, 0.0008739174227230251, 0.002802210161462426, 0.00369404349476099, 0.0033272530417889357, 0.0014484982239082456, 0.2912050485610962, 0.34695905447006226, 0.4025609493255615, 0.4577040374279022, 0.5120148062705994, 0.5650606155395508, 0.6147410869598389, 0.6616554856300354, 0.7051134705543518, 0.7443075776100159, 0.013026359491050243, 0.04518165811896324, 0.07121091336011887, 0.08977867662906647, 0.09932544827461243, 0.09802807867527008, 0.07282666862010956, 0.024255789816379547, 0.8447877168655396, 0.014933745376765728, 0.05047132074832916, 0.044630732387304306, 0.4734964668750763, 0.5304701924324036, 0.5323756337165833, 0.0016105009708553553, 0.19748052954673767, 0.30672821402549744, 0.32935482263565063, 0.24674682319164276, 0.11457650363445282, 0.1852891743183136, 0.0965484231710434, 0.05275199934840202, 0.05365268141031265, 0.7034386992454529, 0.3851742744445801, 0.5093640685081482, 0.3131590783596039, 0.29271093010902405, 0.021332308650016785, 0.051287781447172165, 0.0768539160490036, 0.09787850081920624, 0.11419953405857086, 0.1259225606918335, 0.13302387297153473, 0.13508573174476624, 0.012601220048964024, 0.02472848631441593, 0.030687076970934868, 0.028884636238217354, 0.01861763559281826, 7.772295793984085e-05, -0.0012622521026059985, -0.00984433013945818, -0.02043704129755497, -0.03170299530029297, -0.04450540244579315, -0.056291788816452026, -0.030371729284524918, -0.0599922314286232, -0.08768483251333237, -0.10606373846530914, -0.03357691317796707, -0.07663191854953766, -0.10721928626298904, -0.008060306310653687, -0.06984416395425797, -0.11312633752822876, -0.01854277215898037, -0.09337583929300308, -0.1456710547208786, -0.09193277359008789, -0.1820424199104309, -0.13802486658096313, -0.06987736374139786, -0.27656111121177673, -0.28495582938194275, -0.03259815648198128, -0.29235291481018066, -0.4020206332206726, -0.9663361310958862]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.9944093227386475, 0.9899724125862122, 0.9854150414466858, 0.980733335018158, 0.9759237170219421, 0.970982551574707, 0.9659059047698975, 0.9606896638870239, 0.955329418182373, 0.9498210549354553, 0.9441600441932678, 0.938341498374939, 0.9323605298995972, 0.9262126088142395, 0.9111097455024719, 0.8973491191864014, 0.888327419757843, 0.8791061043739319, 0.8696811199188232, 0.8600483536720276, 0.850203275680542, 0.8401415944099426, 0.8298589587211609, 0.8193503022193909, 0.8086111545562744, 0.7976366281509399, 0.786978542804718, 0.776085376739502, 0.7649412751197815, 0.7535396814346313, 0.7418743968009949, 0.7299383878707886, 0.7177249193191528, 0.7052260637283325, 0.6924344301223755, 0.6793416738510132, 0.6666201949119568, 0.6537572145462036, 0.6408302187919617, 0.6288315653800964, 0.6164267063140869, 0.6035955548286438, 0.59031742811203, 0.5765694379806519, 0.5623270869255066, 0.5475635528564453, 0.5322362184524536, 0.5161755681037903, 0.4994981586933136, 0.4821639060974121, 0.4641280174255371, 0.44533953070640564, 0.42574021220207214, 0.405262291431427, 0.3838267922401428, 0.3613392412662506, 0.33768513798713684, 0.3127221167087555, 0.28626957535743713, 0.26956310868263245, 0.2638718783855438, 0.2581612169742584, 0.25243106484413147, 0.24668127298355103, 0.24091172218322754, 0.23511481285095215, 0.2292909324169159, 0.22344772517681122, 0.21758513152599335, 0.21170298755168915, 0.20582056045532227, 0.19995924830436707, 0.19409716129302979, 0.18821048736572266, 0.18229906260967255, 0.17624719440937042, 0.17001888155937195, 0.16373847424983978, 0.15745504200458527, 0.15113598108291626, 0.14476770162582397, 0.1383865773677826, 0.13199642300605774, 0.12552879750728607, 0.11901012063026428, 0.11250859498977661, 0.10600148141384125, 0.09949945658445358, 0.09301271289587021, 0.08653684705495834, 0.08008725941181183, 0.07367024570703506, 0.06729433685541153, 0.06096299737691879, 0.054664451628923416, 0.04838855564594269, 0.04212810844182968, 0.03586819767951965, 0.02958839200437069, 0.023301832377910614, 0.017060648649930954, 0.010881071910262108, 0.003914069849997759]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-06
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.03803468868136406, 0.03859681636095047, 0.039152514189481735, 0.03970298543572426, 0.04024515300989151, 0.040777381509542465, 0.041300784796476364, 0.041812483221292496, 0.042310766875743866, 0.042795076966285706, 0.0432625412940979, 0.0437130481004715, 0.04414323717355728, 0.04455307126045227, 0.04780399799346924, 0.05128774791955948, 0.05242808908224106, 0.05357857793569565, 0.05473482981324196, 0.055898312479257584, 0.05706285312771797, 0.058229267597198486, 0.05939284339547157, 0.06055022031068802, 0.06169810891151428, 0.06283275783061981, 0.06390221416950226, 0.06494534015655518, 0.06595827639102936, 0.0669349730014801, 0.06786727160215378, 0.0687486082315445, 0.06957118213176727, 0.07032646238803864, 0.07100311666727066, 0.07159268110990524, 0.07167740166187286, 0.0715198814868927, 0.07102412730455399, 0.06945325434207916, 0.06771346181631088, 0.06580008566379547, 0.06370949745178223, 0.061435550451278687, 0.0589771531522274, 0.05633502081036568, 0.053508903831243515, 0.050502169877290726, 0.04731886461377144, 0.04396938160061836, 0.040466200560331345, 0.036826811730861664, 0.033075444400310516, 0.02924155816435814, 0.02536425180733204, 0.021491320803761482, 0.017682373523712158, 0.014008954167366028, 0.010556722991168499, 0.0013898467877879739, 0.0013685075100511312, 0.0013474200386554003, 0.0013265840243548155, 0.001305995974689722, 0.0012856560060754418, 0.0012659351341426373, 0.0012468165950849652, 0.0012279222719371319, 0.0012092485558241606, 0.001190794981084764, 0.0011715403525158763, 0.0011502861743792892, 0.0011281166225671768, 0.001106279087252915, 0.0010847696103155613, 0.0010701389983296394, 0.0010649551404640079, 0.0010625640861690044, 0.0010601787362247705, 0.0010599411325529218, 0.0010630679316818714, 0.0010674211662262678, 0.0010728961788117886, 0.001085202326066792, 0.0011033855844289064, 0.0011223572073504329, 0.001144517445936799, 0.001169428345747292, 0.00119650992564857, 0.0012268261052668095, 0.0012589826947078109, 0.001292351633310318, 0.0013255559606477618, 0.0013575108023360372, 0.001390086836181581, 0.0014259442687034607, 0.0014686747454106808, 0.001527663553133607, 0.0016244001453742385, 0.0017868580762296915, 0.002050682669505477, 0.0025917207822203636, 0.0044554127380251884]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-07
+              }
+            },
+            {
+              "variable": "selffac_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.003996924497187138, 0.003979090601205826, 0.003960772883147001, 0.003941955044865608, 0.003922623116523027, 0.003902762895449996, 0.0038823578506708145, 0.003861391684040427, 0.0038398467004299164, 0.0038177063688635826, 0.003794952528551221, 0.0037715656217187643, 0.0037475256249308586, 0.003722814843058586, 0.002940666861832142, 0.0007417034357786179, 0.0010500516509637237, 0.0013595873024314642, 0.0016700368141755462, 0.0019810975063592196, 0.00229245750233531, 0.0026037658099085093, 0.0029146585147827864, 0.003224737709388137, 0.0035335819702595472, 0.0038407337851822376, 0.0036875831428915262, 0.0035251209046691656, 0.0033619035966694355, 0.003198064398020506, 0.0030337534844875336, 0.002869127783924341, 0.0027043605223298073, 0.002539634006097913, 0.0023751475382596254, 0.002211114624515176, 0.0019865657668560743, 0.0017462909454479814, 0.0015166784869506955, 0.0013279684353619814, 0.0011406450066715479, 0.000955135328695178, 0.0007719093700870872, 0.0005914839566685259, 0.00041442798101343215, 0.00024136352294590324, 8.55707039590925e-05, 8.298853936139494e-05, 8.030721073737368e-05, 7.752028614049777e-05, 7.462055509677157e-05, 7.159982487792149e-05, 6.844872405054048e-05, 6.51563677820377e-05, 6.171005952637643e-05, 5.809461072203703e-05, 5.429159864434041e-05, 5.027814768254757e-05, 4.602522312779911e-05, 1.3478155551638338e-06, 1.3193593986216001e-06, 1.2908060398331145e-06, 1.2621552514247014e-06, 1.2334063512753346e-06, 1.20455854357715e-06, 1.175574084300024e-06, 1.1464546787465224e-06, 1.1172386393809575e-06, 1.087925625142816e-06, 1.0585149539110716e-06, 1.029102804750437e-06, 9.997962706620456e-07, 9.70485757534334e-07, 9.410524057784642e-07, 9.114953058997344e-07, 8.812359624243982e-07, 8.500944090883422e-07, 8.186923423636472e-07, 7.87275212132954e-07, 7.556798777841323e-07, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-06
+              }
+            },
+            {
+              "variable": "selffrac_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.246612548828125, 0.17627811431884766, 0.10382843017578125, 0.029196739196777344, 0.9523086547851562, 0.873077392578125, 0.7914180755615234, 0.7072486877441406, 0.6204681396484375, 0.5309839248657227, 0.4386940002441406, 0.3434877395629883, 0.24525928497314453, 0.1438770294189453, 0.43744754791259766, 0.7354516983032227, 0.7155771255493164, 0.6937236785888672, 0.6697292327880859, 0.6434459686279297, 0.6146993637084961, 0.5832967758178711, 0.5490274429321289, 0.5116901397705078, 0.47103404998779297, 0.4268007278442383, 0.3740053176879883, 0.31696224212646484, 0.25542354583740234, 0.1890554428100586, 0.11745357513427734, 0.04024028778076172, 0.9569311141967773, 0.8670568466186523, 0.7700710296630859, 0.6653785705566406, 0.5174188613891602, 0.35007286071777344, 0.15541744232177734, 0.8709716796875, 0.5735692977905273, 0.2623119354248047, 0.9361505508422852, 0.5939512252807617, 0.23443317413330078, 0.8561315536499023, 0.45740413665771484, 0.036314964294433594, -0.40935611724853516, -0.882143497467041, -1.3850245475769043, -1.9215192794799805, -2.495847225189209, -3.113129138946533, -3.7796669006347656, -4.503384590148926, -5.29444694519043, -6.166219711303711, -7.13687801361084, -7.672171115875244, -7.717129707336426, -7.762087821960449, -7.807046413421631, -7.852004528045654, -7.896960735321045, -7.941075801849365, -7.984349250793457, -8.02762222290039, -8.070898056030273, -8.114171981811523, -8.159882545471191, -8.211016654968262, -8.265138626098633, -8.319260597229004, -8.373382568359375, -8.410673141479492, -8.423982620239258, -8.430136680603027, -8.436288833618164, -8.436901092529297, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-06
+              }
+            },
+            {
+              "variable": "indself_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [6.0, 6.0, 6.0, 6.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.9944093227386475,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.6288315653800964,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.15113598108291626,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.003914069849997759,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.03803468868136406,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.06945325434207916,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.0010599411325529218,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.0044554127380251884,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 59
+              },
+              "expected": 9.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 60
+              },
+              "expected": 9.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 30.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "laytrop",
+              "time": 0.0,
+              "expected": 80.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "layswtch",
+              "time": 0.0,
+              "expected": 53.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "laylow",
+              "time": 0.0,
+              "expected": 26.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.4167039394378662,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.19169335067272186,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.00163558148778975,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.810715913772583,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.12998683750629425,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.01984437182545662,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 1.0547435283660889,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 1.6065579652786255,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            }
+          ]
+        },
+        {
+          "id": "scm_call600_night_cirrus",
+          "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, mp=6 ra_lw=1 ra_sw=1 sf_sfclay=1 sf_surface=1 bl_pbl=1, radt = 30 min) dumped by the instrumented fork ctessum-claude/WRF (module_esm_dump hooks inside SUBROUTINE RRTM after GASABS of phys/module_ra_rrtm.F; dump scm_ref2_600.json). RRTM has no standalone real64 driver, so every expected value is the real32 in-model value and the tolerance contract is rel 1e-5. Inputs are the dumped RRTM column (PAVEL, TAVEL, COLDRY, COLH2O, COLCO2 of the 103-layer extended column); expected values are SETCOEF's outputs JP, JT, JT1, FAC00/10/01/11, FORFAC, SELFFAC, SELFFRAC, INDSELF, CO2MULT and the counts LAYTROP, LAYSWTCH, LAYLOW. SELFFAC/SELFFRAC/INDSELF are compared through the *_lower views (zero above LAYTROP) because SETCOEF leaves them unassigned there and the dump holds stale memory. The scheme is diagnostic (no time step). Regime: call 600, 00:00 UTC (17:34 LST), night, thin cirrus at the model top. Tolerances: measured against a NumPy replica the component's integer bins are exact; FAC00..FAC11 agree to 2.4e-6 of their maximum (real32 PREFLOG/TREF/ln), FORFAC to 1.5e-7, SELFFAC/SELFFRAC to 1.2e-7, CO2MULT to 1.4e-6 relative; tolerances 3-5x above: integers Linf abs 1e-9, weights Linf abs 1e-5, continuum factors Linf abs 1e-6 (SELFFRAC 5e-6, it spans -8.4..1), CO2MULT Linf abs 5e-7 (max 0.072), spot checks rel 1e-5 on FORFAC and CO2MULT and abs 1e-5 on FAC00/FAC01 (whose real32 values near a reference pressure are as small as 1.6e-3 with a 5e-4 relative error).",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/setcoef_scm_call600_night_cirrus_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 5.0, 5.0, 5.0, 5.0, 5.0, 6.0, 6.0, 6.0, 7.0, 7.0, 7.0, 8.0, 8.0, 9.0, 9.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 11.0, 11.0, 11.0, 11.0, 11.0, 11.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 13.0, 13.0, 13.0, 13.0, 14.0, 14.0, 14.0, 15.0, 15.0, 15.0, 16.0, 16.0, 16.0, 17.0, 17.0, 18.0, 19.0, 19.0, 20.0, 22.0, 23.0, 25.0, 30.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jt",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jt1",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 2.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.42849498987197876, 0.402106374502182, 0.3869190514087677, 0.37500083446502686, 0.3628024160861969, 0.3486728072166443, 0.3317318260669708, 0.31142139434814453, 0.28730127215385437, 0.0025039324536919594, 0.011424332857131958, 0.016723036766052246, 0.017997711896896362, 0.01474637258797884, 0.006207711528986692, 0.5781297087669373, 0.5383890271186829, 0.5125807523727417, 0.4881708025932312, 0.4631991982460022, 0.43692001700401306, 0.4086916148662567, 0.3779880702495575, 0.3443564772605896, 0.3074100911617279, 0.26641547679901123, 0.22082023322582245, 0.16946391761302948, 0.11152755469083786, 0.04602769762277603, 0.252204567193985, 0.26135730743408203, 0.2645706832408905, 0.2605244219303131, 0.24781592190265656, 0.22478711605072021, 0.1935369074344635, 0.14447598159313202, 0.07266101241111755, 0.2106538712978363, 0.29653799533843994, 0.3431631624698639, 0.3436739444732666, 0.29030388593673706, 0.00023191992659121752, 0.5449967384338379, 0.5784363746643066, 0.5329511165618896, 0.049955256283283234, 0.03469034656882286, 0.8089048266410828, 0.12446379661560059, 0.1123189926147461, 0.15413571894168854, 0.24505144357681274, 0.061465367674827576, 0.3722434937953949, 0.06408117711544037, 0.4089425504207611, 0.04886607453227043, 0.6632733345031738, 0.5962710380554199, 0.522017776966095, 0.4402175545692444, 0.3505539894104004, 0.2525668740272522, 0.14605507254600525, 0.030813075602054596, 0.78757643699646, 0.6751437783241272, 0.553364098072052, 0.4218040108680725, 0.2783004939556122, 0.12128664553165436, 0.9757691025733948, 0.809050440788269, 0.6223853826522827, 0.4247017204761505, 0.21802373230457306, 0.0016354116378352046, 0.8291560411453247, 0.5912061333656311, 0.3443390727043152, 0.08806272596120834, 0.9059435129165649, 0.596060574054718, 0.28117677569389343, 1.0775935649871826, 0.6949400901794434, 0.3075840175151825, 1.0332448482513428, 0.5612322688102722, 0.0809088945388794, 0.6700761914253235, 0.06939247995615005, 0.5420603156089783, 0.963688850402832, 0.010464448481798172, 0.09642653167247772, 1.2756078243255615, 0.617582380771637, 0.48388567566871643, 0.8106764554977417]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac10",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.14942067861557007, 0.14445246756076813, 0.12729355692863464, 0.10583794116973877, 0.08358727395534515, 0.062151964753866196, 0.042366959154605865, 0.02474020980298519, 0.009661933407187462, 0.2539519667625427, 0.2031533420085907, 0.15455305576324463, 0.10848906636238098, 0.06540375202894211, 0.025994054973125458, 0.4044848382472992, 0.39291784167289734, 0.36555638909339905, 0.3348463177680969, 0.30264753103256226, 0.26961055397987366, 0.23626495897769928, 0.20302464067935944, 0.1702137589454651, 0.13808788359165192, 0.10723745822906494, 0.07807179540395737, 0.05160589888691902, 0.028477558866143227, 0.009481869637966156, 0.7151726484298706, 0.6140189170837402, 0.5146965980529785, 0.41825422644615173, 0.3257986605167389, 0.2386685609817505, 0.1544073522090912, 0.08221812546253204, 0.02661028876900673, 0.7545346617698669, 0.5273565053939819, 0.33161482214927673, 0.17347359657287598, 0.05991964414715767, 0.1728847622871399, 0.43980643153190613, 0.20566131174564362, 0.03665805608034134, 0.28974926471710205, 0.05776933208107948, 0.016660990193486214, 0.4118001461029053, 0.10886526107788086, 0.7219748497009277, 0.25065988302230835, 0.01164187677204609, 0.22696532309055328, -0.002425180748105049, 0.0340973399579525, -0.007449429482221603, 0.2629408538341522, 0.2120213657617569, 0.16550609469413757, 0.1235479786992073, 0.08631085604429245, 0.05409281700849533, 0.0269185658544302, 0.004802845884114504, 0.10679936408996582, 0.07388487458229065, 0.045968737453222275, 0.02320997789502144, 0.0074808793142437935, 2.4063709133770317e-05, -0.024523306638002396, -0.03386009484529495, -0.029675863683223724, -0.02138473093509674, -0.011557062156498432, -8.712137787370011e-05, -0.04128419607877731, -0.026553703472018242, -0.013336828909814358, -0.0021690973080694675, -0.07779563963413239, -0.03967173397541046, -0.012168134562671185, -0.11349701881408691, -0.055562518537044525, -0.015489298850297928, -0.1143679991364479, -0.04569285362958908, -0.0041216597892344, -0.07427677512168884, -0.005824366584420204, -0.07420222461223602, -0.17223714292049408, -0.0014560410054400563, -0.015438365750014782, -0.33505627512931824, -0.15691381692886353, -0.13453474640846252, -0.45089828968048096]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.1382104754447937, 0.14587387442588806, 0.16441379487514496, 0.18995457887649536, 0.22075030207633972, 0.25612199306488037, 0.29589343070983887, 0.3401523530483246, 0.3891046643257141, 0.4429754316806793, 0.5020729899406433, 0.5665459036827087, 0.6361689567565918, 0.7082687020301819, 0.7536961436271667, 0.01712515391409397, 0.06695989519357681, 0.11947209388017654, 0.1751803606748581, 0.0003482316969893873, 0.0044224681332707405, 0.010772213339805603, 0.01979091949760914, 0.031979795545339584, 0.048077814280986786, 0.06869146972894669, 0.09497452527284622, 0.12714509665966034, 0.16620585322380066, 0.21331551671028137, 0.020053554326295853, 0.08132517337799072, 0.1530807614326477, 0.23700140416622162, 0.3351495862007141, 0.4501734673976898, 0.5935204029083252, 0.7665910720825195, 0.07741184532642365, 0.02054750733077526, 0.1288953721523285, 0.2863762676715851, 0.017651157453656197, 0.1305462270975113, 0.30870765447616577, 0.013820084743201733, 0.020232273265719414, 0.12552101910114288, 0.3321654796600342, 0.6635890007019043, 0.06160186231136322, 0.280758798122406, 0.6862465739250183, 0.0715169683098793, 0.4516790807247162, 0.22439035773277283, 0.015721121802926064, 0.4291369915008545, 0.24378390610218048, 0.6657670736312866, 0.05244537070393562, 0.1403987556695938, 0.23558789491653442, 0.33830803632736206, 0.4488737881183624, 0.5673416256904602, 0.6939116716384888, 0.8291923403739929, 0.09301137924194336, 0.22621527314186096, 0.36993607878685, 0.5260403752326965, 0.6955225467681885, 0.8785150051116943, 0.05001110956072807, 0.23462927341461182, 0.4276827275753021, 0.6283204555511475, 0.8379517197608948, 1.0546339750289917, 0.24247658252716064, 0.49529194831848145, 0.7566090822219849, 1.0200695991516113, 0.2054101824760437, 0.5201942920684814, 0.8381304740905762, 0.04395981505513191, 0.4304269254207611, 0.8209538459777832, 0.09965696930885315, 0.5777831673622131, 1.0687823295593262, 0.4960888922214508, 1.1183713674545288, 0.6701083183288574, 0.27840280532836914, 1.2674437761306763, 1.2038668394088745, 0.09204009920358658, 0.8316250443458557, 1.052598237991333, 1.6064876317977905]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac11",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.28387385606765747, 0.3075672686100006, 0.3213736116886139, 0.329206645488739, 0.3328600227832794, 0.33305323123931885, 0.33000779151916504, 0.32368603348731995, 0.3139321208000183, 0.30056867003440857, 0.2833493649959564, 0.2621780037879944, 0.23734423518180847, 0.21158117055892944, 0.214102104306221, 0.00026032948517240584, 0.0017332612769678235, 0.002390795387327671, 0.0018025233875960112, 0.23380504548549652, 0.289046972990036, 0.3442712128162384, 0.3991963565349579, 0.45344996452331543, 0.5064241886138916, 0.5576555728912354, 0.6061334609985352, 0.6517850756645203, 0.693789005279541, 0.7311749458312988, 0.012569261714816093, 0.04329859837889671, 0.06765192747116089, 0.08421995490789413, 0.09123582392930984, 0.08637084066867828, 0.0585353784263134, 0.006714822258800268, 0.8233168721199036, 0.014263988472521305, 0.04721011966466904, 0.038845743983983994, 0.4652012884616852, 0.5192302465438843, 0.5181756615638733, 0.0013767153723165393, 0.19567005336284637, 0.30486980080604553, 0.32813000679016113, 0.24395129084587097, 0.11283232271671295, 0.18297724425792694, 0.09256916493177414, 0.05237247422337532, 0.05260958522558212, 0.702502429485321, 0.3850700557231903, 0.509207010269165, 0.3131761848926544, 0.29281628131866455, 0.02134040929377079, 0.051308851689100266, 0.07688826322555542, 0.09792645275592804, 0.11426135897636414, 0.12599869072437286, 0.13311468064785004, 0.13519172370433807, 0.012612815946340561, 0.024756040424108505, 0.030731115490198135, 0.02894563600420952, 0.018696051090955734, 0.00017430054140277207, -0.0012568935053423047, -0.009819621220231056, -0.020392276346683502, -0.031637415289878845, -0.04441837593913078, -0.05618228763341904, -0.030348414555191994, -0.059944383800029755, -0.08761130273342133, -0.10596327483654022, -0.033558063209056854, -0.07658316195011139, -0.10713911801576614, -0.00805636029690504, -0.06980452686548233, -0.11304853111505508, -0.01853385753929615, -0.09332258999347687, -0.1455695778131485, -0.09188834577798843, -0.181939497590065, -0.13796637952327728, -0.0698544904589653, -0.2764522135257721, -0.28485503792762756, -0.032591622322797775, -0.29229360818862915, -0.40194910764694214, -0.9662657380104065]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.9923362135887146, 0.9864912629127502, 0.9814199805259705, 0.9765880107879639, 0.9717631340026855, 0.9668499231338501, 0.9618114829063416, 0.9566340446472168, 0.951310396194458, 0.9458321928977966, 0.9402005076408386, 0.934407114982605, 0.9284198880195618, 0.9221284985542297, 0.9143523573875427, 0.8989424705505371, 0.8890644907951355, 0.8796065449714661, 0.8700791001319885, 0.8603984713554382, 0.8505396246910095, 0.8404832482337952, 0.8302165865898132, 0.8197354078292847, 0.8090489506721497, 0.7981494069099426, 0.7874987721443176, 0.7766153216362, 0.7654850482940674, 0.7541061639785767, 0.7424530386924744, 0.7305402755737305, 0.718355655670166, 0.7058923840522766, 0.6931533217430115, 0.6801522374153137, 0.667425274848938, 0.654577910900116, 0.6417153477668762, 0.6295800805091858, 0.6170801520347595, 0.6042053699493408, 0.5908989906311035, 0.5771458745002747, 0.5628876090049744, 0.5480397939682007, 0.5324821472167969, 0.5163088440895081, 0.49954700469970703, 0.4822250306606293, 0.4643276631832123, 0.44541558623313904, 0.4258559048175812, 0.4053632616996765, 0.38390377163887024, 0.3614012897014618, 0.33773818612098694, 0.3127695322036743, 0.28631290793418884, 0.2695607841014862, 0.26386961340904236, 0.25815898180007935, 0.2524288594722748, 0.24667911231517792, 0.2409096211194992, 0.2351127564907074, 0.22928892076015472, 0.22344577312469482, 0.21758322417736053, 0.21170112490653992, 0.20581874251365662, 0.199957475066185, 0.1940954327583313, 0.18820881843566895, 0.18229743838310242, 0.17624562978744507, 0.17001736164093018, 0.16373701393604279, 0.15745364129543304, 0.1511346399784088, 0.1447664201259613, 0.1383853405714035, 0.13199524581432343, 0.12552767992019653, 0.11900906264781952, 0.11250759661197662, 0.10600055009126663, 0.09949857741594315, 0.09301189333200455, 0.08653608709573746, 0.08008655905723572, 0.07366959750652313, 0.06729374825954437, 0.06096246838569641, 0.05466397851705551, 0.04838813841342926, 0.04212774708867073, 0.03586788848042488, 0.029588138684630394, 0.023301634937524796, 0.017060507088899612, 0.010880984365940094, 0.0039140391163527966]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-06
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.037805281579494476, 0.03883110731840134, 0.03960936889052391, 0.04027201980352402, 0.04087497293949127, 0.041445739567279816, 0.04199565574526787, 0.042528871446847916, 0.0430477075278759, 0.04355312138795853, 0.04404444247484207, 0.044525403529405594, 0.04500431567430496, 0.04552930220961571, 0.04654967039823532, 0.05071909725666046, 0.05217168852686882, 0.05339759960770607, 0.05458638444542885, 0.05576259642839432, 0.05692816153168678, 0.05808834731578827, 0.0592397004365921, 0.06038033589720726, 0.06149918586015701, 0.06259404867887497, 0.06365002691745758, 0.0646800845861435, 0.06567744165658951, 0.06663305312395096, 0.06754914671182632, 0.06840717792510986, 0.06920219957828522, 0.06992478668689728, 0.07055628299713135, 0.07107406109571457, 0.07114925235509872, 0.07096940279006958, 0.07044199854135513, 0.06897706538438797, 0.06726711988449097, 0.06537658721208572, 0.06330431997776031, 0.06103425472974777, 0.0585869736969471, 0.05598699301481247, 0.05332310497760773, 0.050409700721502304, 0.0472804456949234, 0.04390936344861984, 0.04027613624930382, 0.03673845902085304, 0.03299236297607422, 0.029187394306063652, 0.025335734710097313, 0.02147764340043068, 0.01767651177942753, 0.014007042162120342, 0.01055670715868473, 0.0013899554032832384, 0.0013686144957318902, 0.00134752644225955, 0.0013266890309751034, 0.001306100282818079, 0.0012857586843892932, 0.0012660364154726267, 0.0012469175271689892, 0.001228021690621972, 0.0012093462282791734, 0.0011908923042938113, 0.0011716361623257399, 0.0011503802379593253, 0.0011282088235020638, 0.0011063705896958709, 0.0010848602978512645, 0.0010702285217121243, 0.0010650441981852055, 0.0010626529110595584, 0.0010602673282846808, 0.001060029724612832, 0.0010631568729877472, 0.0010675103403627872, 0.0010729858186095953, 0.001085293130017817, 0.0011034769704565406, 0.0011224501067772508, 0.0011446122080087662, 0.001169523922726512, 0.0011966066667810082, 0.0012269254075363278, 0.0012590832775458694, 0.0012924550101161003, 0.001325660734437406, 0.0013576181372627616, 0.0013901967322453856, 0.001426055678166449, 0.0014687894145026803, 0.0015277815982699394, 0.0016245226142928004, 0.001786989625543356, 0.002050829818472266, 0.0025918956380337477, 0.004455696325749159]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-07
+              }
+            },
+            {
+              "variable": "selffac_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0072114537470042706, 0.006505230441689491, 0.006049330346286297, 0.005740897264331579, 0.005526402033865452, 0.005372689571231604, 0.0052562616765499115, 0.005160574801266193, 0.005075258668512106, 0.004993207287043333, 0.0049032834358513355, 0.004793650936335325, 0.00465555302798748, 0.004431138280779123, 0.003802191698923707, 0.0008506853482685983, 0.0010518473573029041, 0.001360212336294353, 0.0016706340247765183, 0.00198172964155674, 0.002293206984177232, 0.0026046703569591045, 0.0029157563112676144, 0.003226181026548147, 0.003535336581990123, 0.00383737962692976, 0.0036899771075695753, 0.0035275283735245466, 0.003364295931532979, 0.0032004707027226686, 0.003036119509488344, 0.00287149497307837, 0.002706734463572502, 0.0025420356541872025, 0.002377614611759782, 0.0022134443279355764, 0.0019888924434781075, 0.0017484102863818407, 0.0014852475142106414, 0.0012736599892377853, 0.001135458005592227, 0.0009585440857335925, 0.0007761153974570334, 0.000595743244048208, 0.00042106970795430243, 0.000272989651421085, 0.00011027943401131779, 8.30453063827008e-05, 8.438383520115167e-05, 0.0001038400805555284, 0.00017225810734089464, 0.00013107429549563676, 8.36671533761546e-05, 4.9722464609658346e-05, 2.76195423793979e-05, 1.4128452676231973e-05, 6.531253802677384e-06, 2.6228362912661396e-06, 9.05671129203256e-07, 1.3478038454195485e-06, 1.319348029937828e-06, 1.2907948985230178e-06, 1.2621442238014424e-06, 1.233395551025751e-06, 1.2045480843880796e-06, 1.1755637387977913e-06, 1.1464445606179652e-06, 1.1172288623129134e-06, 1.0879160754484474e-06, 1.0585056315903785e-06, 1.0290937098034192e-06, 9.997874030887033e-07, 9.704771173346671e-07, 9.410440497958916e-07, 9.114871772908373e-07, 8.812281180325954e-07, 8.500867920702149e-07, 8.18685066406033e-07, 7.872681635490153e-07, 7.556731702607067e-07, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-06
+              }
+            },
+            {
+              "variable": "selffrac_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.20531654357910156, 0.21728229522705078, 0.18239879608154297, 0.12523365020751953, 0.056777000427246094, 0.9818477630615234, 0.9026079177856445, 0.8199939727783203, 0.7344512939453125, 0.6463279724121094, 0.5557498931884766, 0.4632558822631836, 0.37023258209228516, 0.2833681106567383, 0.26505279541015625, 0.6617517471313477, 0.6831226348876953, 0.6714286804199219, 0.6517744064331055, 0.6274576187133789, 0.5991611480712891, 0.5673465728759766, 0.5321493148803711, 0.49330806732177734, 0.4499216079711914, 0.40207672119140625, 0.3483409881591797, 0.2904930114746094, 0.22792339324951172, 0.16003036499023438, 0.08741092681884766, 0.008543968200683594, 0.9232397079467773, 0.8309450149536133, 0.730504035949707, 0.6200895309448242, 0.4717445373535156, 0.3028125762939453, 0.10567378997802734, 0.8300313949584961, 0.5348844528198242, 0.22522830963134766, 0.9002285003662109, 0.557826042175293, 0.19859790802001953, 0.8234567642211914, 0.43949222564697266, 0.027130126953125, -0.4133110046386719, -0.8886008262634277, -1.406567096710205, -1.932140827178955, -2.5065431594848633, -3.12069034576416, -3.7840471267700195, -4.505741119384766, -5.2956085205078125, -6.166668891906738, -7.136884689331055, -7.671942234039307, -7.716900825500488, -7.761858940124512, -7.806817531585693, -7.851775646209717, -7.896731853485107, -7.940846920013428, -7.9841203689575195, -8.027393341064453, -8.070669174194336, -8.113943099975586, -8.159653663635254, -8.210787773132324, -8.264909744262695, -8.319031715393066, -8.373153686523438, -8.410444259643555, -8.42375373840332, -8.42990779876709, -8.436059951782227, -8.43667221069336, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-06
+              }
+            },
+            {
+              "variable": "indself_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [6.0, 6.0, 6.0, 6.0, 6.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.9923362135887146,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.6295800805091858,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.1511346399784088,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.0039140391163527966,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.037805281579494476,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.06897706538438797,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.001060029724612832,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.004455696325749159,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 59
+              },
+              "expected": 9.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 60
+              },
+              "expected": 9.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 30.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "laytrop",
+              "time": 0.0,
+              "expected": 80.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "layswtch",
+              "time": 0.0,
+              "expected": 53.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "laylow",
+              "time": 0.0,
+              "expected": 26.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.42849498987197876,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.2106538712978363,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.0016354116378352046,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.8106764554977417,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.1382104754447937,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.02054750733077526,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 1.0546339750289917,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 1.6064876317977905,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            }
+          ]
+        },
+        {
+          "id": "scm_call1440_predawn_cirrus",
+          "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, mp=6 ra_lw=1 ra_sw=1 sf_sfclay=1 sf_surface=1 bl_pbl=1, radt = 30 min) dumped by the instrumented fork ctessum-claude/WRF (module_esm_dump hooks inside SUBROUTINE RRTM after GASABS of phys/module_ra_rrtm.F; dump scm_ref2_1440.json). RRTM has no standalone real64 driver, so every expected value is the real32 in-model value and the tolerance contract is rel 1e-5. Inputs are the dumped RRTM column (PAVEL, TAVEL, COLDRY, COLH2O, COLCO2 of the 103-layer extended column); expected values are SETCOEF's outputs JP, JT, JT1, FAC00/10/01/11, FORFAC, SELFFAC, SELFFRAC, INDSELF, CO2MULT and the counts LAYTROP, LAYSWTCH, LAYLOW. SELFFAC/SELFFRAC/INDSELF are compared through the *_lower views (zero above LAYTROP) because SETCOEF leaves them unassigned there and the dump holds stale memory. The scheme is diagnostic (no time step). Regime: call 1440, 07:00 UTC (00:34 LST), pre-dawn, cirrus. Tolerances: measured against a NumPy replica the component's integer bins are exact; FAC00..FAC11 agree to 2.4e-6 of their maximum (real32 PREFLOG/TREF/ln), FORFAC to 1.5e-7, SELFFAC/SELFFRAC to 1.2e-7, CO2MULT to 1.4e-6 relative; tolerances 3-5x above: integers Linf abs 1e-9, weights Linf abs 1e-5, continuum factors Linf abs 1e-6 (SELFFRAC 5e-6, it spans -8.4..1), CO2MULT Linf abs 5e-7 (max 0.072), spot checks rel 1e-5 on FORFAC and CO2MULT and abs 1e-5 on FAC00/FAC01 (whose real32 values near a reference pressure are as small as 1.6e-3 with a 5e-4 relative error).",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/setcoef_scm_call1440_predawn_cirrus_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 5.0, 5.0, 5.0, 5.0, 5.0, 6.0, 6.0, 6.0, 7.0, 7.0, 7.0, 8.0, 8.0, 9.0, 9.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 11.0, 11.0, 11.0, 11.0, 11.0, 11.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 13.0, 13.0, 13.0, 13.0, 14.0, 14.0, 14.0, 15.0, 15.0, 15.0, 16.0, 16.0, 16.0, 17.0, 17.0, 18.0, 19.0, 19.0, 20.0, 22.0, 23.0, 25.0, 30.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jt",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jt1",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 2.0, 2.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.5633997321128845, 0.5251685976982117, 0.486096054315567, 0.44459664821624756, 0.40247800946235657, 0.36736318469047546, 0.34361955523490906, 0.3204149901866913, 0.29416945576667786, 0.00755823589861393, 0.014859168790280819, 0.01861553266644478, 0.018413137644529343, 0.013736017979681492, 0.00501905707642436, 0.6164841055870056, 0.5612321496009827, 0.5297086238861084, 0.502781867980957, 0.47665661573410034, 0.4499029517173767, 0.42155635356903076, 0.3907119035720825, 0.3568941056728363, 0.31978291273117065, 0.2783392071723938, 0.23080337047576904, 0.17702540755271912, 0.11650969833135605, 0.04810765013098717, 0.2898451089859009, 0.2970128655433655, 0.2982102334499359, 0.2916295528411865, 0.27607303857803345, 0.24977879226207733, 0.21287022531032562, 0.15748608112335205, 0.07851026952266693, 0.2612219452857971, 0.33985400199890137, 0.37871259450912476, 0.3708433508872986, 0.3085366189479828, 0.009351790882647038, 0.5894417762756348, 0.5978912711143494, 0.5428443551063538, 0.05558038502931595, 0.03636566177010536, 0.8187577724456787, 0.12840953469276428, 0.11262928694486618, 0.15418918430805206, 0.2450539916753769, 0.061466410756111145, 0.37224408984184265, 0.06408105790615082, 0.4089425504207611, 0.04886607453227043, 0.6632733345031738, 0.5962710380554199, 0.522017776966095, 0.4402175545692444, 0.3505539894104004, 0.2525668740272522, 0.14605507254600525, 0.030813075602054596, 0.78757643699646, 0.6751437783241272, 0.553364098072052, 0.4218040108680725, 0.2783004939556122, 0.12128664553165436, 0.9757691025733948, 0.809050440788269, 0.6223853826522827, 0.4247017204761505, 0.21802373230457306, 0.0016354116378352046, 0.8291560411453247, 0.5912061333656311, 0.3443390727043152, 0.08806272596120834, 0.9059435129165649, 0.596060574054718, 0.28117677569389343, 1.0775935649871826, 0.6949400901794434, 0.3075840175151825, 1.0332448482513428, 0.5612322688102722, 0.0809088945388794, 0.6700761914253235, 0.06939247995615005, 0.5420603156089783, 0.963688850402832, 0.010464448481798172, 0.09642653167247772, 1.2756078243255615, 0.617582380771637, 0.48388567566871643, 0.8106764554977417]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac10",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.014601748436689377, 0.0214594267308712, 0.028166623786091805, 0.03626836836338043, 0.043923575431108475, 0.04346398264169693, 0.03047923743724823, 0.01574663631618023, 0.0027961349114775658, 0.24889765679836273, 0.19971850514411926, 0.1526605635881424, 0.10807602107524872, 0.06641411036252975, 0.027185093611478806, 0.36613520979881287, 0.37007471919059753, 0.3484284579753876, 0.3202352523803711, 0.2891924977302551, 0.25662761926651, 0.22340261936187744, 0.1903008073568344, 0.15767613053321838, 0.12571506202220917, 0.09531372040510178, 0.06809103488922119, 0.04404440149664879, 0.023497799411416054, 0.007404303178191185, 0.6775320768356323, 0.5783657431602478, 0.4810570776462555, 0.3871490955352783, 0.2975415587425232, 0.21367688477039337, 0.13507403433322906, 0.06921041011810303, 0.02076341211795807, 0.7039713263511658, 0.4840548038482666, 0.296082079410553, 0.14632324874401093, 0.04170360416173935, 0.16377443075180054, 0.39536380767822266, 0.18620643019676208, 0.0267671886831522, 0.28412413597106934, 0.056086864322423935, 0.006803249940276146, 0.4078544080257416, 0.10855496674776077, 0.7219213843345642, 0.2506573498249054, 0.011640830896794796, 0.22696475684642792, -0.002425063168630004, 0.0340973399579525, -0.007449429482221603, 0.2629408538341522, 0.2120213657617569, 0.16550609469413757, 0.1235479786992073, 0.08631085604429245, 0.05409281700849533, 0.0269185658544302, 0.004802845884114504, 0.10679936408996582, 0.07388487458229065, 0.045968737453222275, 0.02320997789502144, 0.0074808793142437935, 2.4063709133770317e-05, -0.024523306638002396, -0.03386009484529495, -0.029675863683223724, -0.02138473093509674, -0.011557062156498432, -8.712137787370011e-05, -0.04128419607877731, -0.026553703472018242, -0.013336828909814358, -0.0021690973080694675, -0.07779563963413239, -0.03967173397541046, -0.012168134562671185, -0.11349701881408691, -0.055562518537044525, -0.015489298850297928, -0.1143679991364479, -0.04569285362958908, -0.0041216597892344, -0.07427677512168884, -0.005824366584420204, -0.07420222461223602, -0.17223714292049408, -0.0014560410054400563, -0.015438365750014782, -0.33505627512931824, -0.15691381692886353, -0.13453474640846252, -0.45089828968048096]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.23662978410720825, 0.24787692725658417, 0.25803709030151367, 0.2650575339794159, 0.2699366807937622, 0.28292208909988403, 0.31578266620635986, 0.35791251063346863, 0.40535756945610046, 0.45762935280799866, 0.5146455764770508, 0.5757027864456177, 0.6390337944030762, 0.6966732144355774, 0.7179591655731201, 0.00041811077971942723, 0.06864480674266815, 0.12184900790452957, 0.001339470036327839, 0.00446226354688406, 0.009815155528485775, 0.01785316877067089, 0.028966490179300308, 0.04380737990140915, 0.0634780153632164, 0.0886789932847023, 0.11838715523481369, 0.15378768742084503, 0.19679641723632812, 0.2486698031425476, 0.021322904154658318, 0.08639954775571823, 0.16260938346385956, 0.25172141194343567, 0.3561539351940155, 0.4791063964366913, 0.629751443862915, 0.03765986114740372, 0.13046716153621674, 0.022368237376213074, 0.13814158737659454, 0.30348989367485046, 0.04300431162118912, 0.1643422245979309, 0.35226163268089294, 0.014503631740808487, 0.025589212775230408, 0.13299380242824554, 0.3430992066860199, 0.6800660490989685, 0.06368643790483475, 0.28417089581489563, 0.6873391270637512, 0.07152453064918518, 0.45168164372444153, 0.22440360486507416, 0.015721552073955536, 0.4291350841522217, 0.24378390610218048, 0.6657670736312866, 0.05244537070393562, 0.1403987556695938, 0.23558789491653442, 0.33830803632736206, 0.4488737881183624, 0.5673416256904602, 0.6939116716384888, 0.8291923403739929, 0.09301137924194336, 0.22621527314186096, 0.36993607878685, 0.5260403752326965, 0.6955225467681885, 0.8785150051116943, 0.05001110956072807, 0.23462927341461182, 0.4276827275753021, 0.6283204555511475, 0.8379517197608948, 1.0546339750289917, 0.24247658252716064, 0.49529194831848145, 0.7566090822219849, 1.0200695991516113, 0.2054101824760437, 0.5201942920684814, 0.8381304740905762, 0.04395981505513191, 0.4304269254207611, 0.8209538459777832, 0.09965696930885315, 0.5777831673622131, 1.0687823295593262, 0.4960888922214508, 1.1183713674545288, 0.6701083183288574, 0.27840280532836914, 1.2674437761306763, 1.2038668394088745, 0.09204009920358658, 0.8316250443458557, 1.052598237991333, 1.6064876317977905]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac11",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.18536871671676636, 0.20549507439136505, 0.22770023345947266, 0.2540774643421173, 0.28366172313690186, 0.30625075101852417, 0.31011855602264404, 0.3059258759021759, 0.29767683148384094, 0.28591474890708923, 0.2707767188549042, 0.25302112102508545, 0.23447702825069427, 0.22317665815353394, 0.24983671307563782, 0.016962602734565735, 4.83557851111982e-05, 1.3884117834095377e-05, 0.1756434142589569, 0.2296886295080185, 0.28365427255630493, 0.33718785643577576, 0.39002078771591187, 0.44162237644195557, 0.491023987531662, 0.5376680493354797, 0.5827184319496155, 0.625142514705658, 0.6631960868835449, 0.6958182454109192, 0.011299910955131054, 0.03822183981537819, 0.05812331289052963, 0.06949993222951889, 0.07023145258426666, 0.05743792653083801, 0.02230430766940117, 0.7356436252593994, 0.7702591419219971, 0.012438490986824036, 0.03794960305094719, 0.021715421229600906, 0.4398290812969208, 0.48541754484176636, 0.47461214661598206, 0.0006907845381647348, 0.19031311571598053, 0.29739463329315186, 0.3171962797641754, 0.227481409907341, 0.11075251549482346, 0.17956514656543732, 0.09147664159536362, 0.05236491560935974, 0.05260702967643738, 0.7024891376495361, 0.3850696086883545, 0.5092089176177979, 0.3131761848926544, 0.29281628131866455, 0.02134040929377079, 0.051308851689100266, 0.07688826322555542, 0.09792645275592804, 0.11426135897636414, 0.12599869072437286, 0.13311468064785004, 0.13519172370433807, 0.012612815946340561, 0.024756040424108505, 0.030731115490198135, 0.02894563600420952, 0.018696051090955734, 0.00017430054140277207, -0.0012568935053423047, -0.009819621220231056, -0.020392276346683502, -0.031637415289878845, -0.04441837593913078, -0.05618228763341904, -0.030348414555191994, -0.059944383800029755, -0.08761130273342133, -0.10596327483654022, -0.033558063209056854, -0.07658316195011139, -0.10713911801576614, -0.00805636029690504, -0.06980452686548233, -0.11304853111505508, -0.01853385753929615, -0.09332258999347687, -0.1455695778131485, -0.09188834577798843, -0.181939497590065, -0.13796637952327728, -0.0698544904589653, -0.2764522135257721, -0.28485503792762756, -0.032591622322797775, -0.29229360818862915, -0.40194910764694214, -0.9662657380104065]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.0041604042053223, 0.9973880052566528, 0.9904451370239258, 0.9831880927085876, 0.9757951498031616, 0.9690585732460022, 0.9634350538253784, 0.9580028653144836, 0.9524907469749451, 0.9468356966972351, 0.9410133361816406, 0.934969425201416, 0.9286003112792969, 0.9215397238731384, 0.9126324653625488, 0.9006630182266235, 0.8902307748794556, 0.8805292248725891, 0.8709104061126709, 0.8612124919891357, 0.8513819575309753, 0.8413873314857483, 0.8311980962753296, 0.8208149075508118, 0.8102651238441467, 0.7995376586914062, 0.7889262437820435, 0.7780593037605286, 0.7669677138328552, 0.7556461691856384, 0.744032084941864, 0.7321703433990479, 0.7200584411621094, 0.7076731324195862, 0.6950384974479675, 0.6821839213371277, 0.6694875955581665, 0.6566763520240784, 0.6438382863998413, 0.6315242648124695, 0.6189683079719543, 0.606045663356781, 0.592697024345398, 0.5788866877555847, 0.5645719766616821, 0.5495145916938782, 0.5332797169685364, 0.5168564319610596, 0.5000466108322144, 0.48275983333587646, 0.4647020995616913, 0.4456275701522827, 0.42589542269706726, 0.40536490082740784, 0.3839038908481598, 0.36140164732933044, 0.3377382159233093, 0.31276947259902954, 0.28631290793418884, 0.2695607841014862, 0.26386961340904236, 0.25815898180007935, 0.2524288594722748, 0.24667911231517792, 0.2409096211194992, 0.2351127564907074, 0.22928892076015472, 0.22344577312469482, 0.21758322417736053, 0.21170112490653992, 0.20581874251365662, 0.199957475066185, 0.1940954327583313, 0.18820881843566895, 0.18229743838310242, 0.17624562978744507, 0.17001736164093018, 0.16373701393604279, 0.15745364129543304, 0.1511346399784088, 0.1447664201259613, 0.1383853405714035, 0.13199524581432343, 0.12552767992019653, 0.11900906264781952, 0.11250759661197662, 0.10600055009126663, 0.09949857741594315, 0.09301189333200455, 0.08653608709573746, 0.08008655905723572, 0.07366959750652313, 0.06729374825954437, 0.06096246838569641, 0.05466397851705551, 0.04838813841342926, 0.04212774708867073, 0.03586788848042488, 0.029588138684630394, 0.023301634937524796, 0.017060507088899612, 0.010880984365940094, 0.0039140391163527966]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-06
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.035164594650268555, 0.03621344268321991, 0.037311431020498276, 0.03850382938981056, 0.03976328298449516, 0.04086364060640335, 0.04158133268356323, 0.04217369481921196, 0.04273507371544838, 0.04328251630067825, 0.04382102191448212, 0.04436858743429184, 0.0449569895863533, 0.045714497566223145, 0.047106705605983734, 0.050096649676561356, 0.05176861956715584, 0.05307001620531082, 0.054280802607536316, 0.05545322224497795, 0.056597426533699036, 0.05772106721997261, 0.0588284507393837, 0.05991256609559059, 0.06095471233129501, 0.06195633113384247, 0.06296937167644501, 0.06396966427564621, 0.06492442637681961, 0.06582619249820709, 0.0666951835155487, 0.06749839335680008, 0.06822369992733002, 0.06886935234069824, 0.06940604746341705, 0.0697980672121048, 0.06982192397117615, 0.06958930194377899, 0.06902036815881729, 0.06771751493215561, 0.06601349264383316, 0.06413351744413376, 0.062080781906843185, 0.05984170362353325, 0.057402435690164566, 0.05499393492937088, 0.052789106965065, 0.0500468835234642, 0.046946801245212555, 0.04355936497449875, 0.04005739465355873, 0.036611054092645645, 0.03296971693634987, 0.02918647974729538, 0.02533566951751709, 0.021477503702044487, 0.017676496878266335, 0.014007066376507282, 0.01055670715868473, 0.0013899554032832384, 0.0013686144957318902, 0.00134752644225955, 0.0013266890309751034, 0.001306100282818079, 0.0012857586843892932, 0.0012660364154726267, 0.0012469175271689892, 0.001228021690621972, 0.0012093462282791734, 0.0011908923042938113, 0.0011716361623257399, 0.0011503802379593253, 0.0011282088235020638, 0.0011063705896958709, 0.0010848602978512645, 0.0010702285217121243, 0.0010650441981852055, 0.0010626529110595584, 0.0010602673282846808, 0.001060029724612832, 0.0010631568729877472, 0.0010675103403627872, 0.0010729858186095953, 0.001085293130017817, 0.0011034769704565406, 0.0011224501067772508, 0.0011446122080087662, 0.001169523922726512, 0.0011966066667810082, 0.0012269254075363278, 0.0012590832775458694, 0.0012924550101161003, 0.001325660734437406, 0.0013576181372627616, 0.0013901967322453856, 0.001426055678166449, 0.0014687894145026803, 0.0015277815982699394, 0.0016245226142928004, 0.001786989625543356, 0.002050829818472266, 0.0025918956380337477, 0.004455696325749159]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-07
+              }
+            },
+            {
+              "variable": "selffac_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.007915453985333443, 0.007602785248309374, 0.0072312019765377045, 0.00675160950049758, 0.006137415766716003, 0.00552720669656992, 0.005276629701256752, 0.005170902702957392, 0.005082253832370043, 0.004998248536139727, 0.004906503949314356, 0.004792281426489353, 0.004641119856387377, 0.004386847838759422, 0.0036861326079815626, 0.0010217739036306739, 0.0010596571955829859, 0.0013615383068099618, 0.0016719946870580316, 0.001983374124392867, 0.002295257057994604, 0.002607260597869754, 0.0029190119821578264, 0.0032302532345056534, 0.003540297970175743, 0.003836067859083414, 0.0036963920574635267, 0.003534087212756276, 0.00337081216275692, 0.003207007423043251, 0.003042576601728797, 0.0028779020067304373, 0.002713149646297097, 0.0025484482757747173, 0.002384081482887268, 0.002219606190919876, 0.001994950929656625, 0.001753876800648868, 0.0014902377733960748, 0.0011996228713542223, 0.0011020899983122945, 0.0009534131386317313, 0.0007832561968825758, 0.0006175154121592641, 0.0004938970669172704, 0.0002780441427603364, 0.00011083923891419545, 8.322101348312572e-05, 9.657443297328427e-05, 0.00011807604460045695, 0.00015093115507625043, 0.00013141597446519881, 8.34669845062308e-05, 4.9717022193362936e-05, 2.763687734841369e-05, 1.4141457540972624e-05, 6.536081855301745e-06, 2.624128228490008e-06, 9.056712997335126e-07, 1.3478038454195485e-06, 1.319348029937828e-06, 1.2907948985230178e-06, 1.2621442238014424e-06, 1.233395551025751e-06, 1.2045480843880796e-06, 1.1755637387977913e-06, 1.1464445606179652e-06, 1.1172288623129134e-06, 1.0879160754484474e-06, 1.0585056315903785e-06, 1.0290937098034192e-06, 9.997874030887033e-07, 9.704771173346671e-07, 9.410440497958916e-07, 9.114871772908373e-07, 8.812281180325954e-07, 8.500867920702149e-07, 8.18685066406033e-07, 7.872681635490153e-07, 7.556731702607067e-07, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-06
+              }
+            },
+            {
+              "variable": "selffrac_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.7192983627319336, 0.7484560012817383, 0.7807750701904297, 0.8238000869750977, 0.8716573715209961, 0.8870773315429688, 0.8364057540893555, 0.7642574310302734, 0.6862850189208984, 0.6052694320678711, 0.5224008560180664, 0.44023704528808594, 0.36339569091796875, 0.3096303939819336, 0.3419790267944336, 0.580439567565918, 0.6320228576660156, 0.630793571472168, 0.6147890090942383, 0.5908536911010742, 0.5608787536621094, 0.5257959365844727, 0.4865255355834961, 0.4425468444824219, 0.3920612335205078, 0.33559513092041016, 0.27876949310302734, 0.21923446655273438, 0.15381622314453125, 0.0820455551147461, 0.006348609924316406, 0.9236888885498047, 0.8333053588867188, 0.7354755401611328, 0.6278753280639648, 0.507746696472168, 0.3559856414794922, 0.18326473236083984, 0.9829587936401367, 0.7208852767944336, 0.4253683090209961, 0.11550045013427734, 0.7908315658569336, 0.44945430755615234, 0.08885383605957031, 0.7294368743896484, 0.3878011703491211, -0.009046077728271484, -0.44780826568603516, -0.9264130592346191, -1.4314427375793457, -1.947469711303711, -2.5094656944274902, -3.1208176612854004, -3.784058094024658, -4.505771160125732, -5.295610427856445, -6.166665077209473, -7.136884689331055, -7.671942234039307, -7.716900825500488, -7.761858940124512, -7.806817531585693, -7.851775646209717, -7.896731853485107, -7.940846920013428, -7.9841203689575195, -8.027393341064453, -8.070669174194336, -8.113943099975586, -8.159653663635254, -8.210787773132324, -8.264909744262695, -8.319031715393066, -8.373153686523438, -8.410444259643555, -8.42375373840332, -8.42990779876709, -8.436059951782227, -8.43667221069336, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-06
+              }
+            },
+            {
+              "variable": "indself_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 3.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 1.0041604042053223,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.6315242648124695,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.1511346399784088,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.0039140391163527966,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.035164594650268555,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.06771751493215561,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.001060029724612832,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.004455696325749159,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 59
+              },
+              "expected": 9.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 60
+              },
+              "expected": 9.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 30.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "laytrop",
+              "time": 0.0,
+              "expected": 80.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "layswtch",
+              "time": 0.0,
+              "expected": 53.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "laylow",
+              "time": 0.0,
+              "expected": 26.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.5633997321128845,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.2612219452857971,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.0016354116378352046,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.8106764554977417,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.23662978410720825,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.022368237376213074,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 1.0546339750289917,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 1.6064876317977905,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            }
+          ]
+        },
+        {
+          "id": "scm_call2400_afternoon",
+          "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, mp=6 ra_lw=1 ra_sw=1 sf_sfclay=1 sf_surface=1 bl_pbl=1, radt = 30 min) dumped by the instrumented fork ctessum-claude/WRF (module_esm_dump hooks inside SUBROUTINE RRTM after GASABS of phys/module_ra_rrtm.F; dump scm_ref2_2400.json). RRTM has no standalone real64 driver, so every expected value is the real32 in-model value and the tolerance contract is rel 1e-5. Inputs are the dumped RRTM column (PAVEL, TAVEL, COLDRY, COLH2O, COLCO2 of the 103-layer extended column); expected values are SETCOEF's outputs JP, JT, JT1, FAC00/10/01/11, FORFAC, SELFFAC, SELFFRAC, INDSELF, CO2MULT and the counts LAYTROP, LAYSWTCH, LAYLOW. SELFFAC/SELFFRAC/INDSELF are compared through the *_lower views (zero above LAYTROP) because SETCOEF leaves them unassigned there and the dump holds stale memory. The scheme is diagnostic (no time step). Regime: call 2400, 15:00 UTC (08:34 LST), morning. Tolerances: measured against a NumPy replica the component's integer bins are exact; FAC00..FAC11 agree to 2.4e-6 of their maximum (real32 PREFLOG/TREF/ln), FORFAC to 1.5e-7, SELFFAC/SELFFRAC to 1.2e-7, CO2MULT to 1.4e-6 relative; tolerances 3-5x above: integers Linf abs 1e-9, weights Linf abs 1e-5, continuum factors Linf abs 1e-6 (SELFFRAC 5e-6, it spans -8.4..1), CO2MULT Linf abs 5e-7 (max 0.072), spot checks rel 1e-5 on FORFAC and CO2MULT and abs 1e-5 on FAC00/FAC01 (whose real32 values near a reference pressure are as small as 1.6e-3 with a 5e-4 relative error).",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/setcoef_scm_call2400_afternoon_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 5.0, 5.0, 5.0, 5.0, 5.0, 6.0, 6.0, 6.0, 7.0, 7.0, 7.0, 8.0, 8.0, 9.0, 9.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 11.0, 11.0, 11.0, 11.0, 11.0, 11.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 13.0, 13.0, 13.0, 13.0, 14.0, 14.0, 14.0, 15.0, 15.0, 15.0, 16.0, 16.0, 16.0, 17.0, 17.0, 18.0, 19.0, 19.0, 20.0, 22.0, 23.0, 25.0, 30.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jt",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jt1",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.5584441423416138, 0.00175509974360466, 0.017984965816140175, 0.03157854080200195, 0.014797870069742203, 0.40133076906204224, 0.3638817369937897, 0.3333383798599243, 0.006168669555336237, 0.013950856402516365, 0.019118256866931915, 0.020974982529878616, 0.019137563183903694, 0.013223241083323956, 0.0045399959199130535, 0.6432681679725647, 0.5848122835159302, 0.5487409830093384, 0.5194324254989624, 0.49203842878341675, 0.464753121137619, 0.43611854314804077, 0.40502917766571045, 0.37094029784202576, 0.3333829939365387, 0.2910451591014862, 0.2415795475244522, 0.18534071743488312, 0.12198728322982788, 0.05036677420139313, 0.33070945739746094, 0.3359304666519165, 0.33464327454566956, 0.3251597285270691, 0.3063852787017822, 0.27643558382987976, 0.23355843126773834, 0.17137649655342102, 0.084723562002182, 0.3140428066253662, 0.3842650055885315, 0.4149392545223236, 0.398706316947937, 0.3278619647026062, 0.019361091777682304, 0.6367005109786987, 0.6197549104690552, 0.5539765357971191, 0.0622403547167778, 0.03798120468854904, 0.820878267288208, 0.1271640956401825, 0.11228390038013458, 0.1533835381269455, 0.2447958141565323, 0.061447300016880035, 0.3721746504306793, 0.06407830119132996, 0.40893489122390747, 0.04886598512530327, 0.6632714867591858, 0.5962693691253662, 0.5220163464546204, 0.44021642208099365, 0.35055312514305115, 0.25256624817848206, 0.1460547149181366, 0.030813002958893776, 0.7875746488571167, 0.6751422882080078, 0.5533628463745117, 0.4218031167984009, 0.2782999277114868, 0.12128639966249466, 0.9757672548294067, 0.8090489506721497, 0.622384250164032, 0.42470094561576843, 0.21802330017089844, 0.0016354082617908716, 0.8291545510292053, 0.5912049412727356, 0.34433844685554504, 0.08806254714727402, 0.9059417247772217, 0.5960595011711121, 0.2811761796474457, 1.0775915384292603, 0.6949387192726135, 0.30758345127105713, 1.03324294090271, 0.561231255531311, 0.08090873062610626, 0.6700749397277832, 0.06939234584569931, 0.5420593023300171, 0.9636873006820679, 0.010464428924024105, 0.09642638266086578, 1.2756057977676392, 0.6175814270973206, 0.4838850200176239, 0.8106756806373596]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac10",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.019624125212430954, 0.54493248462677, 0.49632540345191956, 0.44931983947753906, 0.4316180348396301, 0.009503552690148354, 0.010219428688287735, 0.002823224291205406, 0.2907969355583191, 0.2425050437450409, 0.19545941054821014, 0.15030111372470856, 0.10735160112380981, 0.06692927330732346, 0.027668923139572144, 0.3393535017967224, 0.34649458527565, 0.3293960988521576, 0.30358466506004333, 0.2738083004951477, 0.2417774498462677, 0.20883803069591522, 0.17598353326320648, 0.14362992346286774, 0.11211500316858292, 0.08260776847600937, 0.05731485038995743, 0.035729095339775085, 0.018020210787653923, 0.005145177245140076, 0.6366677284240723, 0.5394481420516968, 0.44462403655052185, 0.35361891984939575, 0.2672293186187744, 0.18702009320259094, 0.11438582837581635, 0.055320002138614655, 0.014550120569765568, 0.6511552333831787, 0.43965572118759155, 0.25987210869789124, 0.1184769794344902, 0.022392578423023224, 0.1537722796201706, 0.3481050729751587, 0.1643427312374115, 0.01563500240445137, 0.2774617671966553, 0.054471321403980255, 0.004682761151343584, 0.40909984707832336, 0.10890035331249237, 0.7227270007133484, 0.25091552734375, 0.011659943498671055, 0.22703418135643005, -0.0024222994688898325, 0.03410499915480614, -0.007449341006577015, 0.26294273138046265, 0.21202300488948822, 0.1655074805021286, 0.12354911863803864, 0.08631173521280289, 0.054093439131975174, 0.026918916031718254, 0.0048029180616140366, 0.10680118203163147, 0.07388639450073242, 0.04596995189785957, 0.023210879415273666, 0.007481458131223917, 2.4309552827617154e-05, -0.024521492421627045, -0.03385861590504646, -0.02967473305761814, -0.02138396166265011, -0.01155661977827549, -8.711805276107043e-05, -0.04128269478678703, -0.026552492752671242, -0.013336197473108768, -0.0021689129061996937, -0.07779385894536972, -0.0396706759929657, -0.012167557142674923, -0.11349494755268097, -0.05556114763021469, -0.015488741919398308, -0.11436603218317032, -0.04569187015295029, -0.004121494945138693, -0.07427549362182617, -0.005824230145663023, -0.07420121878385544, -0.1722356379032135, -0.001456021680496633, -0.015438211150467396, -0.3350542485713959, -0.15691283345222473, -0.13453409075737, -0.4508975148200989]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.23292773962020874, 0.2670957148075104, 0.301597535610199, 0.33827993273735046, 0.34274977445602417, 0.3316214680671692, 0.3496779501438141, 0.38343313336372375, 0.4265807569026947, 0.47616350650787354, 0.5302351713180542, 0.5871189832687378, 0.6440365314483643, 0.6907820701599121, 0.7035387754440308, 0.0008917215163819492, 0.0016909141559153795, 0.002627321984618902, 0.004920033272355795, 0.00916566327214241, 0.015983426943421364, 0.025870516896247864, 0.0392911434173584, 0.05705813691020012, 0.08040571957826614, 0.10997772961854935, 0.14366444945335388, 0.1830863058567047, 0.2304423749446869, 0.2871069312095642, 0.022700970992445946, 0.09193997085094452, 0.17292927205562592, 0.2675890326499939, 0.37868595123291016, 0.5099670886993408, 0.016465896740555763, 0.08504261076450348, 0.18684130907058716, 0.024269679561257362, 0.147622212767601, 0.32092729210853577, 0.0690031349658966, 0.2001650333404541, 0.40006014704704285, 3.836275573121384e-05, 0.03160940855741501, 0.14140509068965912, 0.356046587228775, 0.6959248781204224, 0.06413449347019196, 0.2830938994884491, 0.6861230134963989, 0.07141059637069702, 0.45141899585723877, 0.224161297082901, 0.01567506417632103, 0.42909303307533264, 0.24377427995204926, 0.665765106678009, 0.052445221692323685, 0.14039836823940277, 0.23558726906776428, 0.33830714225769043, 0.4488726556301117, 0.5673401951789856, 0.6939100027084351, 0.8291904330253601, 0.09301117062568665, 0.22621476650238037, 0.3699352741241455, 0.5260392427444458, 0.6955211162567139, 0.8785132169723511, 0.05001101642847061, 0.2346288412809372, 0.42768195271492004, 0.6283193230628967, 0.8379499912261963, 1.0546318292617798, 0.24247612059116364, 0.4952911138534546, 0.7566077709197998, 1.0200676918029785, 0.20540980994701385, 0.5201934576034546, 0.838128924369812, 0.04395974427461624, 0.4304262399673462, 0.820952296257019, 0.09965679794549942, 0.5777822732925415, 1.068780541419983, 0.4960881173610687, 1.1183693408966064, 0.6701073050498962, 0.2784023582935333, 1.2674418687820435, 1.2038649320602417, 0.09203997254371643, 0.8316240310668945, 1.0525968074798584, 1.6064863204956055]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac11",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.18900400400161743, 0.18621666729450226, 0.18409210443496704, 0.18082167208194733, 0.2108343243598938, 0.25754421949386597, 0.2762208878993988, 0.2804052531719208, 0.2764536440372467, 0.26738059520721436, 0.25518715381622314, 0.24160490930080414, 0.22947433590888977, 0.2290654480457306, 0.26425230503082275, 0.01648660935461521, 0.06700224429368973, 0.1192355677485466, 0.17206284403800964, 0.22498761117458344, 0.27748599648475647, 0.32917290925979614, 0.3796961307525635, 0.4283716380596161, 0.47409629821777344, 0.5163693428039551, 0.5574411153793335, 0.5958439111709595, 0.6295501589775085, 0.6573811173439026, 0.009921843186020851, 0.0326814204454422, 0.04780341312289238, 0.053632307797670364, 0.04769944027066231, 0.026577237993478775, 0.6355898380279541, 0.6882609128952026, 0.7138850092887878, 0.010532280430197716, 0.028457049280405045, 0.004261352587491274, 0.4138135612010956, 0.44958043098449707, 0.4268064796924591, 0.015156053006649017, 0.18429292738437653, 0.2889833450317383, 0.3042512834072113, 0.21162261068820953, 0.11030445992946625, 0.18064214289188385, 0.09269273281097412, 0.0524788461625576, 0.05286967381834984, 0.7027314901351929, 0.3851161003112793, 0.5092509984970093, 0.31318581104278564, 0.29281821846961975, 0.021340560168027878, 0.051309242844581604, 0.07688889652490616, 0.09792733192443848, 0.11426249891519547, 0.12600009143352509, 0.13311634957790375, 0.13519367575645447, 0.012613030150532722, 0.024756550788879395, 0.03073192574083805, 0.028946761041879654, 0.018697498366236687, 0.00017608125926926732, -0.001256800489500165, -0.009819191880524158, -0.020391499623656273, -0.031636275351047516, -0.044416673481464386, -0.05618014186620712, -0.030347958207130432, -0.0599435530602932, -0.08761002868413925, -0.10596130788326263, -0.033557694405317307, -0.07658231258392334, -0.10713754594326019, -0.00805629137903452, -0.06980383396148682, -0.11304701864719391, -0.018533682450652122, -0.09332166612148285, -0.14556781947612762, -0.09188757091760635, -0.18193748593330383, -0.1379653662443161, -0.06985404342412949, -0.2764503061771393, -0.28485307097435, -0.03259149193763733, -0.29229259490966797, -0.4019477367401123, -0.966264545917511]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.0033512115478516, 0.9992125630378723, 0.9945674538612366, 0.9897475838661194, 0.9821231365203857, 0.9730870723724365, 0.9661369323730469, 0.9599648714065552, 0.9540365934371948, 0.9481077194213867, 0.9420228004455566, 0.9356690049171448, 0.928896963596344, 0.9212507009506226, 0.9119924306869507, 0.9018519520759583, 0.8914318084716797, 0.8815562725067139, 0.8718595504760742, 0.8621450066566467, 0.8523471355438232, 0.8424131870269775, 0.8323052525520325, 0.8220276236534119, 0.811606228351593, 0.8010222911834717, 0.7904732823371887, 0.7796532511711121, 0.7686048746109009, 0.7573273181915283, 0.7457538843154907, 0.7339576482772827, 0.7219115495681763, 0.7096026539802551, 0.6970720291137695, 0.6843644380569458, 0.6717085242271423, 0.6589320302009583, 0.6461098194122314, 0.6335462927818298, 0.6209227442741394, 0.6079410910606384, 0.5945496559143066, 0.5807307958602905, 0.5664498805999756, 0.551095724105835, 0.5341787934303284, 0.5174742341041565, 0.5006450414657593, 0.483296662569046, 0.46477973461151123, 0.445560485124588, 0.42585161328315735, 0.4053398370742798, 0.38389018177986145, 0.361395001411438, 0.3377353847026825, 0.31276842951774597, 0.2863125205039978, 0.26956072449684143, 0.2638695538043976, 0.25815895199775696, 0.2524288296699524, 0.24667908251285553, 0.24090957641601562, 0.235112726688385, 0.22928887605667114, 0.22344572842121124, 0.21758319437503815, 0.21170108020305634, 0.20581871271133423, 0.1999574452638626, 0.1940954029560089, 0.18820878863334656, 0.18229740858078003, 0.17624559998512268, 0.1700173318386078, 0.1637369841337204, 0.15745361149311066, 0.15113461017608643, 0.14476639032363892, 0.1383853256702423, 0.13199521601200104, 0.12552766501903534, 0.11900904774665833, 0.11250758171081543, 0.10600052773952484, 0.09949856251478195, 0.09301187843084335, 0.08653607219457626, 0.08008655160665512, 0.07366959005594254, 0.06729374080896378, 0.060962460935115814, 0.054663971066474915, 0.04838813096284866, 0.042127739638090134, 0.03586788475513458, 0.029588134959340096, 0.023301631212234497, 0.017060505226254463, 0.010880982503294945, 0.003914038650691509]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-06
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.03526030108332634, 0.035732388496398926, 0.03627071529626846, 0.0368281751871109, 0.0381523072719574, 0.03981899470090866, 0.040880970656871796, 0.041667040437459946, 0.042329564690589905, 0.04294167086482048, 0.043544817715883255, 0.04417361319065094, 0.044874656945466995, 0.04580874368548393, 0.04733261093497276, 0.04966505616903305, 0.05135538801550865, 0.05270664766430855, 0.05393397435545921, 0.05510048195719719, 0.056220557540655136, 0.05730769410729408, 0.05836709961295128, 0.0593913197517395, 0.060360487550497055, 0.061280928552150726, 0.06223983317613602, 0.0631939172744751, 0.06410259008407593, 0.06495605409145355, 0.06577631831169128, 0.06651533395051956, 0.06717368215322495, 0.06774351000785828, 0.06818525493144989, 0.06845319271087646, 0.06841927021741867, 0.0681348443031311, 0.06752999871969223, 0.06641833484172821, 0.06474417448043823, 0.06288295239210129, 0.060842499136924744, 0.05859458073973656, 0.05612107366323471, 0.05395107716321945, 0.05219360440969467, 0.0496407225728035, 0.046553850173950195, 0.04322412237524986, 0.04001045972108841, 0.03665120154619217, 0.03299494832754135, 0.029200151562690735, 0.025342712178826332, 0.021480631083250046, 0.01767771504819393, 0.01400746125727892, 0.010556832887232304, 0.0013899578480049968, 0.001368616707623005, 0.0013475288869813085, 0.00132669135928154, 0.0013061027275398374, 0.001285760896280408, 0.0012660385109484196, 0.001246919622644782, 0.001228023786097765, 0.001209348440170288, 0.0011908943997696042, 0.0011716369772329926, 0.0011503823334351182, 0.0011282109189778566, 0.0011063712881878018, 0.0010848611127585173, 0.0010702303843572736, 0.0010650460608303547, 0.0010626550065353513, 0.0010602681431919336, 0.0010600317036733031, 0.001063157687895, 0.00106751115527004, 0.0010729877976700664, 0.0010852949926629663, 0.0011034789495170116, 0.0011224519694224, 0.0011446131393313408, 0.001169525901786983, 0.0011966087622568011, 0.0012269276194274426, 0.001259085489436984, 0.001292457222007215, 0.0013256630627438426, 0.0013576193014159799, 0.0013901990605518222, 0.0014260582393035293, 0.0014687906950712204, 0.0015277842758223414, 0.0016245254082605243, 0.0017869927687570453, 0.0020508335437625647, 0.002591897500678897, 0.004455704241991043]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-07
+              }
+            },
+            {
+              "variable": "selffac_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.008266802877187729, 0.008083674125373363, 0.007937779650092125, 0.007728799246251583, 0.00676438445225358, 0.0058229295536875725, 0.005389499012380838, 0.005197253543883562, 0.005091466009616852, 0.0050046672113239765, 0.004910523537546396, 0.004792926367372274, 0.004633958451449871, 0.004354704637080431, 0.003587863640859723, 0.0011584385065361857, 0.0010737632401287556, 0.0013633464695885777, 0.0016735579119995236, 0.0019852514378726482, 0.0022976058535277843, 0.00261020939797163, 0.0029227365739643574, 0.0032348285894840956, 0.0035456109326332808, 0.003834306728094816, 0.0037031685933470726, 0.003541327081620693, 0.0033780059311538935, 0.003214142518118024, 0.003049616701900959, 0.002884927438572049, 0.002720132004469633, 0.0025553968735039234, 0.0023910568561404943, 0.0022262013517320156, 0.0020014496985822916, 0.001759747276082635, 0.0014951271004974842, 0.001142816268838942, 0.001060633221641183, 0.0009394792141392827, 0.0007932161679491401, 0.0006533091655001044, 0.0005567781627178192, 0.00027915017562918365, 0.00011147820623591542, 8.345079550053924e-05, 0.00010562296665739268, 0.00011136130342492834, 0.0001494282769272104, 0.0001314538822043687, 8.34672391647473e-05, 4.971864109393209e-05, 2.764854252745863e-05, 1.414930466125952e-05, 6.539784862980014e-06, 2.625596835059696e-06, 9.05707452147908e-07, 1.347803618045873e-06, 1.3193476888773148e-06, 1.2907946711493423e-06, 1.2621441101146047e-06, 1.2333954373389133e-06, 1.2045478570144041e-06, 1.1755636251109536e-06, 1.1464443332442897e-06, 1.117228634939238e-06, 1.0879159617616097e-06, 1.058505404216703e-06, 1.0290934824297437e-06, 9.997871757150278e-07, 9.704770036478294e-07, 9.410439361090539e-07, 9.114870067605807e-07, 8.812280043457577e-07, 8.500866215399583e-07, 8.186848958757764e-07, 7.872680498621776e-07, 7.55673056573869e-07, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-06
+              }
+            },
+            {
+              "variable": "selffrac_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.7373933792114258, 0.6599798202514648, 0.5938167572021484, 0.5298652648925781, 0.5976095199584961, 0.7148609161376953, 0.7235794067382812, 0.6841650009155273, 0.6233930587768555, 0.5533380508422852, 0.4810495376586914, 0.41153717041015625, 0.35146427154541016, 0.3229684829711914, 0.3730134963989258, 0.523655891418457, 0.5792741775512695, 0.5856399536132812, 0.5726404190063477, 0.549006462097168, 0.51708984375, 0.47875213623046875, 0.43518829345703125, 0.3856782913208008, 0.3284616470336914, 0.2647523880004883, 0.2036581039428711, 0.14087200164794922, 0.07230949401855469, 0.9972610473632812, 0.9183435440063477, 0.8310680389404297, 0.7359037399291992, 0.632563591003418, 0.5177831649780273, 0.38791847229003906, 0.23211383819580078, 0.055611610412597656, 0.8525686264038086, 0.6068763732910156, 0.31308555603027344, 0.0036878585815429688, 0.6786413192749023, 0.3345813751220703, 0.9684152603149414, 0.6294622421264648, 0.3297100067138672, -0.04976177215576172, -0.48865509033203125, -0.9628181457519531, -1.4367942810058594, -1.9426312446594238, -2.5062127113342285, -3.1189017295837402, -3.782972812652588, -4.505226135253906, -5.2953691482543945, -6.166571617126465, -7.136848449707031, -7.671937942504883, -7.7168965339660645, -7.761854648590088, -7.8068132400512695, -7.851771354675293, -7.896727561950684, -7.940842628479004, -7.984116077423096, -8.027389526367188, -8.07066535949707, -8.113938331604004, -8.159648895263672, -8.210783004760742, -8.264904975891113, -8.319026947021484, -8.373149871826172, -8.410440444946289, -8.423748970031738, -8.429903984069824, -8.436056137084961, -8.436668395996094, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-06
+              }
+            },
+            {
+              "variable": "indself_lower",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "aggregate",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "rlay"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 3.0, 3.0, 3.0, 3.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 1.0033512115478516,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.6335462927818298,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.15113461017608643,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "forfac",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.003914038650691509,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.03526030108332634,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.06641833484172821,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.0010600317036733031,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "co2mult",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.004455704241991043,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 59
+              },
+              "expected": 9.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 60
+              },
+              "expected": 9.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "jp",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 30.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "laytrop",
+              "time": 0.0,
+              "expected": 80.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "layswtch",
+              "time": 0.0,
+              "expected": 53.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "laylow",
+              "time": 0.0,
+              "expected": 26.0,
+              "tolerance": {
+                "abs": 1e-09
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.5584441423416138,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.3140428066253662,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 0.0016354082617908716,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac00",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 0.8106756806373596,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 1
+              },
+              "expected": 0.23292773962020874,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 40
+              },
+              "expected": 0.024269679561257362,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 80
+              },
+              "expected": 1.0546318292617798,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "fac01",
+              "time": 0.0,
+              "coords": {
+                "rlay": 103
+              },
+              "expected": 1.6064863204956055,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
