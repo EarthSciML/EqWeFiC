@@ -381,7 +381,8 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   (`wrf_constants`/`wrf_thermo`/`wrf_air_properties`), #16 sfclayrev, #17 slab
   (new domain `land_surface/`), #18 ysu, #19 wsm6, #20 dudhia_sw and #21
   rrtm_lw stages 1–3 (new domain `atmospheric_radiation/`; refreshed 2026-09-06
-  after stage 3, 888 assertions); each component PR
+  after stage 3, 888 assertions); #18 and #21 refreshed again with the additive
+  `<x>_in` coupling-target parameters (EqWeFiC 0496f20); each component PR
   carries the lib files and is self-contained. ESD rules are referenced by
   relative sibling path because the Rust CLI does not expand `${ESD_ROOT}` in
   template imports. Merge conditions (not ours to address): ESD #34/#35/#36
