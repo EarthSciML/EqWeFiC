@@ -398,6 +398,13 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   assert a mounted subsystem's variable; a subsystem's `index_sets`/
   `metaparameters` must not be redeclared by the importer; `-` is strictly
   unary/binary while `+`/`*`/`min`/`max` are n-ary.
+- **Thermo consolidation done.** `exner_function`,
+  `bolton_saturation_vapor_pressure`, `bolton_saturation_mixing_ratio` and
+  `dry_air_density` moved into `lib/wrf_thermo.esm` from slab, sfclayrev, ysu,
+  dudhia_sw and rrtm_column (bodies verbatim, add-only in lib); suite identical
+  at 1845/1845. Remaining single-consumer helpers stay beside their components
+  (Beljaars w_c in `sfclayrev_thermo`; bulk flux / black-body / net radiation
+  in `slab_templates`).
 - **RRTM LW stage 1 done.** Heating-rate convention proved:
   `HTR(L−1) = HEATFAC (FNET(L−1) − FNET(L))/(PZ(L−1) − PZ(L))` is the heating
   of layer L; RRTM indexes bottom-up so `TOTUFLUX/TOTDFLUX(0..kte)` map onto

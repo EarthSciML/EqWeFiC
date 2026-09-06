@@ -2,7 +2,7 @@
   "esm": "1.0.0",
   "metadata": {
     "name": "wrf_thermo",
-    "description": "WRF thermodynamic identities as pure expression templates, transcribed from the inline formulas WRF's physics schemes share (e.g. phys/physics_mmm/bl_ysu.F90, module_bl_ysu.F, phys/physics_mmm/mp_wsm6.F90). Every template is a closed algebraic function of its parameters: the thermodynamic constants are passed in explicitly (bind them to lib/wrf_constants.esm names, e.g. ep_1: \"wrf.ep_1\") so a template can be applied to scalars or to shaped fields alike and never reaches into a scheme's scope. Names follow WRF: theta = potential temperature (K), exner = pi = (p/p1000mb)^(r_d/cp) the Exner function, qv/qc/qi = vapor / cloud-water / cloud-ice mixing ratios (kg/kg).",
+    "description": "WRF thermodynamic identities as pure expression templates, transcribed from the inline formulas WRF's physics schemes share (e.g. phys/physics_mmm/bl_ysu.F90, module_bl_ysu.F, phys/physics_mmm/mp_wsm6.F90). Every template is a closed algebraic function of its parameters: the thermodynamic constants are passed in explicitly (bind them to lib/wrf_constants.esm names, e.g. ep_1: \"wrf.ep_1\") so a template can be applied to scalars or to shaped fields alike and never reaches into a scheme's scope. Names follow WRF: theta = potential temperature (K), exner = pi = (p/p1000mb)^(r_d/cp) the Exner function (template exner_function), qv/qc/qi = vapor / cloud-water / cloud-ice mixing ratios (kg/kg).",
     "license": "MIT",
     "tags": ["wrf", "thermodynamics", "expression-templates"],
     "references": [
@@ -85,6 +85,26 @@
       "params": ["qv", "cp", "cpv"],
       "description": "Specific heat of moist air at constant pressure per unit mass, cpm = cp (1 - qv) + cpv qv (WSM: cpmcal(q) = cpd (1 - q) + q cpv).",
       "body": { "op": "+", "args": [{ "op": "*", "args": ["cp", { "op": "-", "args": [1, "qv"] }] }, { "op": "*", "args": ["qv", "cpv"] }] }
+    },
+    "exner_function": {
+      "params": ["p", "p0", "kappa"],
+      "description": "Exner function pi = (p / p0)^kappa with kappa = r_d/cp and p0 = p1000mb, so that theta = T / pi and T = theta pi (WRF pi3d/pi2d; SLAB1D THCON = (P1000mb*0.001/PL)**ROVCP is 1/pi; sf_sfclayrev thcon). Consumers: components/land_surface/slab, components/atmospheric_dynamics/sfclayrev (both formerly carried a local copy).",
+      "body": { "op": "^", "args": [{ "op": "/", "args": ["p", "p0"] }, "kappa"] }
+    },
+    "bolton_saturation_vapor_pressure": {
+      "params": ["T", "svp1", "svp2", "svp3", "svpt0"],
+      "description": "Bolton (1980) saturation vapor pressure over water, e_s = svp1 exp(svp2 (T - svpt0) / (T - svp3)), in the units of svp1 (WRF: svp1 = 0.6112 kPa, svp2 = 17.67, svp3 = 29.65 K, svpt0 = 273.15 K; SLAB1D ESG = SVP1*EXP(SVP2*(TG0-SVPT0)/(TG0-SVP3)); sf_sfclayrev e1 = svp1*exp(svp2*(tsk-svpt0)/(tsk-svp3))). Consumers: components/land_surface/slab, components/atmospheric_dynamics/sfclayrev (both formerly carried a local copy). Pair with saturation_mixing_ratio for qsat.",
+      "body": { "op": "*", "args": ["svp1", { "op": "exp", "args": [{ "op": "/", "args": [{ "op": "*", "args": ["svp2", { "op": "-", "args": ["T", "svpt0"] }] }, { "op": "-", "args": ["T", "svp3"] }] }] }] }
+    },
+    "bolton_saturation_mixing_ratio": {
+      "params": ["T", "T0", "p", "es0", "a", "b", "ep_2"],
+      "description": "Saturation water-vapor mixing ratio ep_2 e_s(T)/p with the Bolton (1980) fit e_s = es0 exp(a (T - T0)/(T - b)); the p - e_s denominator of saturation_mixing_ratio is omitted, exactly as bl_ysu.F90's cloud-top branch writes rvls (which also uses two different reference temperatures T0 = 273.16 and 273.15 in successive evaluations, FORTRAN_BUGS.md N7 - hence T0 is a parameter). Consumer: components/atmospheric_dynamics/ysu (formerly a local copy). For the exact form use bolton_saturation_vapor_pressure with saturation_mixing_ratio.",
+      "body": { "op": "/", "args": [{ "op": "*", "args": ["es0", { "op": "exp", "args": [{ "op": "/", "args": [{ "op": "*", "args": ["a", { "op": "-", "args": ["T", "T0"] }] }, { "op": "-", "args": ["T", "b"] }] }] }, "ep_2"] }, "p"] }
+    },
+    "dry_air_density": {
+      "params": ["p", "T", "r_d"],
+      "description": "Dry-air ideal-gas density rho = p / (r_d T) (WRF radiation schemes recompute it from p and T instead of using the model's moist rho_phy: module_ra_sw.F SWPARA RO = P/(R*T); module_ra_rrtm.F MM5ATM RO = P/(R*T)*100 with P in hPa, here p in Pa). Consumers: components/atmospheric_radiation/dudhia_sw, components/atmospheric_radiation/rrtm_lw (both formerly carried a local copy). See moist_air_density for the virtual-temperature form.",
+      "body": { "op": "/", "args": ["p", { "op": "*", "args": ["r_d", "T"] }] }
     }
   }
 }
