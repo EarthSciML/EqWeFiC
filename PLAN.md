@@ -545,9 +545,26 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   PR-ready tests on a copy of `level_set/fire_heat_flux.esm` (22); 486/486
   Rust. Only `fire_heat_flux` matches EarthSciModels algebraically;
   `fuel_model_lookup`, `rothermel/fire_spread` and `level_set_fire_spread`
-  differ (see component descriptions). Missing EarthSciDiscretizations rules
-  for the default `fire_upwinding = 9`: WENO5/ENO1 hybrid |∇ψ| and the
-  Godunov-upwind first derivative; boundary = linear-extrapolation halo.
+  differ (see component descriptions). The ESD rules for the DEFAULT
+  `fire_upwinding = 9` landed as EarthSciDiscretizations PR #37 (2026-09-07,
+  branch `cartesian2d-levelset-weno` off ESD main e7defb2, not stacked on
+  #34/#35/#36): 7 rules on `cartesian_uniform_2d` — the compound hybrid
+  WENO5/ENO1 ∣∇ψ∣ (`weno5_eno1_norm_D2_extrapolate_bc`, priority 20), the two
+  per-axis hybrid derivatives, the two Godunov-upwind per-axis quantities
+  max(D⁻,0) − min(D⁺,0) the front normal is built from, and the two centred
+  second derivatives of the viscosity term — plus 9 stencils and the new
+  boundary tag `bc:extrapolate_linear` for fire_behavior's one-cell guarded
+  linear-extrapolation halo max(2a − b, a, b). Two MMS problems gate the
+  order: observed L2/Linf 1.00 for the Godunov case and observed L2 1.47
+  (expected 1.5) for the hybrid, the latter necessarily in ACCUMULATOR form
+  (u frozen at the manufactured g, one state w integrating
+  w_t = S(∣∇g∣ − ∣∇u∣_h)) because the hybrid's ENO1 branch is a minmod, not an
+  upwind discretisation for the transported error, so the coupled forced-steady
+  form the Godunov sibling uses does not converge and stalls Tsit5.
+  `level_set_tendency_wrffire.esm` now covers both regimes, 203/203 Rust.
+  Still missing: `fire_upwinding` 0–3, 5–8 and 10 (the blending zone), the
+  `tbound` CFL reduction (a solver step limit, not a discretisation) and
+  reinitialisation.
   fire_behavior is real32 only (rel 1e-5). Gap (o): an observed named `t`
   collides with the time variable without a validate error
   (`esm-repro/fire/probe_observed_named_t.esm`). Not started: atmosphere→fire
