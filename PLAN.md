@@ -408,6 +408,17 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   tests appended to the existing `wildland_fire/level_set/fire_heat_flux.esm`,
   PLAN 1.3) and #23 (`components/wildland_fire/fire_behavior/`, 464
   assertions).
+- **EarthSciModels RADM2 PR opened 2026-09-06:** #24
+  (`components/gaschem/radm2/`, 540 assertions), base `main`. RADM2 is
+  self-contained — its only refs are `./radm2_ratelaws.esm` and the four
+  `./tests/*_inputs.esm`, it mounts no `lib/` subsystem and no
+  EarthSciDiscretizations rule — so it does not stack on #15. Finding: none
+  of #15-#23 is stacked in git either; each has the then-current `main`
+  (7259fd8) as its single parent and the physics branches duplicate the
+  `lib/` content inside their own commit (it drops out on rebase). A
+  cross-repo PR base must be a branch in `EarthSciML/EarthSciModels`, and the
+  `eqwefic/*` branches exist only on the fork, so `main` is the only possible
+  base for any of them.
 
 - **Slab done.** `SlabLandSurface` written as instantaneous tendencies: surface
   budget from consumer-supplied `FLHC/FLQC`, soil heat equation
