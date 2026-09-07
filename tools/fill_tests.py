@@ -175,7 +175,8 @@ def _test_block(test: dict[str, Any], ns: dict[str, Any]) -> dict[str, Any]:
     block: dict[str, Any] = {"id": test["id"], "description": test["description"]}
     block["parameter_overrides"] = {k: float(np.asarray(_eval(e, ns)).reshape(-1)[0])
                                     for k, e in test.get("parameter_overrides", {}).items()}
-    block["expression_template_imports"] = [{"ref": "./" + test["fields_library"].lstrip("./")}]
+    if test.get("fields"):
+        block["expression_template_imports"] = [{"ref": "./" + test["fields_library"].lstrip("./")}]
     block["time_span"] = test.get("time_span", {"start": 0.0, "end": 1.0})
     if "tolerance" in test:
         block["tolerance"] = test["tolerance"]
@@ -237,13 +238,27 @@ def fill(esm_path: str, sidecar_path: str, only: str | None = None) -> None:
         inputs = _column(os.path.join(side["dump_dir"], test["inputs"]), col)
         ref = _reference(side["dump_dir"], test["reference"], col)
         ns = _namespace(inputs, ref)
-        lib_path = os.path.join(esm_dir, test["fields_library"])
-        os.makedirs(os.path.dirname(lib_path), exist_ok=True)
-        with open(lib_path, "w") as f:
-            f.write(_compact_number_arrays(json.dumps(_fields_library(test, ns, doc["metadata"]["name"]), indent=1)))
-            f.write("\n")
+        libs = []
+        if test.get("fields"):
+            libs.append({"path": test["fields_library"], "fields": test["fields"], "id": test["id"]})
+        # `libraries` (optional): extra template libraries written but NOT imported by the test
+        # itself -- used by the coupled documents in couplings/, where the profiles are injected at
+        # the MOUNT edge (esm-spec 9.7.10) rather than at the test.
+        for extra in test.get("libraries", []):
+            libs.append({"path": extra["path"], "fields": extra["fields"],
+                         "id": extra.get("id", os.path.basename(extra["path"]).rsplit(".", 1)[0])})
+        for spec in libs:
+            lib_path = os.path.join(esm_dir, spec["path"])
+            os.makedirs(os.path.dirname(lib_path), exist_ok=True)
+            with open(lib_path, "w") as f:
+                f.write(_compact_number_arrays(json.dumps(
+                    _fields_library({"id": spec["id"], "fields": spec["fields"],
+                                     "inputs": test["inputs"], "column": test.get("column", 0)},
+                                    ns, doc["metadata"]["name"]), indent=1)))
+                f.write("\n")
+            print(f"  library {spec['path']}: {len(spec['fields'])} fields")
         existing[test["id"]] = _test_block(test, ns)
-        print(f"filled test {test['id']}: {len(existing[test['id']]['assertions'])} assertions, inputs -> {lib_path}")
+        print(f"filled test {test['id']}: {len(existing[test['id']]['assertions'])} assertions")
     # splice the tests array back in sidecar order (tests the sidecar does not
     # know about keep their place first), preserving everything else byte-for-byte
     order = [t["id"] for t in doc["models"][model].get("tests", []) if t["id"] not in {s["id"] for s in side["tests"]}]
