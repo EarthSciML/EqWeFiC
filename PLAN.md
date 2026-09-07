@@ -544,10 +544,17 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   subsystem edge, with the document declaring `lev` symbolically or literally,
   and with a renamed grid injected at the mount edge). Per esm-spec §4.7 a
   subsystem ref's registry should be "fully concrete when it splices in", so
-  this is a Rust-CLI deviation from the spec, not an authoring mistake. Gap (n)
-  — two components needing the SAME axis name at DIFFERENT sizes, the 4-cell
-  soil column and the 59-cell atmospheric column — remains open on top of it
-  and needs `prefix`/`rename` on a §4.7 subsystem edge (esm-spec §9.7.7 grants
+  this is a Rust-CLI deviation from the spec, not an authoring mistake — filed
+  2026-09-07 as EarthSciAST issue #236, with the probe documents kept in
+  `data/eqwefic/phase3_probes/index_set_merge/`. The discriminator is HOW the
+  contribution arrives, not its size: YSU beside `hydrometeor_slopes.esm`
+  mounted at TOP level loads, while YSU beside `cold_accretion.esm`, which
+  mounts that same file as a NESTED subsystem, does not. Gap (n) — two
+  components needing the SAME axis name at DIFFERENT sizes, the 4-cell soil
+  column and the 59-cell atmospheric column — is NOT filed separately: it is
+  already #198 item 4 and EarthSciAST **PR #213** (`index_set_rename` on the
+  mount edge) is open against it, quoting this exact soil/atmosphere case.
+  That PR grants `prefix`/`rename` at a §4.7 subsystem edge (esm-spec §9.7.7 grants
   those three fields to `expression_template_imports` only;
   esm-schema.json `$defs/SubsystemRef` has `ref`/`model`/`reaction_system`/
   `bindings`/`expression_template_imports` and nothing else).
