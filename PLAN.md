@@ -367,9 +367,9 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     dropped; mounted components' inline tests re-run under coupling; top-level
     mounts don't merge leaf index sets; subsystem parameters not settable from
     a parent test (PR #179). Repros: `data/eqwefic/esm-repro/assemblies/`.
-    Remaining: radiation, microphysics-step and full-physics-sum assemblies
-    (dumps exist); the other six dumped steps as additional regimes; tighten
-    the fork's RRTM hook gating (N39).
+    Remaining: the full-physics-sum assembly with microphysics (dumps exist);
+    the other six dumped steps as additional regimes; tighten the fork's RRTM
+    hook gating (N39). Microphysics-step assembly done 2026-09-07 (below).
 1.5 Stubs live on this repo's `main` under `components/<domain>/…` mirroring
     the EarthSciModels layout. They are *not* opened as EarthSciModels PRs
     until their tests pass (finding 9).
@@ -481,6 +481,47 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   assert a mounted subsystem's variable; a subsystem's `index_sets`/
   `metaparameters` must not be redeclared by the importer; `-` is strictly
   unary/binary while `+`/`*`/`min`/`max` are n-ary.
+  Mass-conservation rescaling done 2026-09-07 (`mass_conservation.esm`, 169
+  assertions): the block "check mass conservation of generation terms and
+  feedback to the large scale" as one cumulative factor per species budget
+  (`mass_conservation_factor(q, q_floor, S) = max(q_floor,q)/max(S,max(q_floor,q))`,
+  the branch-free form of `if (source > value) factor = value/source`) times the
+  raw rate — praut f_qc f_qr, paacw f_qc f_qs f_qg, piacr f_qr f_qs f_qg — plus
+  the state update it feeds, both branches blended by a `cold` indicator; new
+  scheme constant `par.q_delta = 1e-4` (WSM6's unnamed delta2/delta3 literal).
+  Reproduces the real64 replay EXACTLY (0.0) in all 22 `<rate>_final` columns,
+  the switches and the `*_upd` state; residual only dqv_dt 2e-19 kg/kg/s,
+  dT_dt 2e-15 K/s, one ulp in a factor. Activation over the whole dumped set:
+  no SCM column binds at all; in the supercell the rain budget binds hardest
+  (f_qr = 0.5877 at 9983 col 30 layer 16), then ice (0.9289) and snow (0.9736);
+  the cloud-water and graupel budgets and the ENTIRE warm branch never bind
+  materially (N59), so the warm-branch factors are transcribed but untested at
+  the binding level — their update path is exercised in every regime.
+- **Microphysics-step assembly done 2026-09-07.** `couplings/microphysics_column{,_mixed}.esm`
+  mount seven WSM6 stages as top-level systems (106 `variable_map` edges) in the
+  order mp_wsm6_run calls them: Saturation -> MeltingFreezing -> {WarmRain,
+  ColdAccretion, IceDeposition} -> MassConservation -> SaturationAdjustment,
+  with WarmRain's prevp opening the ice deposition budget and Saturation coupled
+  forward into every stage from the START-of-sub-step state (N4). Each stage
+  gained additive `<x>_in` coupling-target parameters (standalone 790/790
+  unchanged) that mount-edge libraries `couplings/tests/wsm6_couple_*_inputs.esm`
+  lower `input_<x>` to. NEW: coupling INTO a mounted subsystem's parameter
+  (`Cold.sd.qr_in`, `IceDep.sd.qs_in`, `SatAdj.sat.T_in`) works in the current
+  Rust CLI — the `probe_wrap_couple` NaN row of `esm-repro/assemblies/README.md`
+  no longer holds — which is what makes the full chain expressible. Sedimentation
+  is NOT in the chain: WSM6's PLM semi-Lagrangian fallout is not a rate (its
+  sub-step increment differs from the donor-cell divergence by 0.4-1.6x with sign
+  flips), so the post-sedimentation qi/qr/qs/qg entering MeltingFreezing are
+  dumped profiles and the chain covers six of the seven stages. 2 x 40/40 with
+  `./esm test --model MicrophysicsColumn <file>`; end-to-end residual (Linf as a
+  fraction of the column maximum) <= 2.4e-7 in the melting/freezing outputs,
+  6.1e-6 in the rates, 3.5e-7 in the updated state and 1.2e-5 in pcond, one to
+  two orders above the standalone 1e-7 from accumulated real32 constants (N2);
+  tolerances 5e-8 (T, latent heats), 5e-6 (mixing ratios), 5e-5 (rates), 1e-4
+  (pcond). Gap (m) extended: an importing DOCUMENT's own `index_sets` are also
+  compared against the folded subsystem declaration, so `lev` must be sized by
+  the literal 40 and not by the document's `NLEV` metaparameter, or the load
+  fails with `[subsystem_index_set_conflict]` (EarthSciAST #198).
 - **Thermo consolidation done.** `exner_function`,
   `bolton_saturation_vapor_pressure`, `bolton_saturation_mixing_ratio` and
   `dry_air_density` moved into `lib/wrf_thermo.esm` from slab, sfclayrev, ysu,

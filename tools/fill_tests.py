@@ -37,6 +37,15 @@ Sidecar schema (JSON)::
           "tolerance": {"rel": 1e-6},                     # test-level default
           "fields_library": "tests/<id>_inputs.esm",      # relative to the .esm file
           "fields": {"input_theta": {"expr": "tx/pi2d", "axis": "lev"}, ...},
+                                                          # omit "fields" entirely when the profiles
+                                                          # are injected at a MOUNT edge instead of
+                                                          # at the test (the coupled documents in
+                                                          # couplings/): no per-test library is
+                                                          # written and no import is added
+          "libraries": [{"path": "tests/<name>_inputs.esm", "id": "<name>",
+                         "fields": {...}}],               # extra template libraries, written but
+                                                          # NOT imported by the test -- referenced
+                                                          # from `models.<Mount>.expression_template_imports`
           "parameter_overrides": {"hfx": "hfx", ...},     # esm parameter -> expression
           "assertions": [
             {"variable": "hpbl", "expr": "hpbl", "tolerance": {"rel": 1e-6}},
