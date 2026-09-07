@@ -20,6 +20,8 @@ Keep a centralized list of any bugs or errors that are found in the fortran code
 
 Do not store anything large in /tmp, as it is backed by RAM rather than hard drive and can cause an OOM.
 
+Do not put "Co-Authored-By: Claude ..." in any commit messages. Claude is an LLM and LLMs cannot take responsibility for outputs, therefore they cannot be authors.
+
 ## Working conventions (added 2026-09-04 after the de-risking review; see PLAN.md for details)
 
 - **Plan and inventory.** `PLAN.md` is the implementation plan. `INVENTORY.md` tracks every WRF scheme and sub-process with its stage status (`not started` / `instrumented` / `stub PR` / `physics PR` / `merged`). Update it whenever a component changes state. `FORTRAN_BUGS.md` is the centralized list of Fortran bugs required above.
