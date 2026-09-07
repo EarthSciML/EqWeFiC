@@ -1,0 +1,2472 @@
+{
+ "esm": "1.0.0",
+ "metadata": {
+  "name": "RRTMLWColumn",
+  "description": "RRTM longwave radiation of the EqWeather reference suite (WRF ra_lw_physics = 1) assembled END-TO-END from the five stage components in components/atmospheric_radiation/rrtm_lw, mounted by reference as top-level systems and coupled in the RRTM order with variable_map/param_to_var edges (esm-spec 10.4): RRTMColumn (MM5ATM: extended column, column amounts, cloud optics) -> RRTMSetcoef (SETCOEF k-table coordinates) -> RRTMGasOptics (TAUGB1-16 optical depths and Planck fractions, GASABS quantisation) -> RTRNSweep (two-stream sweep, fluxes, HTR) -> RRTMLWHeating (flux divergence on the model column, glw, olr). Each stage keeps its `input_<x>` rewrite targets for standalone testing; in this document the mount-edge libraries (couplings/tests/rrtm_couple_*_inputs.esm) lower them to the stages' `<x>_in` coupling-target parameters, which the document's coupling fills from the upstream stage. The WRF column state enters RRTMColumn and RRTMLWHeating through dumped-profile libraries, so one document holds one column state (one regime). KNOWN BINDING LIMITATIONS (Rust CLI, EarthSciAST issue #198): the mounted components' own inline tests are re-run inside this document under the coupling and error, so run `./esm test --model RRTMLWColumn <this file>`; the leaves' index sets are redeclared at document level because a top-level ref mount does not merge them; a parent test cannot set a mounted component's parameter, so the shared scalars are prescribed in this model and coupled in.",
+  "license": "MIT",
+  "tags": [
+   "assembly",
+   "coupling",
+   "radiation",
+   "rrtm",
+   "wrf"
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {
+   "type": "integer",
+   "default": 59,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of model layers (WRF kte). Bound into the column grid at the import edge; 59 is the em_scm_xy reference column."
+  },
+  "NBUF": {
+   "type": "integer",
+   "default": 44,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of buffer layers MM5ATM adds above the model top, nint(p_top / (100 deltap)) with deltap = 4 hPa (RRTMINIT: NLAYERS = kme + nint(p_top*0.01/deltap) - 1); 44 for the reference column (p_top = 177.6 hPa)."
+  },
+  "NGPT": {
+   "type": "integer",
+   "default": 140,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of g-points after the 256-to-140 reduction."
+  },
+  "NBANDS": {
+   "type": "integer",
+   "default": 16,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of longwave bands."
+  },
+  "PLANCK_T0": {
+   "type": "integer",
+   "default": 159,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. TOTPLNK(i, band) holds the band Planck integral at T = PLANCK_T0 + i kelvin, i = 1..181 (RRTM's INDLEV = INT(T - 159.))."
+  },
+  "PLANCK_NODES": {
+   "type": "integer",
+   "default": 181,
+   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Temperature nodes of the TOTPLNK table (160..340 K)."
+  }
+ },
+ "index_sets": {
+  "rlay": {
+   "kind": "interval",
+   "size": {
+    "op": "+",
+    "args": [
+     "NLEV",
+     "NBUF"
+    ]
+   }
+  },
+  "rlev": {
+   "kind": "interval",
+   "size": {
+    "op": "+",
+    "args": [
+     "NLEV",
+     "NBUF",
+     1
+    ]
+   }
+  },
+  "bands": {
+   "kind": "interval",
+   "size": "NBANDS"
+  },
+  "o3nodes": {
+   "kind": "interval",
+   "size": 31
+  },
+  "o3edges": {
+   "kind": "interval",
+   "size": 32
+  },
+  "gpts": {
+   "kind": "interval",
+   "size": "NGPT"
+  },
+  "gl": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     "NGPT",
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "refnodes_b02": {
+   "kind": "interval",
+   "size": 11
+  },
+  "g01": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl01": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g02": {
+   "kind": "interval",
+   "size": 14
+  },
+  "gl02": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     14,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g03": {
+   "kind": "interval",
+   "size": 16
+  },
+  "gl03": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     16,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g04": {
+   "kind": "interval",
+   "size": 14
+  },
+  "gl04": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     14,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g05": {
+   "kind": "interval",
+   "size": 16
+  },
+  "gl05": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     16,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g06": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl06": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g07": {
+   "kind": "interval",
+   "size": 12
+  },
+  "gl07": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     12,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g08": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl08": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g09": {
+   "kind": "interval",
+   "size": 12
+  },
+  "gl09": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     12,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g10": {
+   "kind": "interval",
+   "size": 6
+  },
+  "gl10": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     6,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g11": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl11": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g12": {
+   "kind": "interval",
+   "size": 8
+  },
+  "gl12": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     8,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g13": {
+   "kind": "interval",
+   "size": 4
+  },
+  "gl13": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     4,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g14": {
+   "kind": "interval",
+   "size": 2
+  },
+  "gl14": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     2,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g15": {
+   "kind": "interval",
+   "size": 2
+  },
+  "gl15": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     2,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "g16": {
+   "kind": "interval",
+   "size": 2
+  },
+  "gl16": {
+   "kind": "interval",
+   "size": {
+    "op": "*",
+    "args": [
+     2,
+     {
+      "op": "+",
+      "args": [
+       "NLEV",
+       "NBUF"
+      ]
+     }
+    ]
+   }
+  },
+  "tnodes": {
+   "kind": "interval",
+   "size": "PLANCK_NODES"
+  }
+ },
+ "models": {
+  "Col": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rrtm_column.esm",
+   "bindings": {
+    "NLEV": "NLEV",
+    "NBUF": "NBUF"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "../components/atmospheric_radiation/rrtm_lw/tests/scm_call240_fractional_cloud_inputs.esm"
+    }
+   ]
+  },
+  "Setcoef": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rrtm_setcoef.esm",
+   "bindings": {
+    "NLEV": "NLEV",
+    "NBUF": "NBUF"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/rrtm_couple_setcoef_inputs.esm"
+    }
+   ]
+  },
+  "GasOpt": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rrtm_gas_optics.esm",
+   "bindings": {
+    "NLEV": "NLEV",
+    "NBUF": "NBUF",
+    "NGPT": "NGPT"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/rrtm_couple_gasopt_inputs.esm"
+    }
+   ]
+  },
+  "Rtrn": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rtrn_sweep.esm",
+   "bindings": {
+    "NLEV": "NLEV",
+    "NBUF": "NBUF",
+    "NGPT": "NGPT",
+    "NBANDS": "NBANDS",
+    "PLANCK_T0": "PLANCK_T0",
+    "PLANCK_NODES": "PLANCK_NODES"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/rrtm_couple_rtrn_inputs.esm"
+    }
+   ]
+  },
+  "Heat": {
+   "ref": "../components/atmospheric_radiation/rrtm_lw/rrtm_lw_heating.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/rrtm_couple_heating_call240_inputs.esm"
+    }
+   ]
+  },
+  "RRTMLWColumn": {
+   "variables": {
+    "co2vmr0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.00037900000461377203,
+     "description": "Prescribed: CO2 volume mixing ratio (WRF co2vmr)."
+    },
+    "co2vmr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "CO2 volume mixing ratio (WRF co2vmr). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "n2ovmr0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 3.1900000863060995e-07,
+     "description": "Prescribed: N2O volume mixing ratio (WRF n2ovmr)."
+    },
+    "n2ovmr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "N2O volume mixing ratio (WRF n2ovmr). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "ch4vmr0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.7739999975674436e-06,
+     "description": "Prescribed: CH4 volume mixing ratio (WRF ch4vmr)."
+    },
+    "ch4vmr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "CH4 volume mixing ratio (WRF ch4vmr). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "tsk0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 285.852294921875,
+     "description": "Prescribed: Skin temperature (WRF tsk)."
+    },
+    "tsk": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Skin temperature (WRF tsk). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "emiss0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.9200000166893005,
+     "description": "Prescribed: Surface emissivity (WRF emiss)."
+    },
+    "emiss": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface emissivity (WRF emiss). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "col_tz_in": {
+     "type": "parameter",
+     "units": "K",
+     "shape": [
+      "rlev"
+     ],
+     "default": 0.0,
+     "description": "Receives Col.tz through the coupling."
+    },
+    "col_tz": {
+     "type": "unknown",
+     "units": "K",
+     "shape": [
+      "rlev"
+     ],
+     "description": "RRTM level temperatures TZ produced by the column setup (checked here because they are also what the sweep receives)."
+    },
+    "col_tavel_in": {
+     "type": "parameter",
+     "units": "K",
+     "shape": [
+      "rlay"
+     ],
+     "default": 0.0,
+     "description": "Receives Col.tavel through the coupling."
+    },
+    "col_tavel": {
+     "type": "unknown",
+     "units": "K",
+     "shape": [
+      "rlay"
+     ],
+     "description": "RRTM layer temperatures TAVEL produced by the column setup."
+    },
+    "col_tbound_in": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.0,
+     "description": "Receives Col.tbound through the coupling."
+    },
+    "col_tbound": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Surface temperature TBOUND produced by the column setup (= tsk)."
+    },
+    "F_up_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "shape": [
+      "rlev"
+     ],
+     "default": 0.0,
+     "description": "Receives Rtrn.F_up through the coupling."
+    },
+    "F_up": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "rlev"
+     ],
+     "description": "Upward longwave flux at the RRTM levels (TOTUFLUX, level 1 = surface)."
+    },
+    "F_dn_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "shape": [
+      "rlev"
+     ],
+     "default": 0.0,
+     "description": "Receives Rtrn.F_dn through the coupling."
+    },
+    "F_dn": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "rlev"
+     ],
+     "description": "Downward longwave flux at the RRTM levels (TOTDFLUX)."
+    },
+    "htr_in": {
+     "type": "parameter",
+     "units": "K/day",
+     "shape": [
+      "rlay"
+     ],
+     "default": 0.0,
+     "description": "Receives Rtrn.htr through the coupling."
+    },
+    "htr": {
+     "type": "unknown",
+     "units": "K/day",
+     "shape": [
+      "rlay"
+     ],
+     "description": "RTRN heating rate of each RRTM layer (HTR(L-1) is layer L)."
+    },
+    "rtrn_glw_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Rtrn.glw through the coupling."
+    },
+    "rtrn_glw": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "RTRN downward surface flux TOTDFLUX(0)."
+    },
+    "rtrn_olr_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Rtrn.olr through the coupling."
+    },
+    "rtrn_olr": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "RTRN upward flux at the model top TOTUFLUX(kte)."
+    },
+    "F_up_model": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "F_up restricted to the NLEV+1 model interfaces: RRTM levels 0..kte are the model interfaces bottom-up, with no reversal (rrtm_lw_heating.esm). Coupling source for RRTMLWHeating."
+    },
+    "F_dn_model": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "shape": [
+      "lev_nodes"
+     ],
+     "description": "F_dn restricted to the NLEV+1 model interfaces: RRTM levels 0..kte are the model interfaces bottom-up, with no reversal (rrtm_lw_heating.esm). Coupling source for RRTMLWHeating."
+    },
+    "dTdt_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives Heat.dTdt through the coupling."
+    },
+    "dTdt": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Longwave temperature tendency of each model layer, -(g/cp) dF_net/dp."
+    },
+    "dthdt_lw_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives Heat.dthdt through the coupling."
+    },
+    "dthdt_lw": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Longwave potential-temperature tendency (the RTHRATENLW increment)."
+    },
+    "glw_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Heat.glw through the coupling."
+    },
+    "glw": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Downward longwave flux at the surface (WRF GLW)."
+    },
+    "olr_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Heat.olr through the coupling."
+    },
+    "olr": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Upward longwave flux at the model top (WRF OLR, FORTRAN_BUGS.md N14)."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "co2vmr",
+     "rhs": "co2vmr0"
+    },
+    {
+     "lhs": "n2ovmr",
+     "rhs": "n2ovmr0"
+    },
+    {
+     "lhs": "ch4vmr",
+     "rhs": "ch4vmr0"
+    },
+    {
+     "lhs": "tsk",
+     "rhs": "tsk0"
+    },
+    {
+     "lhs": "emiss",
+     "rhs": "emiss0"
+    },
+    {
+     "lhs": "col_tz",
+     "rhs": "col_tz_in"
+    },
+    {
+     "lhs": "col_tavel",
+     "rhs": "col_tavel_in"
+    },
+    {
+     "lhs": "col_tbound",
+     "rhs": "col_tbound_in"
+    },
+    {
+     "lhs": "F_up",
+     "rhs": "F_up_in"
+    },
+    {
+     "lhs": "F_dn",
+     "rhs": "F_dn_in"
+    },
+    {
+     "lhs": "htr",
+     "rhs": "htr_in"
+    },
+    {
+     "lhs": "rtrn_glw",
+     "rhs": "rtrn_glw_in"
+    },
+    {
+     "lhs": "rtrn_olr",
+     "rhs": "rtrn_olr_in"
+    },
+    {
+     "lhs": "F_up_model",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "kn"
+      ],
+      "args": [],
+      "ranges": {
+       "kn": {
+        "from": "lev_nodes"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        "F_up_in",
+        "kn"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "F_dn_model",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "kn"
+      ],
+      "args": [],
+      "ranges": {
+       "kn": {
+        "from": "lev_nodes"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        "F_dn_in",
+        "kn"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "dTdt",
+     "rhs": "dTdt_in"
+    },
+    {
+     "lhs": "dthdt_lw",
+     "rhs": "dthdt_lw_in"
+    },
+    {
+     "lhs": "glw",
+     "rhs": "glw_in"
+    },
+    {
+     "lhs": "olr",
+     "rhs": "olr_in"
+    }
+   ],
+   "tests": [
+    {
+     "id": "scm_call240_rrtm_lw_column",
+     "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, p_top = 177.6 hPa so NLAYERS = 103, mp=6 ra_lw=1 ra_sw=1 sf_sfclay=1 sf_surface=1 bl_pbl=1) dumped by the instrumented fork ctessum-claude/WRF@592f693 (module_esm_dump hooks in RRTMLWRAD and inside SUBROUTINE RRTM/RTRN, dump scm_cloud_240.json, tile column 0; written by the same em_scm_xy run re-executed for 8 h with the cloudy calls added to ESM_DUMP_CALLS, which reproduces the archived call 120 dump bit-for-bit). RRTM has no standalone driver, so every expected value is the real32 in-model value and the tolerance contract is rel 1e-5. This document runs the WHOLE longwave chain from the WRF column state: RRTMColumn (MM5ATM) -> RRTMSetcoef -> RRTMGasOptics (TAUGB1-16 + GASABS) -> RTRNSweep -> RRTMLWHeating, each stage fed by the previous one through variable_map/param_to_var edges into the stages' `<x>_in` coupling-target parameters (the mount-edge libraries lower the `input_<x>` rewrite targets to those parameters); only the column state (p8w, t8w, p3d, t3d, q*, cldfra, dz8w, pi3d), the surface scalars (tsk, emiss, co2vmr, n2ovmr, ch4vmr) and WRF's zero cross-section columns are prescribed. Tolerances are END-TO-END, wider than the stages' own because the sweep now consumes the gas optics' quantised ITR (exact up to +/-1 flips of the 1/5000 transition-fraction index; rrtm_gas_optics.esm) instead of the dumped ITR, and each flip perturbs one g-point optical depth: fluxes Linf abs 5e-3 W/m^2 (measured TOLFLUX at this call) and spot checks / glw / olr rel 2e-5 (measured TOLREL), HTR Linf abs 5e-3 K/day (measured TOLHTR) and spot checks rel 2e-4 at the three cloudy layers 51, 52 and the fractional layer 55 (measured TOLHTRSPOT; HTR is a real32 difference of O(300 W/m^2) fluxes over O(6 hPa), and these three |HTR| are only 0.6-1.0 K/day, hence 2e-4 rather than the 1e-4 used where |HTR| is large), dTdt/dthdt Linf abs 2e-8 K/s (measured TOLDT). The column-setup identities (col_tz, col_tavel, col_tbound) keep the stage tolerances. The scheme is diagnostic (no time step). Regime: CLOUD OVERLAP WITH FRACTIONAL CLOUD -- call 240 (21:00 UTC, 14:34 LST), the decaying cirrus deck. MM5ATM overrides CLDFRA 0.0542, 0.355, 0.402, 0.388 to CLDFRAC = 1 in RRTM layers 51-54 because their TAUCLOUD (0.0728, 0.1423, 0.0709, 0.0403) exceeds 0.01, while layer 55 keeps its diagnosed CLDFRA = 0.1470 at TAUCLOUD = 0.009966 -- the largest fractional cloud fraction the scheme admits in this run -- so the RTRN sweeps run the fractional-cloud branch (EFCLFRAC = ABSCLD CLDFRAC = 0.00241 against ABSCLD = 0.01641) end-to-end from the WRF column state. Surface cloud forcing 13.8 W/m^2.",
+     "parameter_overrides": {
+      "co2vmr0": 0.00037900000461377203,
+      "n2ovmr0": 3.1900000863060995e-07,
+      "ch4vmr0": 1.7739999975674436e-06,
+      "tsk0": 285.852294921875,
+      "emiss0": 0.9200000166893005
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "assertions": [
+      {
+       "variable": "col_tz",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.003
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "rlev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            284.5238037109375,
+            283.92626953125,
+            283.3467712402344,
+            282.794921875,
+            282.23944091796875,
+            281.67303466796875,
+            281.09259033203125,
+            280.4961242675781,
+            279.88226318359375,
+            279.2497863769531,
+            278.5975646972656,
+            277.9241027832031,
+            277.227294921875,
+            276.501220703125,
+            276.238525390625,
+            277.91046142578125,
+            279.48870849609375,
+            279.40869140625,
+            279.265625,
+            279.0956115722656,
+            278.90350341796875,
+            278.6900634765625,
+            278.4552917480469,
+            278.1982116699219,
+            277.9159851074219,
+            277.6065979003906,
+            277.2548828125,
+            276.859130859375,
+            276.43182373046875,
+            275.969970703125,
+            275.47210693359375,
+            274.9354553222656,
+            274.355712890625,
+            273.72979736328125,
+            273.05303955078125,
+            272.31866455078125,
+            271.4066162109375,
+            270.27301025390625,
+            268.9679870605469,
+            267.2572021484375,
+            265.182373046875,
+            263.00323486328125,
+            260.7163391113281,
+            258.31329345703125,
+            255.784423828125,
+            253.12339782714844,
+            250.3301239013672,
+            247.39620971679688,
+            244.29666137695312,
+            240.9952392578125,
+            237.43910217285156,
+            233.8504638671875,
+            229.905517578125,
+            225.4313201904297,
+            220.78091430664062,
+            215.79315185546875,
+            210.35308837890625,
+            204.37594604492188,
+            197.75100708007812,
+            190.5236053466797,
+            190.1999053955078,
+            189.87620544433594,
+            189.55250549316406,
+            189.2288055419922,
+            188.9051055908203,
+            188.58143615722656,
+            188.26986694335938,
+            187.95828247070312,
+            187.64671325683594,
+            187.33514404296875,
+            187.0235595703125,
+            186.67691040039062,
+            186.2872314453125,
+            185.89755249023438,
+            185.50787353515625,
+            185.11819458007812,
+            184.9708709716797,
+            184.9265594482422,
+            184.88226318359375,
+            184.83795166015625,
+            184.8734588623047,
+            184.95404052734375,
+            185.0346221923828,
+            185.15609741210938,
+            185.4857940673828,
+            185.81549072265625,
+            186.1649169921875,
+            186.59756469726562,
+            187.0301971435547,
+            187.52224731445312,
+            188.04638671875,
+            188.57913208007812,
+            189.1214141845703,
+            189.62774658203125,
+            190.11170959472656,
+            190.6190643310547,
+            191.18240356445312,
+            191.86842346191406,
+            192.8621063232422,
+            194.5186309814453,
+            197.0538330078125,
+            200.74696350097656,
+            208.1395263671875,
+            210.90196228027344
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "col_tavel",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.003
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "rlay"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            284.2253112792969,
+            283.61962890625,
+            283.0670166015625,
+            282.51593017578125,
+            281.9559020996094,
+            281.3830261230469,
+            280.7947998046875,
+            280.1898498535156,
+            279.5668640136719,
+            278.9247131347656,
+            278.26214599609375,
+            277.5775146484375,
+            276.8682861328125,
+            276.1248474121094,
+            276.3550720214844,
+            279.5052490234375,
+            279.4717712402344,
+            279.343994140625,
+            279.1853332519531,
+            279.0036315917969,
+            278.8008728027344,
+            278.57647705078125,
+            278.3310546875,
+            278.0619812011719,
+            277.7662658691406,
+            277.44287109375,
+            277.0621337890625,
+            276.6510009765625,
+            276.2070617675781,
+            275.7268981933594,
+            275.2108459472656,
+            274.6531066894531,
+            274.0508117675781,
+            273.400634765625,
+            272.6966552734375,
+            271.93115234375,
+            270.8687744140625,
+            269.662109375,
+            268.25628662109375,
+            266.2328186035156,
+            264.1053161621094,
+            261.87322998046875,
+            259.5301513671875,
+            257.065673828125,
+            254.4707794189453,
+            251.7418975830078,
+            248.88259887695312,
+            245.87216186523438,
+            242.68128967285156,
+            239.26651000976562,
+            235.56541442871094,
+            232.0921173095703,
+            227.6635284423828,
+            223.1426239013672,
+            218.35943603515625,
+            213.1619110107422,
+            207.47314453125,
+            201.2003173828125,
+            194.21437072753906,
+            190.36175537109375,
+            190.03805541992188,
+            189.71435546875,
+            189.39065551757812,
+            189.06695556640625,
+            188.74327087402344,
+            188.4256591796875,
+            188.11407470703125,
+            187.802490234375,
+            187.49093627929688,
+            187.17935180664062,
+            186.85023498535156,
+            186.48207092285156,
+            186.09239196777344,
+            185.7027130126953,
+            185.3130340576172,
+            185.04452514648438,
+            184.94871520996094,
+            184.9044189453125,
+            184.860107421875,
+            184.855712890625,
+            184.91375732421875,
+            184.99432373046875,
+            185.09536743164062,
+            185.32095336914062,
+            185.650634765625,
+            185.99020385742188,
+            186.38124084472656,
+            186.81387329101562,
+            187.27621459960938,
+            187.78431701660156,
+            188.31275939941406,
+            188.85028076171875,
+            189.37457275390625,
+            189.86972045898438,
+            190.36538696289062,
+            190.90072631835938,
+            191.52542114257812,
+            192.36526489257812,
+            193.69036865234375,
+            195.78622436523438,
+            198.900390625,
+            204.4432373046875,
+            209.520751953125
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "col_tbound",
+       "time": 0.0,
+       "expected": 285.852294921875,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "F_up",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "rlev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            370.4356994628906,
+            367.6070556640625,
+            366.1865234375,
+            364.83538818359375,
+            363.4671630859375,
+            362.05413818359375,
+            360.5901184082031,
+            359.0708923339844,
+            357.492431640625,
+            355.85736083984375,
+            354.1617431640625,
+            352.4062805175781,
+            350.5931091308594,
+            348.7220153808594,
+            347.24505615234375,
+            348.51318359375,
+            351.021240234375,
+            351.6023864746094,
+            351.7022705078125,
+            351.5528869628906,
+            351.23974609375,
+            350.8055725097656,
+            350.2646179199219,
+            349.6247863769531,
+            348.8875732421875,
+            348.0517883300781,
+            347.1241760253906,
+            346.1076965332031,
+            345.0126953125,
+            343.8341369628906,
+            342.5733337402344,
+            341.2303466796875,
+            339.7973937988281,
+            338.2672424316406,
+            336.638671875,
+            334.90130615234375,
+            332.9609069824219,
+            330.6463928222656,
+            328.0845642089844,
+            325.1013488769531,
+            321.4342346191406,
+            317.59051513671875,
+            313.6704406738281,
+            309.79150390625,
+            305.966796875,
+            302.3056335449219,
+            298.98529052734375,
+            296.1614074707031,
+            293.1580810546875,
+            289.86285400390625,
+            286.0875244140625,
+            268.9736633300781,
+            243.58316040039062,
+            230.26815795898438,
+            221.56390380859375,
+            218.53330993652344,
+            215.07716369628906,
+            212.04322814941406,
+            209.68710327148438,
+            207.43858337402344,
+            207.11964416503906,
+            206.8368682861328,
+            206.57423400878906,
+            206.32630920410156,
+            206.0884552001953,
+            205.8451385498047,
+            205.61000061035156,
+            205.382568359375,
+            205.16259765625,
+            204.95021057128906,
+            204.7415771484375,
+            204.52687072753906,
+            204.31500244140625,
+            204.10897827148438,
+            203.9071502685547,
+            203.70193481445312,
+            203.50259399414062,
+            203.31893920898438,
+            203.14779663085938,
+            202.98086547851562,
+            202.8042449951172,
+            202.62791442871094,
+            202.4718475341797,
+            202.3094482421875,
+            202.16664123535156,
+            202.04425048828125,
+            201.91566467285156,
+            201.802734375,
+            201.69764709472656,
+            201.5994415283203,
+            201.5122528076172,
+            201.4315185546875,
+            201.35548400878906,
+            201.287841796875,
+            201.22604370117188,
+            201.17054748535156,
+            201.126708984375,
+            201.07948303222656,
+            201.04830932617188,
+            201.0531768798828,
+            201.10128784179688,
+            201.2194366455078,
+            201.46768188476562,
+            201.65966796875
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "F_dn",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "rlev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            276.5974426269531,
+            274.41595458984375,
+            272.3460998535156,
+            270.31463623046875,
+            268.28399658203125,
+            266.2445068359375,
+            264.192138671875,
+            262.1292724609375,
+            260.05987548828125,
+            258.0010986328125,
+            255.97267150878906,
+            254.0045166015625,
+            252.17095947265625,
+            250.6471710205078,
+            250.64320373535156,
+            254.51217651367188,
+            254.8314666748047,
+            254.14788818359375,
+            253.300537109375,
+            252.31671142578125,
+            251.1982879638672,
+            249.9153594970703,
+            248.4407196044922,
+            246.75323486328125,
+            244.81687927246094,
+            242.56494140625,
+            239.93162536621094,
+            237.10714721679688,
+            234.09280395507812,
+            230.87710571289062,
+            227.430419921875,
+            223.75897216796875,
+            219.8200225830078,
+            215.57769775390625,
+            210.98712158203125,
+            205.96348571777344,
+            200.25413513183594,
+            194.0157470703125,
+            187.3088836669922,
+            179.94020080566406,
+            172.2067413330078,
+            164.36929321289062,
+            156.436767578125,
+            148.5138397216797,
+            140.5532989501953,
+            132.79922485351562,
+            126.04949188232422,
+            121.40338897705078,
+            117.21922302246094,
+            113.14063262939453,
+            108.96868133544922,
+            94.38114166259766,
+            67.56314849853516,
+            48.75733947753906,
+            34.59545135498047,
+            27.463459014892578,
+            20.97736358642578,
+            16.2060546875,
+            13.2483549118042,
+            11.513612747192383,
+            11.310089111328125,
+            11.1093168258667,
+            10.908268928527832,
+            10.706743240356445,
+            10.505797386169434,
+            10.30640697479248,
+            10.106436729431152,
+            9.907299995422363,
+            9.707176208496094,
+            9.50941276550293,
+            9.311239242553711,
+            9.112662315368652,
+            8.91368579864502,
+            8.718977928161621,
+            8.529022216796875,
+            8.346531867980957,
+            8.177098274230957,
+            8.007726669311523,
+            7.834864616394043,
+            7.661362171173096,
+            7.473058223724365,
+            7.3232245445251465,
+            7.1727142333984375,
+            7.0216898918151855,
+            6.870580673217773,
+            6.715488910675049,
+            6.55177640914917,
+            6.3794636726379395,
+            6.197777271270752,
+            6.00578498840332,
+            5.797791004180908,
+            5.57273006439209,
+            5.3261871337890625,
+            5.059580326080322,
+            4.772812843322754,
+            4.46668004989624,
+            4.143006324768066,
+            3.7930381298065186,
+            3.4241435527801514,
+            3.0340847969055176,
+            2.5966615676879883,
+            2.0848286151885986,
+            1.443236231803894,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "F_up_model",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            370.4356994628906,
+            367.6070556640625,
+            366.1865234375,
+            364.83538818359375,
+            363.4671630859375,
+            362.05413818359375,
+            360.5901184082031,
+            359.0708923339844,
+            357.492431640625,
+            355.85736083984375,
+            354.1617431640625,
+            352.4062805175781,
+            350.5931091308594,
+            348.7220153808594,
+            347.24505615234375,
+            348.51318359375,
+            351.021240234375,
+            351.6023864746094,
+            351.7022705078125,
+            351.5528869628906,
+            351.23974609375,
+            350.8055725097656,
+            350.2646179199219,
+            349.6247863769531,
+            348.8875732421875,
+            348.0517883300781,
+            347.1241760253906,
+            346.1076965332031,
+            345.0126953125,
+            343.8341369628906,
+            342.5733337402344,
+            341.2303466796875,
+            339.7973937988281,
+            338.2672424316406,
+            336.638671875,
+            334.90130615234375,
+            332.9609069824219,
+            330.6463928222656,
+            328.0845642089844,
+            325.1013488769531,
+            321.4342346191406,
+            317.59051513671875,
+            313.6704406738281,
+            309.79150390625,
+            305.966796875,
+            302.3056335449219,
+            298.98529052734375,
+            296.1614074707031,
+            293.1580810546875,
+            289.86285400390625,
+            286.0875244140625,
+            268.9736633300781,
+            243.58316040039062,
+            230.26815795898438,
+            221.56390380859375,
+            218.53330993652344,
+            215.07716369628906,
+            212.04322814941406,
+            209.68710327148438,
+            207.43858337402344
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "F_dn_model",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            276.5974426269531,
+            274.41595458984375,
+            272.3460998535156,
+            270.31463623046875,
+            268.28399658203125,
+            266.2445068359375,
+            264.192138671875,
+            262.1292724609375,
+            260.05987548828125,
+            258.0010986328125,
+            255.97267150878906,
+            254.0045166015625,
+            252.17095947265625,
+            250.6471710205078,
+            250.64320373535156,
+            254.51217651367188,
+            254.8314666748047,
+            254.14788818359375,
+            253.300537109375,
+            252.31671142578125,
+            251.1982879638672,
+            249.9153594970703,
+            248.4407196044922,
+            246.75323486328125,
+            244.81687927246094,
+            242.56494140625,
+            239.93162536621094,
+            237.10714721679688,
+            234.09280395507812,
+            230.87710571289062,
+            227.430419921875,
+            223.75897216796875,
+            219.8200225830078,
+            215.57769775390625,
+            210.98712158203125,
+            205.96348571777344,
+            200.25413513183594,
+            194.0157470703125,
+            187.3088836669922,
+            179.94020080566406,
+            172.2067413330078,
+            164.36929321289062,
+            156.436767578125,
+            148.5138397216797,
+            140.5532989501953,
+            132.79922485351562,
+            126.04949188232422,
+            121.40338897705078,
+            117.21922302246094,
+            113.14063262939453,
+            108.96868133544922,
+            94.38114166259766,
+            67.56314849853516,
+            48.75733947753906,
+            34.59545135498047,
+            27.463459014892578,
+            20.97736358642578,
+            16.2060546875,
+            13.2483549118042,
+            11.513612747192383
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "htr",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.005
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "rlay"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.9143185019493103,
+            -0.8948853015899658,
+            -0.9145448803901672,
+            -0.8685178756713867,
+            -0.8011220693588257,
+            -0.7338364124298096,
+            -0.6613383889198303,
+            -0.5824951529502869,
+            -0.4903308153152466,
+            -0.37564024329185486,
+            -0.23414695262908936,
+            -0.02188893035054207,
+            0.36373171210289,
+            1.5047509670257568,
+            2.592374801635742,
+            -2.131589889526367,
+            -1.2010377645492554,
+            -0.8771195411682129,
+            -0.7534310221672058,
+            -0.7089767456054688,
+            -0.7286315560340881,
+            -0.7815495133399963,
+            -0.8550711870193481,
+            -0.9542991518974304,
+            -1.0988799333572388,
+            -1.2905339002609253,
+            -1.3342503309249878,
+            -1.381576657295227,
+            -1.4303003549575806,
+            -1.4969698190689087,
+            -1.5553919076919556,
+            -1.6328222751617432,
+            -1.723703145980835,
+            -1.8361884355545044,
+            -1.987117052078247,
+            -2.2229464054107666,
+            -2.2575697898864746,
+            -2.326382637023926,
+            -2.4010722637176514,
+            -2.1716842651367188,
+            -2.0805773735046387,
+            -2.039048910140991,
+            -2.0046513080596924,
+            -1.9999197721481323,
+            -1.9306702613830566,
+            -1.5780158042907715,
+            -0.8179194927215576,
+            -0.516943633556366,
+            -0.3344776928424835,
+            -0.16515658795833588,
+            1.0259233713150024,
+            -0.565402090549469,
+            -2.1212494373321533,
+            -2.0564815998077393,
+            -1.5073447227478027,
+            -1.0860928297042847,
+            -0.607397735118866,
+            -0.20512260496616364,
+            0.17086170613765717,
+            0.24350492656230927,
+            0.17300310730934143,
+            0.12992937862873077,
+            0.0978977382183075,
+            0.07787393033504486,
+            0.09268253296613693,
+            0.07417178153991699,
+            0.05971729755401611,
+            0.04188258945941925,
+            0.030840523540973663,
+            0.022051939740777016,
+            0.0340275913476944,
+            0.027202757075428963,
+            0.023886919021606445,
+            0.02504585310816765,
+            0.04793480038642883,
+            0.0630975216627121,
+            0.030132286250591278,
+            -0.0036055725067853928,
+            -0.013875016011297703,
+            -0.024659540504217148,
+            0.05591856688261032,
+            0.011718111112713814,
+            0.02398349717259407,
+            -0.01751278154551983,
+            -0.06898877024650574,
+            -0.07410739362239838,
+            -0.12526145577430725,
+            -0.16160692274570465,
+            -0.19788798689842224,
+            -0.25486892461776733,
+            -0.3045099377632141,
+            -0.35972025990486145,
+            -0.41975948214530945,
+            -0.4746478796005249,
+            -0.5287958383560181,
+            -0.5903803110122681,
+            -0.6387014389038086,
+            -0.712519109249115,
+            -0.833209216594696,
+            -1.0243688821792603,
+            -1.3291363716125488,
+            -1.8773443698883057,
+            -2.4585022926330566
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "dTdt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 2e-08
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            1.0582390068857758e-05,
+            -1.0357468768402382e-05,
+            -1.058501018970101e-05,
+            -1.0052290227678087e-05,
+            -9.272246173134556e-06,
+            -8.493476995715389e-06,
+            -7.654379501386925e-06,
+            -6.7418420480357275e-06,
+            -5.675125177259799e-06,
+            -4.347688001063135e-06,
+            -2.7100341739477935e-06,
+            -2.533441012794221e-07,
+            4.209857778968635e-06,
+            1.7416099155390703e-05,
+            3.0004337981895163e-05,
+            -2.4671179276925548e-05,
+            -1.3900900052653419e-05,
+            -1.015184654129876e-05,
+            -8.720266460268587e-06,
+            -8.205749370433667e-06,
+            -8.43323560224639e-06,
+            -9.045711959953661e-06,
+            -9.896657257168382e-06,
+            -1.1045129072886926e-05,
+            -1.2718517747190263e-05,
+            -1.4936734956723672e-05,
+            -1.5442712163483654e-05,
+            -1.599047057054661e-05,
+            -1.655440225645348e-05,
+            -1.7326039572556813e-05,
+            -1.8002221153842077e-05,
+            -1.8898405962520176e-05,
+            -1.9950267893296702e-05,
+            -2.125218096706602e-05,
+            -2.299903995460934e-05,
+            -2.572854635892091e-05,
+            -2.61292799755379e-05,
+            -2.6925724965554698e-05,
+            -2.7790188237472816e-05,
+            -2.5135234550193503e-05,
+            -2.4080756637785168e-05,
+            -2.3600103126631842e-05,
+            -2.3201982732172366e-05,
+            -2.3147219585047828e-05,
+            -2.2345720617859452e-05,
+            -1.8264071808920965e-05,
+            -9.466660795388399e-06,
+            -5.983143906902384e-06,
+            -3.8712695930843e-06,
+            -1.91153458285111e-06,
+            1.1874113093923639e-05,
+            -6.544005677655891e-06,
+            -2.4551498117270293e-05,
+            -2.380187036814513e-05,
+            -1.7446119476247718e-05,
+            -1.257051886231811e-05,
+            -7.030066378690578e-06,
+            -2.3741042241454126e-06,
+            1.977566043259921e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "dthdt_lw",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 2e-08
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            1.0680239938665181e-05,
+            -1.047197019943269e-05,
+            -1.072181203198852e-05,
+            -1.020163472276181e-05,
+            -9.428535122424364e-06,
+            -8.654203156766016e-06,
+            -7.815607204975095e-06,
+            -6.898783340147929e-06,
+            -5.820253136334941e-06,
+            -4.4692005758406594e-06,
+            -2.7924486403207993e-06,
+            -2.6169510647378047e-07,
+            4.359768809081288e-06,
+            1.808408705983311e-05,
+            3.124060094705783e-05,
+            -2.576057522674091e-05,
+            -1.4557333997800015e-05,
+            -1.0663589819159824e-05,
+            -9.188743206323124e-06,
+            -8.674877790326718e-06,
+            -8.945638001023326e-06,
+            -9.629149644752033e-06,
+            -1.0573545296210796e-05,
+            -1.1845457265735604e-05,
+            -1.3694042536371853e-05,
+            -1.6148558643180877e-05,
+            -1.676706233411096e-05,
+            -1.7439175280742347e-05,
+            -1.813802373362705e-05,
+            -1.9075356249231845e-05,
+            -1.9919880287488922e-05,
+            -2.1021754946559668e-05,
+            -2.2314010493573733e-05,
+            -2.390706322330516e-05,
+            -2.6028086722362787e-05,
+            -2.9300941605470143e-05,
+            -2.9954384444863535e-05,
+            -3.1082028726814315e-05,
+            -3.231436858186498e-05,
+            -2.9451995942508802e-05,
+            -2.8445163479773328e-05,
+            -2.811595913954079e-05,
+            -2.7891765057574958e-05,
+            -2.8092619686503895e-05,
+            -2.7395739380153827e-05,
+            -2.2633907065028325e-05,
+            -1.1866961358464323e-05,
+            -7.592679139634129e-06,
+            -4.9776517698774114e-06,
+            -2.4928090169851203e-06,
+            1.5722853277111426e-05,
+            -8.809543032839429e-06,
+            -3.365171141922474e-05,
+            -3.327391459606588e-05,
+            -2.4924813260440715e-05,
+            -1.8398142856312916e-05,
+            -1.057160352502251e-05,
+            -3.6814728900935734e-06,
+            3.176908876412199e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       }
+      },
+      {
+       "variable": "F_up",
+       "time": 0.0,
+       "expected": 370.4356994628906,
+       "tolerance": {
+        "rel": 2e-05
+       },
+       "coords": {
+        "rlev": 1
+       }
+      },
+      {
+       "variable": "F_dn",
+       "time": 0.0,
+       "expected": 276.5974426269531,
+       "tolerance": {
+        "rel": 2e-05
+       },
+       "coords": {
+        "rlev": 1
+       }
+      },
+      {
+       "variable": "F_up",
+       "time": 0.0,
+       "expected": 343.8341369628906,
+       "tolerance": {
+        "rel": 2e-05
+       },
+       "coords": {
+        "rlev": 30
+       }
+      },
+      {
+       "variable": "F_dn",
+       "time": 0.0,
+       "expected": 230.87710571289062,
+       "tolerance": {
+        "rel": 2e-05
+       },
+       "coords": {
+        "rlev": 30
+       }
+      },
+      {
+       "variable": "F_up",
+       "time": 0.0,
+       "expected": 207.43858337402344,
+       "tolerance": {
+        "rel": 2e-05
+       },
+       "coords": {
+        "rlev": 60
+       }
+      },
+      {
+       "variable": "F_dn",
+       "time": 0.0,
+       "expected": 11.513612747192383,
+       "tolerance": {
+        "rel": 2e-05
+       },
+       "coords": {
+        "rlev": 60
+       }
+      },
+      {
+       "variable": "F_up",
+       "time": 0.0,
+       "expected": 201.65966796875,
+       "tolerance": {
+        "rel": 2e-05
+       },
+       "coords": {
+        "rlev": 104
+       }
+      },
+      {
+       "variable": "F_dn",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 1e-09
+       },
+       "coords": {
+        "rlev": 104
+       }
+      },
+      {
+       "variable": "htr",
+       "time": 0.0,
+       "expected": 1.0259233713150024,
+       "tolerance": {
+        "rel": 0.0002
+       },
+       "coords": {
+        "rlay": 51
+       }
+      },
+      {
+       "variable": "htr",
+       "time": 0.0,
+       "expected": -0.565402090549469,
+       "tolerance": {
+        "rel": 0.0002
+       },
+       "coords": {
+        "rlay": 52
+       }
+      },
+      {
+       "variable": "htr",
+       "time": 0.0,
+       "expected": -1.5073447227478027,
+       "tolerance": {
+        "rel": 0.0002
+       },
+       "coords": {
+        "rlay": 55
+       }
+      },
+      {
+       "variable": "glw",
+       "time": 0.0,
+       "expected": 276.5974426269531,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "olr",
+       "time": 0.0,
+       "expected": 207.43858337402344,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "rtrn_glw",
+       "time": 0.0,
+       "expected": 276.5974426269531,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "rtrn_olr",
+       "time": 0.0,
+       "expected": 207.43858337402344,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "coupling": [
+  {
+   "type": "variable_map",
+   "from": "RRTMLWColumn.co2vmr",
+   "to": "Col.co2vmr",
+   "transform": "param_to_var",
+   "description": "shared state co2vmr into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "RRTMLWColumn.n2ovmr",
+   "to": "Col.n2ovmr",
+   "transform": "param_to_var",
+   "description": "shared state n2ovmr into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "RRTMLWColumn.ch4vmr",
+   "to": "Col.ch4vmr",
+   "transform": "param_to_var",
+   "description": "shared state ch4vmr into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "RRTMLWColumn.tsk",
+   "to": "Col.tsk",
+   "transform": "param_to_var",
+   "description": "shared state tsk into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "RRTMLWColumn.emiss",
+   "to": "Col.emiss",
+   "transform": "param_to_var",
+   "description": "shared state emiss into the RRTM column setup"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.pavel",
+   "to": "Setcoef.pavel_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM pavel into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tavel",
+   "to": "Setcoef.tavel_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM tavel into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.coldry",
+   "to": "Setcoef.coldry_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM coldry into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colh2o",
+   "to": "Setcoef.colh2o_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM colh2o into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colco2",
+   "to": "Setcoef.colco2_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM colco2 into SETCOEF"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.jp",
+   "to": "GasOpt.jp_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF jp into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.jt",
+   "to": "GasOpt.jt_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF jt into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.jt1",
+   "to": "GasOpt.jt1_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF jt1 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.indself",
+   "to": "GasOpt.indself_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF indself into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.fac00",
+   "to": "GasOpt.fac00_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF fac00 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.fac10",
+   "to": "GasOpt.fac10_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF fac10 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.fac01",
+   "to": "GasOpt.fac01_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF fac01 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.fac11",
+   "to": "GasOpt.fac11_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF fac11 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.forfac",
+   "to": "GasOpt.forfac_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF forfac into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.selffac",
+   "to": "GasOpt.selffac_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF selffac into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.selffrac",
+   "to": "GasOpt.selffrac_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF selffrac into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.co2mult",
+   "to": "GasOpt.co2mult_in",
+   "transform": "param_to_var",
+   "description": "SETCOEF co2mult into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.laytrop",
+   "to": "GasOpt.laytrop",
+   "transform": "param_to_var",
+   "description": "SETCOEF layer count laytrop into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.layswtch",
+   "to": "GasOpt.layswtch",
+   "transform": "param_to_var",
+   "description": "SETCOEF layer count layswtch into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Setcoef.laylow",
+   "to": "GasOpt.laylow",
+   "transform": "param_to_var",
+   "description": "SETCOEF layer count laylow into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colh2o",
+   "to": "GasOpt.colh2o_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount colh2o into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colco2",
+   "to": "GasOpt.colco2_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount colco2 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colo3",
+   "to": "GasOpt.colo3_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount colo3 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.coln2o",
+   "to": "GasOpt.coln2o_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount coln2o into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.colch4",
+   "to": "GasOpt.colch4_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount colch4 into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.coldry",
+   "to": "GasOpt.coldry_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM column amount coldry into the gas optics"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tavel",
+   "to": "Rtrn.tavel_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM tavel into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tz",
+   "to": "Rtrn.tz_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM tz into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.pz",
+   "to": "Rtrn.pz_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM pz into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.cldfrac",
+   "to": "Rtrn.cldfrac_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM cldfrac into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.taucloud",
+   "to": "Rtrn.taucloud_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM taucloud into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.semiss",
+   "to": "Rtrn.semiss_in",
+   "transform": "param_to_var",
+   "description": "MM5ATM semiss into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tbound",
+   "to": "Rtrn.tbound",
+   "transform": "param_to_var",
+   "description": "MM5ATM surface temperature TBOUND into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "GasOpt.pfrac_flat",
+   "to": "Rtrn.pfrac_flat_in",
+   "transform": "param_to_var",
+   "description": "gas optics pfrac_flat (g-point fastest) into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "GasOpt.itr_flat",
+   "to": "Rtrn.itr_flat_in",
+   "transform": "param_to_var",
+   "description": "gas optics itr_flat (g-point fastest) into RTRN"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tz",
+   "to": "RRTMLWColumn.col_tz_in",
+   "transform": "param_to_var",
+   "description": "expose Col.tz"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tavel",
+   "to": "RRTMLWColumn.col_tavel_in",
+   "transform": "param_to_var",
+   "description": "expose Col.tavel"
+  },
+  {
+   "type": "variable_map",
+   "from": "Col.tbound",
+   "to": "RRTMLWColumn.col_tbound_in",
+   "transform": "param_to_var",
+   "description": "expose Col.tbound"
+  },
+  {
+   "type": "variable_map",
+   "from": "Rtrn.F_up",
+   "to": "RRTMLWColumn.F_up_in",
+   "transform": "param_to_var",
+   "description": "expose Rtrn.F_up"
+  },
+  {
+   "type": "variable_map",
+   "from": "Rtrn.F_dn",
+   "to": "RRTMLWColumn.F_dn_in",
+   "transform": "param_to_var",
+   "description": "expose Rtrn.F_dn"
+  },
+  {
+   "type": "variable_map",
+   "from": "Rtrn.htr",
+   "to": "RRTMLWColumn.htr_in",
+   "transform": "param_to_var",
+   "description": "expose Rtrn.htr"
+  },
+  {
+   "type": "variable_map",
+   "from": "Rtrn.glw",
+   "to": "RRTMLWColumn.rtrn_glw_in",
+   "transform": "param_to_var",
+   "description": "expose Rtrn.glw"
+  },
+  {
+   "type": "variable_map",
+   "from": "Rtrn.olr",
+   "to": "RRTMLWColumn.rtrn_olr_in",
+   "transform": "param_to_var",
+   "description": "expose Rtrn.olr"
+  },
+  {
+   "type": "variable_map",
+   "from": "RRTMLWColumn.F_up_model",
+   "to": "Heat.F_up_in",
+   "transform": "param_to_var",
+   "description": "RTRN F_up at the model interfaces into the heating-rate component"
+  },
+  {
+   "type": "variable_map",
+   "from": "RRTMLWColumn.F_dn_model",
+   "to": "Heat.F_dn_in",
+   "transform": "param_to_var",
+   "description": "RTRN F_dn at the model interfaces into the heating-rate component"
+  },
+  {
+   "type": "variable_map",
+   "from": "Heat.dTdt",
+   "to": "RRTMLWColumn.dTdt_in",
+   "transform": "param_to_var",
+   "description": "expose Heat.dTdt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Heat.dthdt",
+   "to": "RRTMLWColumn.dthdt_lw_in",
+   "transform": "param_to_var",
+   "description": "expose Heat.dthdt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Heat.glw",
+   "to": "RRTMLWColumn.glw_in",
+   "transform": "param_to_var",
+   "description": "expose Heat.glw"
+  },
+  {
+   "type": "variable_map",
+   "from": "Heat.olr",
+   "to": "RRTMLWColumn.olr_in",
+   "transform": "param_to_var",
+   "description": "expose Heat.olr"
+  }
+ ]
+}
