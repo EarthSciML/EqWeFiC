@@ -802,6 +802,140 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     1e-3 relative RMS, state within 0.5 K / 5 % qv at 24 h). Then 3-D
     idealized cases (`em_hill2d_x`, `em_quarter_ss`).
 
+    **What the reference case prescribes vs. computes (established 2026-09-07).**
+    `data/eqwefic/scm_ref` runs with `scm_force = 0`, and `force_scm`'s third
+    executable statement is `IF (scm_force .EQ. 0) return`
+    (`dyn_em/module_force_scm.F:183`), so **no** large-scale advective tendency,
+    subsidence, geostrophic-wind forcing or nudging is applied, and the
+    `scm_th_adv` / `scm_qv_adv` / `scm_wind_adv` / `scm_vert_adv` flags are read
+    only after that early return. `force_ideal.nc` is opened and "processed"
+    (auxinput3 has no `scm_force` guard in `share/mediation_integrate.F:350`)
+    but nothing is read from it: the forcing fields sit behind
+    `package scmopt scm_force==1` (`Registry/Registry.EM_COMMON:3322`), so they
+    are never appended to `grid%tail_statevars`, which is the list
+    `share/input_wrf.F:1296` walks. The column is therefore free-running under
+    its physics — but it is *not* physics-only. A faithful single-column
+    EqWeather must take as **prescribed input**:
+    - the initial sounding and the stretched eta grid
+      `eta(k) = 1 - (e^((k-1)/40) - 1)/(e^(59/40) - 1)`
+      (`dyn_em/module_initialize_scm_xy.F:322-331`), `p_top = 17761.31 Pa`,
+      `mu = 79438.7 Pa` constant for the whole run. Note theta below 200 m is
+      the constant-extrapolated 286 K (`module_init_utilities.F:66-71`), not
+      the sounding's 288 K surface line;
+    - lat 37.6 / lon -96.7 / 1999-10-22 19:00 UTC, giving `f = 8.899e-5`,
+      `e = 1.1554e-4` and a real diurnal zenith angle (`radt = 0`, so radiation
+      runs every step; `module_radiation_driver.F:1119-1123`, `:3514-3541`);
+    - **the geostrophic wind (3, -9) at every level**, supplied implicitly by
+      `pert_coriolis` through `u_base`/`v_base`
+      (`dyn_em/module_em.F:747`, `module_big_step_utilities_em.F:3854-4171`).
+      Plain Coriolis on the total wind gives the wrong trajectory;
+    - **the Rayleigh sponge** above `ztop - zdamp` ~ 7 km, relaxing u, v, w and
+      theta to the initial sounding with `dampcoef = 0.003`
+      (`module_em.F:933-943`, `module_big_step_utilities_em.F:5836-6110`).
+      This is the largest non-physics term and cannot be dropped;
+    - constant surface properties from the USGS cat-2 **WINTER** row of
+      `LANDUSE.TBL` (Oct 22 = day 295, `module_physics_init.F:1959-1960`):
+      albedo 0.20, emiss 0.92, z0 0.05 m, mavail 0.60, thc 0.04, so
+      `capg = 5.9114e7 * thc` (`phys/module_sf_slab.F:387`);
+    - soil grid `dzs = 0.01/0.02/0.04/0.08/0.16`, `zs = 0.005/0.02/0.05/0.11/0.23`
+      (`share/module_soil_pre.F:1078-1126`, which *discards* `input_soil`'s
+      profile under `sf_surface_physics = 1`), with `TSLB(5)` frozen as the
+      lower BC (`module_sf_slab.F:470`) and `TMN` a pure IC (its `HM` term is
+      used only in the `num_soil_layers == 1` branch, `:455-457`).
+    Everything the dynamical core contributes to *transport* is identically
+    zero: `ww == 0` exactly for a horizontally uniform periodic column
+    (`calc_ww_cp`, `module_big_step_utilities_em.F:640-782`), so there is no
+    coordinate vertical advection; horizontal advection and diffusion vanish on
+    the 2x2 periodic mass grid; and the `km_opt = 2` TKE closure runs but is
+    **inert**, because `vertical_diffusion_2` sits behind
+    `IF (config_flags%bl_pbl_physics .eq. 0)`
+    (`dyn_em/module_first_rk_step_part2.F:1023-1025`) and YSU is 1. So
+    EqWeather-SCM = the six physics schemes + a Rayleigh-sponge component + a
+    perturbation-Coriolis component + a 1-D fixed-mu column-geometry component
+    (w != 0 even though ww == 0). No advection operator, no horizontal
+    diffusion, no TKE closure.
+
+    **Reference trajectory.** `data/eqwefic/scm_ref_traj/` (`.npz` + CSVs), read
+    by `tools/scm_ref_traj.py`. **60 hourly frames, t = 0 to 59 h**; the column
+    is bitwise horizontally uniform at every level and time, so a single column
+    is exact, not approximate. Dry and cloud-free in the PBL (no precipitation
+    for 59 h). Signal against which the acceptance criteria must be read:
+    lowest-level Tk swings 7.1 K over the first day with a +1.65 K net drift,
+    TSK 11.5 K; qv at the lowest level rises **+93 %** (0.00250 -> 0.00483) in
+    24 h, almost all of it in the first 6 h. So 0.5 K is ~7 % of the diurnal
+    amplitude and 5 % qv is ~10 % of the change actually produced — meaningful
+    but forgiving. Caveats: every 2 m / 10 m diagnostic is zero in the t = 0
+    frame (compare at the lowest model level, z = 25.59 m); `SMOIS`/`SH2O` are
+    identically zero (slab has no prognostic soil moisture); `GRDFLX` is
+    identically zero for all 59 h, so the surface energy budget cannot be closed
+    from the history.
+
+    **The test shape works (settled 2026-09-07 by probe, not by reading the
+    schema).** A 24 h trajectory assertion **is** expressible as an esm 6.6
+    inline test and the Rust CLI integrates it accurately. `time_span` may be
+    `{start: 0, end: 86400}` and assertions may name any `time` in that span;
+    the runner integrates once per *test* (not per assertion, measured) and
+    interpolates. Cross-validated against SciPy LSODA at rtol 1e-12 on a
+    59-level column: BDF agrees to 1.5e-7 K at 24 h, ERK to 3e-8 K, SDIRK to
+    1e-6 K — six orders below the 0.5 K criterion, so the integrator is not the
+    limiting factor. Confirmed working at a late time: `coords` point sampling;
+    `reduce: mean/integral/max/min`; `reduce: L2_error` / `Linf_error` against
+    both an inline `const` array and `reference: {type: "from_file"}`; `t` as
+    simulation time in an equation (so the diurnal cycle is expressible); an
+    `ic` op equation for a non-uniform 59-level initial profile (array ICs
+    cannot go through `initial_conditions`, which the schema restricts to
+    scalars). Negative controls fail as they must.
+    Therefore the plan's criteria map onto assertions directly:
+    **state within 0.5 K at 24 h** = `reduce: "Linf_error"` with a `from_file`
+    profile and `tolerance: {abs: 0.5}` (verified: perturbing one level of the
+    reference by 0.6 K flips it to FAIL); **5 % qv** = `reduce: "L2_error"`
+    (which is *relative* L2) with `tolerance: {abs: 0.05}`. The one criterion
+    that does **not** map is "tendencies within 1e-3 relative RMS" *over the
+    trajectory*: `reduce` is spatial-only at a single `time`, and there is no
+    temporal reduction. Write it as N per-hour `L2_error` assertions on the
+    tendency (relative RMS over the column at each hour) instead of one.
+
+    **Prototype (2026-09-07).** `components/land_surface/slab/slab.esm` turned
+    out **not** to be steppable: it has no `D(T_s, t)` equation — `T_s` is
+    algebraic (`T_s = input_T_s()`) and `dTs_dt` is a pure observed, so the
+    whole component is an instantaneous-tendency calculator. (Only `ysu.esm`,
+    `rrtm_lw_heating.esm` and `dudhia_sw.esm` carry `D(..., t)` today.) The
+    prototype was therefore built as a standalone steppable soil column
+    (`data/eqwefic/phase3_probes/proto_soil.esm`, not committed: it duplicates
+    slab's physics and so must not enter `couplings/`): WRF's soil heat equation
+    over layers 2-4, top node prescribed from the reference hourly TSK,
+    bottom pinned at TMN, stepped 24 h and asserted against the run's own TSLB.
+    It is **green at 0.5 K with ~12x margin**; the achievable tolerance is
+    **abs 0.05 K** (passes at 0.05, fails at 0.02), and the residual is
+    dominated by hourly sampling of the prescribed forcing, not by the physics
+    or the integrator — max error is 0.04 K at 24 h but 0.45 K mid-window during
+    rapid transitions. **So assert at fixed checkpoints, not at every hour**, or
+    dump the forcing at model resolution.
+
+    **Three upstream blockers found (repros in `data/eqwefic/phase3_probes/`).**
+    (s) `SolveOptions::maxiters` is pinned at its 10 000 default by the
+    inline-test runner (`pkg/earthsci-ast-rs/src/bin/esm.rs:3719`, `..Default::default()`)
+    and there is no CLI flag and no document field for it. A *scalar* ODE with
+    600 s structure already exceeds it between a 54 000 s span (passes) and a
+    57 600 s span (`solver retcode MaxIters`) — `repro_maxiters.esm`. Stiffness
+    alone is fine (BDF absorbs a 59-level column at surface-layer stiffness over
+    24 h), so the risk is *non-smooth* RHS structure — WSM6 saturation
+    adjustment, radiation switching at sunrise — not stiffness.
+    (t) `table_lookup` over a top-level `function_tables` entry does not
+    evaluate: `unevaluable_operator` in the array interpreter, and **silently
+    NaN** in the scalar one, although esm-spec 4.2 says it lowers at load time
+    to `interp.linear`. The primitive itself works, so prescribed time-series
+    forcing must be spelled `{"op": "fn", "name": "interp.linear",
+    "args": [values, axis, "t"]}` for now — `repro_table_lookup.esm`.
+    (u) The array/DAE build is **fragile over long spans**: two documents
+    identical except for one extra bare-alias equation (`Tsfc = Tsfc_raw`)
+    differ between green at 24 h and `diffsol: Exceeded maximum number of
+    nonlinear solver failures` within 60 s, on all three solvers —
+    `delta_direct.esm` vs `delta_split.esm`. Other semantically neutral
+    restructurings flip it back. This is the biggest risk to 3.1: a 24 h
+    EqWeather run may fail for reasons unrelated to physics. File before
+    building the coupled 24 h test.
+
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
     wind, pressure, and temperature plus the numerics that step them. Per the
