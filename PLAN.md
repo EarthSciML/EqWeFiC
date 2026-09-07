@@ -382,8 +382,12 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   (new domain `land_surface/`), #18 ysu, #19 wsm6, #20 dudhia_sw and #21
   rrtm_lw stages 1–3 (new domain `atmospheric_radiation/`; refreshed 2026-09-06
   after stage 3, 888 assertions); #18 and #21 refreshed again with the additive
-  `<x>_in` coupling-target parameters (EqWeFiC 0496f20); each component PR
-  carries the lib files and is self-contained. ESD rules are referenced by
+  `<x>_in` coupling-target parameters (EqWeFiC 0496f20); #19 refreshed
+  2026-09-07 to 790 assertions (mass conservation), head 7faecd0; each
+  component PR carries the lib files and is self-contained. EarthSciModels'
+  own CLAUDE.md (upstream b7912bc) forbids `Co-Authored-By: Claude ...`
+  trailers, so branches there must drop them (keep `Claude-Session:`);
+  branches opened before 2026-09-07 still carry one. ESD rules are referenced by
   relative sibling path because the Rust CLI does not expand `${ESD_ROOT}` in
   template imports. Merge conditions (not ours to address): ESD #34/#35/#36
   merged and reachable from CI, EarthSciAST #177 + EarthSciModels #2 for the
