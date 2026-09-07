@@ -720,12 +720,68 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   and leaves clear and pure-overcast green; removing the TAUCLOUD override fails
   all four new RRTMColumn regimes. No esm expressiveness gap: there is no
   CLDPROP and no RTRNMR in `phys/module_ra_rrtm.F` (RTRNMR is RRTMG's, a
-  deferred row), and every term of loops 220/2000/4000 is expressible. Still
-  untested: the liquid, rain and snow optical-depth terms (ABCW = 0.144,
-  ABRN = 0.330e-3, ABSN = 2.34e-3) -- the SCM reference case is ice-only
-  (QCLOUD = QRAIN = QSNOW = QGRAUP = 0 for the whole 59 h), so a warm- or
-  mixed-phase case with radiation on (e.g. em_quarter_ss with
-  ra_lw_physics = 1) would be needed to exercise them.
+  deferred row), and every term of loops 220/2000/4000 is expressible.
+  Warm and mixed-phase cloud optics done 2026-09-07, closing the last gap:
+  the liquid, rain and snow coefficients (ABCW = 0.144, ABRN = 0.330e-3,
+  ABSN = 2.34e-3) were transcribed but unverified because the em_scm_xy
+  reference case is ice-only. New case `data/eqwefic/qss_rad`: the idealized
+  supercell em_quarter_ss (WSM6, Weisman-Klemp sounding, 41 x 41, dx = 2 km,
+  dt = 6 s, 1 h) with `ra_lw_physics = 1` and `ra_sw_physics = 1` (WRF aborts
+  on LW without SW) -- but NOT on its stock grid: esm inline tests have no
+  metaparameter overrides (`esm-schema.json` `$defs/Test`), so a new regime must
+  land on the component's NLEV = 59 / NBUF = 44 column, which pins e_vert = 60
+  and p_top in [174, 178) hPa; `ztop = 12800 m` gives p_top = 177.07 hPa
+  (NLAYERS = 103, the SCM's exactly), found by running `ideal.exe` at four
+  ztop values. Second obstacle: the hooks dumped only tile column `its`, the
+  western domain edge, never the storm; fork commit 5cb62da adds
+  `esm_dump_col`/`ESM_DUMP_I` to `module_esm_dump` and an `i_col` record to the
+  RRTM hook. Three RRTMColumn regimes (rrtm_column 480 -> 691 assertions) and
+  one RTRNSweep regime (196 -> 224), rrtm_lw 1212 -> 1451: a pure WARM LIQUID
+  cloud (call 61 = radiation call 2, j = 20, i = 20; qi = qr = qs = 0
+  everywhere, TAUCLOUD 1.26-6.43 in layers 10-15 = ABCW CLWP alone), a
+  MIXED-PHASE storm column (call 268, j = 22, i = 20; 57 cloudy layers,
+  TAUCLOUD <= 18.74, with layers 1-10 pure rain, 11-19 liquid + rain, 22-33 all
+  four terms, 39-41 pure ice and 51-54 snow-dominated), and an ICE-AND-SNOW
+  ANVIL (call 396, j = 27, i = 40; no liquid and no rain, layers 17-30 pure
+  snow with TAUCLOUD 0.047-0.465 = ABSN PIWP alone, layers 51-53 pure ice).
+  The RTRNSweep regime is the opaque limit the SCM never reaches:
+  ABSCLD = 1 - exp(-1.66 TAUCLOUD) is 1 to 3e-14 in 25 layers (SCM maximum
+  0.72), glw 451.1 against a clear-sky 405.7 W/m^2, olr 160.5 against 259.5,
+  HTR - HTRC = 41.0 K/day. Residuals (real32, rel 1e-5 contract): TAUCLOUD Linf
+  8.5e-7 / 3.1e-6 / 6.4e-8 on column maxima 6.43 / 18.74 / 1.04 (<= 1.4e-7
+  relative at every spot-check layer) with tolerances abs 1e-5 / 3e-5 / 1e-6,
+  10-16x those floors and 1e-6 of each maximum; colh2o needed abs 1.5e-3
+  instead of the SCM's 2e-4 because the tropical column holds 131 cm^-2; the
+  RTRN fluxes agree to Linf 2.2e-4 W/m^2 and HTR/HTRC to 2.6e-4 K/day.
+  Mutation-checked at +10 % on each coefficient: ABCW fails 10 assertions (7
+  liquid, 3 mixed), ABRN 6 (5 mixed, 1 anvil), ABSN 12 (8 anvil, 4 mixed) and
+  ABICE 22 (8 anvil, 5 mixed, 9 spread over the eight SCM regimes); the SCM
+  regimes stay green under ABCW/ABRN/ABSN and the RTRNSweep tests never move,
+  because they take TAUCLOUD as a dumped input.
+  Cross-checks: re-running the archived SCM case with the rebuilt binary
+  reproduces 119 of the 122 variables of `scm_ref2_120.json` BIT-FOR-BIT (the
+  three that differ are uninitialised above LAYTROP, B9); the four dump passes
+  with different `ESM_DUMP_I` give bit-identical row arrays and a wrfout whose
+  md5 matches the no-dump scan run; and each dumped 1-D column equals the tile
+  array at the selected i exactly (p3d only to 2.9e-5 hPa, the real32 Pa -> hPa
+  division). New Fortran findings: B9 (SETCOEF leaves SELFFAC/SELFFRAC/INDSELF
+  undefined above LAYTROP; unread by TAUGB, but it is why three dump variables
+  are not build-reproducible) and N62 (MM5ATM takes QG and never uses it -- no
+  graupel term and no ABGR in TAUCLOUD, while the supercell carries up to
+  1.3e-2 kg/kg of graupel). Nothing in the cloud-optics block is now untested
+  except the graupel that WRF itself discards. The nine coupled documents that
+  mount RRTM were re-run unchanged after the additions: `rrtm_lw_column*` 5 x
+  25/25, `radiation_column{,_night}` 2 x 30/30, `physics_column{,_night}` 2 x
+  40/40. No coupled supercell regime was added -- the RRTM coupling documents
+  have no `.fill.json` sidecar and their mount-edge libraries would have to be
+  rebuilt by hand; the end-to-end chain is still covered by the SCM regimes.
+  EarthSciModels PR #21 refreshed the same day: branch `eqwefic/rrtm-lw` kept
+  its three commits off 7259fd8 (base `main`, duplicated `lib/`), the tip
+  amended with the new content, all three messages rewritten to drop the
+  `Co-Authored-By: Claude` trailer (upstream b7912bc forbids it) and keep
+  `Claude-Session:`, force-pushed with `--force-with-lease`; verified 1463/1463
+  from a clean worktree at `code/EarthSciModels-rrtmlw`, a sibling of
+  `EarthSciDiscretizations` so the `../../../../` refs resolve.
 
 ## 4. Phase 2 — physics and subassemblies
 
