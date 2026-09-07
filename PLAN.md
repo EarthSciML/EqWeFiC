@@ -606,10 +606,9 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   added to `rrtm_column.esm` as the O3DATA layer integral (240 assertions) and
   WRF's off-by-one ozone layer confirmed (B5). Residuals: taug ≤ 2e-7 of band
   maxima, pfrac ≤ 9e-8, itr exact up to quantisation flips. Remaining:
-  mounting setcoef → gas optics → rtrn_sweep → heating into one RRTMLW
-  assembly (Phase 2 subassembly; each interface is currently fed from the
-  dumps), and the RTRN cloud-overlap path in regimes with fractional cloud
-  (all SCM clouds are overcast).
+  nothing at the stage level. (The 2026-09-06 note that "all SCM clouds are
+  overcast" was wrong: calls 600 and 1440 already carried fractional layers
+  of 0.015-0.037.)
   End-to-end assembly done 2026-09-06: `couplings/rrtm_lw_column*.esm` chain
   the five stages as top-level ref mounts; each stage keeps its `input_<x>`
   rewrite targets and gained shaped `<x>_in` coupling-target parameters
@@ -628,6 +627,43 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   time before document couplings are applied (`E_TREEWALK_CONSTARRAY_OOB` with
   the coupled temperature = 0); wrapping the table in an aggregate defers it
   (`rtrn_sweep.esm` `totplnk`; repro `esm-repro/assemblies/rrtm/`).
+  Cloud-overlap regimes done 2026-09-07. RTRN's cloudy branch and MM5ATM's
+  cloud block were already transcribed; what was missing was coverage. Four
+  regimes added (324 component assertions, rrtm_lw 888 -> 1212, plus one coupled
+  document): optically thick overcast (call 120, 7 layers, TAUCLOUD <= 0.760,
+  ABSCLD <= 0.72, HTR - HTRC = 25 K/day), fractional cloud (call 240, layer 55
+  CLDFRAC = 0.1470 at TAUCLOUD = 0.009966), the zero-fraction override (call
+  396, CLDFRA = 0 with TAUCLOUD = 0.01072 handed to RTRN as overcast) and a
+  three-layer fractional overlap (call 648). Key finding (N58): MM5ATM's
+  `IF (TAUCLOUD > 0.01) CLDFRC = 1` (`module_ra_rrtm.F:4254`) means RTRN can
+  only ever see 0 < CLDFRAC < 1 where the cloud optical depth is at or below
+  0.01, so the fractional branch is reachable only with ABSCLD <= 0.0165; call
+  240 sits exactly at that ceiling and is the strongest fractional case the
+  scheme admits. References came from re-running the existing em_scm_xy case
+  for 8 h with 71 calls dumped (`data/eqwefic/scm_cloud`, dumps
+  `dumps/scm_cloud_raw`, 97 MB); the re-run reproduces `scm_ref2_120.json`
+  bit-for-bit, so it is the same trajectory and no fork change was needed.
+  Residuals (real32, rel 1e-5 contract): fluxes Linf <= 2.5e-4 W/m^2, band
+  fluxes <= 1.5e-5, Planck <= 2.2e-10, HTR/HTRC <= 4.3e-4 K/day, TAUCLOUD
+  <= 7.8e-8 on a column maximum of 0.760 (so the thick regime's taucloud
+  tolerance is abs 1e-6, not the 1e-8 of the thin ones), CLDFRAC exact; the HTR
+  spot checks of the fractional regimes use rel 2e-4 rather than 1e-4 because
+  |HTR| there is only 0.6-1.8 K/day. `couplings/rrtm_lw_column_call240.esm`
+  adds the fractional regime end-to-end (25/25, residuals <= 1.5e-4 W/m^2,
+  2.8e-4 K/day, 3.4e-9 K/s); the overcast regime was already covered end-to-end
+  by `couplings/radiation_column.esm`/`physics_column.esm` (call 120) and the
+  weak fractional one by their `_night` variants (call 600), so no other coupled
+  document needed a new regime. Mutation-checked: replacing EFCLFRAC =
+  ABSCLD*CLDFRAC by ABSCLD fails 16/28 assertions in each new fractional regime
+  and leaves clear and pure-overcast green; removing the TAUCLOUD override fails
+  all four new RRTMColumn regimes. No esm expressiveness gap: there is no
+  CLDPROP and no RTRNMR in `phys/module_ra_rrtm.F` (RTRNMR is RRTMG's, a
+  deferred row), and every term of loops 220/2000/4000 is expressible. Still
+  untested: the liquid, rain and snow optical-depth terms (ABCW = 0.144,
+  ABRN = 0.330e-3, ABSN = 2.34e-3) -- the SCM reference case is ice-only
+  (QCLOUD = QRAIN = QSNOW = QGRAUP = 0 for the whole 59 h), so a warm- or
+  mixed-phase case with radiation on (e.g. em_quarter_ss with
+  ra_lw_physics = 1) would be needed to exercise them.
 
 ## 4. Phase 2 — physics and subassemblies
 
