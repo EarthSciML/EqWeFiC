@@ -19,3 +19,5 @@ Some components may already have implementations in EarthSciModels. If so, add a
 Keep a centralized list of any bugs or errors that are found in the fortran code.
 
 Do not store anything large in /tmp, as it is backed by RAM rather than hard drive and can cause an OOM.
+
+Do not put "Co-Authored-By: Claude ..." in any commit messages. Claude is an LLM and LLMs cannot take responsibility for outputs, therefore they cannot be authors.
