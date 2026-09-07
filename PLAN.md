@@ -554,7 +554,18 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   column and the 59-cell atmospheric column — is NOT filed separately: it is
   already #198 item 4 and EarthSciAST **PR #213** (`index_set_rename` on the
   mount edge) is open against it, quoting this exact soil/atmosphere case.
-  That PR grants `prefix`/`rename` at a §4.7 subsystem edge (esm-spec §9.7.7 grants
+  A THIRD symptom of the same root was found while checking that and filed as
+  EarthSciAST issue #239: mounting a component in a document that merely
+  declares a metaparameter of the same name silently overrides the component's
+  own default, with NO `bindings` on the mount edge and no diagnostic. Slab
+  (4 soil layers, `NLEV` default 4) mounted alone under a document `NLEV` of 59
+  loads and then fails 8 of its own 84 assertions with WRONG NUMBERS — the
+  deep-reservoir assertion that should be exactly 0 reads 0.0514, and the
+  tendency is off by ~600x — with nothing pointing at the grid. Declaring
+  `bindings` explicitly and omitting it are indistinguishable. Every column
+  component here names its size metaparameter `NLEV`, so any assembly mounting
+  two at different resolutions silently resolves both to one number.
+  PR #213 grants `prefix`/`rename` at a §4.7 subsystem edge (esm-spec §9.7.7 grants
   those three fields to `expression_template_imports` only;
   esm-schema.json `$defs/SubsystemRef` has `ref`/`model`/`reaction_system`/
   `bindings`/`expression_template_imports` and nothing else).
