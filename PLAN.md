@@ -367,9 +367,11 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     dropped; mounted components' inline tests re-run under coupling; top-level
     mounts don't merge leaf index sets; subsystem parameters not settable from
     a parent test (PR #179). Repros: `data/eqwefic/esm-repro/assemblies/`.
-    Remaining: the full-physics-sum assembly with microphysics (dumps exist);
-    the other six dumped steps as additional regimes; tighten the fork's RRTM
-    hook gating (N39). Microphysics-step assembly done 2026-09-07 (below).
+    Remaining: the other four dumped steps as additional regimes; tighten the
+    fork's RRTM hook gating (N39). Microphysics-step assembly done 2026-09-07
+    and the full SCM physics-suite assembly done 2026-09-07 (both below); the
+    full-physics-sum assembly WITH microphysics in one document is blocked, not
+    outstanding work — gap (m) below.
 1.5 Stubs live on this repo's `main` under `components/<domain>/…` mirroring
     the EarthSciModels layout. They are *not* opened as EarthSciModels PRs
     until their tests pass (finding 9).
@@ -526,6 +528,47 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   compared against the folded subsystem declaration, so `lev` must be sized by
   the literal 40 and not by the document's `NLEV` metaparameter, or the load
   fails with `[subsystem_index_set_conflict]` (EarthSciAST #198).
+- **Gap (m) is only HALF resolved (measured 2026-09-07).** The literal-size
+  workaround above works only in a document where EVERY contributor of an axis
+  arrives FOLDED. An index set that a mounted component obtained through an
+  `expression_template_imports` edge (YSU, Dudhia and slab all take `lev` from
+  the EarthSciDiscretizations `column_nonuniform_1d` grid that way) is
+  re-exported to the mounting document UNFOLDED, as `size: "NLEV"` under the
+  CHILD's metaparameter name — so the document must declare a metaparameter
+  literally called `NLEV` and must NOT declare `lev` itself. A folded literal
+  and that symbolic form are not deep-equal, so the two cannot meet: mounting
+  any WSM6 stage that carries the `sd`/`sat` subsystem (melting_freezing,
+  cold_accretion, ice_deposition, saturation_adjustment) beside YSU fails with
+  `[template_import_index_set_conflict] models.Pbl` EVEN AT THE SAME SIZE
+  (probed at NLEV = 40 and 59; also with `NLEV` threaded into the nested
+  subsystem edge, with the document declaring `lev` symbolically or literally,
+  and with a renamed grid injected at the mount edge). Per esm-spec §4.7 a
+  subsystem ref's registry should be "fully concrete when it splices in", so
+  this is a Rust-CLI deviation from the spec, not an authoring mistake. Gap (n)
+  — two components needing the SAME axis name at DIFFERENT sizes, the 4-cell
+  soil column and the 59-cell atmospheric column — remains open on top of it
+  and needs `prefix`/`rename` on a §4.7 subsystem edge (esm-spec §9.7.7 grants
+  those three fields to `expression_template_imports` only;
+  esm-schema.json `$defs/SubsystemRef` has `ref`/`model`/`reaction_system`/
+  `bindings`/`expression_template_imports` and nothing else).
+- **SCM physics-suite assembly done 2026-09-07.**
+  `couplings/scm_physics_column{,_night}.esm` mount SfclayRev, YSU, the five
+  RRTM stages and DudhiaSW (8 mounts, 133 `variable_map` edges) at two regimes
+  the earlier `physics_column` pair does not cover — step 1410 (midday, the
+  run's strongest forcing: gsw 550 W/m², hfx 174, h 926 m) and step 900 (deep
+  stable night: gsw exactly 0, hfx −19, h 263 m) — and assert WRF's
+  DRIVER-LEVEL tendency vector, including `rqcblten`/`rqiblten` for the first
+  time. 2 × 42/42 with `./esm test --model ScmPhysicsColumn <file>`. The seven
+  dumps of a step are merged into one namespace by `tools/merge_dumps.py`
+  because `tools/fill_tests.py` admits two per test. Residuals (zero-tolerance
+  run): surface-layer outputs ≤ 1.9e-6 relative by day and ≤ 2.5e-5 at night
+  (the stable regime's real32 floor), h 6.4e-7 / 3.5e-6, K_h/K_m Linf 2.3e-4 /
+  2.3e-5 m²/s, longwave fluxes ≤ 6.2e-4 W/m², dthdt_lw and rthraten ≤ 5.9e-9
+  K/s, gsw/glw/olr ≤ 1.4e-6 relative, PBL tendencies at the
+  implicit-vs-instantaneous gap (30 % of the column max by day, 2 % at night;
+  asserted loosely as in `physics_column`). Every tolerance is the smallest of
+  {1, 2, 5}×10^k ≥ 5× the measured residual. Slab and WSM6 are not in the
+  document — see gap (m) above, not a physics limitation.
 - **Thermo consolidation done.** `exner_function`,
   `bolton_saturation_vapor_pressure`, `bolton_saturation_mixing_ratio` and
   `dry_air_density` moved into `lib/wrf_thermo.esm` from slab, sfclayrev, ysu,
@@ -927,14 +970,23 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     to `interp.linear`. The primitive itself works, so prescribed time-series
     forcing must be spelled `{"op": "fn", "name": "interp.linear",
     "args": [values, axis, "t"]}` for now — `repro_table_lookup.esm`.
-    (u) The array/DAE build is **fragile over long spans**: two documents
-    identical except for one extra bare-alias equation (`Tsfc = Tsfc_raw`)
-    differ between green at 24 h and `diffsol: Exceeded maximum number of
-    nonlinear solver failures` within 60 s, on all three solvers —
-    `delta_direct.esm` vs `delta_split.esm`. Other semantically neutral
-    restructurings flip it back. This is the biggest risk to 3.1: a 24 h
-    EqWeather run may fail for reasons unrelated to physics. File before
-    building the coupled 24 h test.
+    (u) A semantically inert alias between two `unknown`s breaks the solve
+    once the system passes a size threshold — EarthSciAST issue #234, filed
+    2026-09-07. Two documents identical except for one extra bare-alias
+    equation (`Tsfc = Tsfc_raw`): `delta_direct.esm` is green, `delta_split.esm`
+    errors with `diffsol: Exceeded maximum number of nonlinear solver failures`
+    on all three solvers. Characterised by sweeping `lev`: both pass at sizes
+    3-58, the split form fails from 59 upward, and the direct form is still
+    green at 70 (141 unknowns, MORE than the failing split system's 120), so
+    neither the alias nor the size is sufficient alone. NOT a long-horizon
+    effect: the failure time is identical (t = 39.763 s) at every size and
+    every span, including a 60 s span — the earlier "fragile over long spans"
+    reading was wrong. This is still the biggest risk to 3.1, because both of
+    this repo's own conventions produce the shape: components are factored and
+    imported by reference, and the `<x>_in` + mount-edge + `variable_map`
+    coupling pattern is a chain of pass-throughs over a 59-level column. Every
+    inline test here asserts instantaneous derivatives over a ~1 s span, so
+    none of them exercise it; the first long single-column integration would.
 
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
