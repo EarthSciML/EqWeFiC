@@ -531,11 +531,29 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   evaluates to 0, so Vdot cannot be asserted at t=0; bare
   `parameter_overrides` resolve per component in Rust but document-wide in
   Python (model parameter renamed `M_air` after a one-off gate check).
-  Remaining: Vdot/stoichiometry verification once (p)/(q) are fixed; a
-  WRF-Chem reference run (chem-enabled WRF build with KPP, emissions/
-  photolysis inputs, dump hooks in `chem/chem_driver.F` around the KPP
-  mechanism driver); RADM2SORG/aerosol; emissions, Wesely and FastJX
-  couplings (FastJX covers 10 of 21 j inputs; Wesely ≈20 species).
+  WRF-Chem reference run done (2026-09-06): chem-enabled WRF built in
+  `apptainer/wrf-chem-build.sif` (recipe `tools/apptainer/wrf-chem-build.def`;
+  flex/bison, two KPP-2.1 Makefile patches, WRF_CHEM=1 WRF_KPP=1, compile twice
+  — N57), idealized `em_scm_xy` column `data/eqwefic/chem_scm` with
+  `chem_opt = 101` (the KPP RADM2; `chem_opt = 1` is the hand-coded
+  `module_radm.F`), `phot_opt = 1`, `emiss_opt = 0`, `chem_in_opt = 0`, 59 h,
+  59 levels. Dumps of the KPP interface (`var`, `fix`, `RCONST(1:156)`,
+  `jv(1:52)`, TEMP, C_M, C_H2O, rc_n2o5, p, rho, qv, pre/post-INTEGRATE `var`)
+  through the six `kpp_mechd_*_radm2.inc` coupler hooks, fork
+  `ctessum-claude/WRF` branch `earthsciml-instrumented-chem` @ 2ce0388 —
+  the only insertion points the KPP coupler offers inside the k loop.
+  `radm2.esm` gained a fourth regime `wrfchem_scm_midtrop_rate_constants`
+  (135 assertions, level 45, T = 254.7 K): 540/540 green at rel 1e-9. The KPP
+  interface promotes t_phy/rho_phy/ph_* to real64 before Update_Rconst, so the
+  single-precision WRF build does NOT force rel 1e-5 on the rate coefficients;
+  only rc_n2o5 is real32 (rel 1e-6). Cross-check: WRF-Chem and box-driver
+  RCONST agree bit-for-bit at 5 of 6 dumped levels. The run's SPECIES are not
+  usable as a reference: bug B8 (CO2 missing from the interface copy loops)
+  poisons the KPP vector at call 3 and the Rosenbrock fails for the rest of
+  the run. Remaining: Vdot/stoichiometry verification once (p)/(q) are fixed;
+  a WRF-Chem species trajectory once B8 is patched; RADM2SORG/aerosol;
+  emissions, Wesely and FastJX couplings (FastJX covers 10 of 21 j inputs;
+  Wesely ≈20 species).
 - **RRTM LW stage 1 done.** Heating-rate convention proved:
   `HTR(L−1) = HEATFAC (FNET(L−1) − FNET(L))/(PZ(L−1) − PZ(L))` is the heating
   of layer L; RRTM indexes bottom-up so `TOTUFLUX/TOTDFLUX(0..kte)` map onto
