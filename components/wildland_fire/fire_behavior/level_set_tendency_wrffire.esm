@@ -2,7 +2,7 @@
  "esm": "1.0.0",
  "metadata": {
   "name": "LevelSetTendencyWRFFire",
-  "description": "The level-set propagation equation of fire_behavior (physics/level_set_mod.F90 Calc_tend_ls; Munoz-Esparza et al. 2018) as a PDE on a uniform 2-D grid: d psi/dt = -R |grad psi| + nu |R| (dx d2psi/dx2 + dy d2psi/dy2), the Hamilton-Jacobi front propagation with the rate of spread R normal to the front plus a grid-scaled artificial viscosity. |grad psi| is written as the compound sqrt(D(psi,x)^2 + D(psi,y)^2) and lowered by EarthSciDiscretizations' first-order Godunov rule (grids/cartesian_uniform_2d/rules/godunov_norm_D2_dirichlet_bc), which is EXACTLY fire_behavior's fire_upwinding = 4 Hamiltonian; the second derivatives by the centred rules. fire_behavior's DEFAULT scheme (fire_upwinding = 9) is a hybrid: 5th-order WENO within fire_lsm_band_ngp = 4 cells of the front, first-order ENO (minmod of the one-sided differences) elsewhere and within BDY_ENO1 = 10 cells of the domain boundary, with the front normal taken from the same upwind derivatives (for option 4: diff2 = max(D-,0) - min(D+,0)); no EarthSciDiscretizations rule exists for WENO5, ENO1/minmod or the Godunov-upwind first derivative, so those are reported as the missing rules and this component is tested against a fire_behavior run with fire_upwinding = 4. Boundary treatment also differs (fire_behavior extrapolates linearly into a 5-cell halo; the rule uses a prescribed wall value), so the tests are interior spot checks. R is supplied as an input field (it depends on the upwind normal, tested in ROSWRFFire); the propagation term and viscosity are what this component asserts. Tests: the ls_tend dump of Runge-Kutta stage 1 of step 20 (t = 10 s) of test7 rerun with fire_upwinding = 4; the dumped grad and tend at interior cells, real32, rel 1e-5.",
+  "description": "The level-set propagation equation of fire_behavior (physics/level_set_mod.F90 Calc_tend_ls; Munoz-Esparza et al. 2018) as a PDE on a uniform 2-D grid: d psi/dt = -R |grad psi| + nu |R| (dx d2psi/dx2 + dy d2psi/dy2), the Hamilton-Jacobi front propagation with the rate of spread R normal to the front plus a grid-scaled artificial viscosity, together with the per-axis upwind derivatives diff2x, diff2y and the front normal (nvx, nvy) = (diff2x, diff2y)/sqrt(|grad psi|^2 + eps) that ROSWRFFire consumes. |grad psi| is written as the compound sqrt(D(psi,x)^2 + D(psi,y)^2) and the per-axis derivatives as D(psi,x), D(psi,y); the DISCRETISATION IS SELECTED BY THE RULES EACH TEST IMPORTS from EarthSciDiscretizations grids/cartesian_uniform_2d: fire_upwinding = 4 (classical Godunov) = godunov_norm_D2_dirichlet_bc for the norm and godunov_upwind_D1x/D1y_extrapolate_bc (max(D-,0) - min(D+,0)) for the normal; fire_upwinding = 9 (the DEFAULT, hybrid WENO5/ENO1) = weno5_eno1_norm_D2_extrapolate_bc and weno5_eno1_D1x/D1y_extrapolate_bc, whose free names wind_u, wind_v (the mid-flame wind that selects the WENO upwind side), bdy_eno1_cells (BDY_ENO1 = 10) and weno_band_cells (fire_lsm_band_ngp = 4) are this model's inputs and parameters, and whose wall closure is fire_behavior's own guarded linear-extrapolation halo (Extrapol_var_at_bdys). The second derivatives of the viscosity term use the centred rules with the matching wall closure (central_D2x/D2y_dirichlet_bc for the Godunov test, central_D2x/D2y_extrapolate_bc for the default scheme). R is supplied as an input field (it depends on the normal, tested in ROSWRFFire); the propagation term, the viscosity, the per-axis derivatives and the normal are what this component asserts. Tests: the ls_tend dumps of Runge-Kutta stage 1 of step 20 (t = 10 s) of test7 with fire_upwinding = 4 (39 original + 52 normal assertions, interior cells only because the Dirichlet-closed Godunov norm rule treats the walls differently) and with the default fire_upwinding = 9 (112 assertions including wall-strip and wall cells), real32, rel 1e-5 to 2e-5.",
   "license": "MIT",
   "tags": [
    "wildland_fire",
@@ -42,27 +42,6 @@
    "expression_template_imports": [
     {
      "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/grid.esm",
-     "bindings": {
-      "NX": "NX",
-      "NY": "NY"
-     }
-    },
-    {
-     "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/godunov_norm_D2_dirichlet_bc.esm",
-     "bindings": {
-      "NX": "NX",
-      "NY": "NY"
-     }
-    },
-    {
-     "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/central_D2x_dirichlet_bc.esm",
-     "bindings": {
-      "NX": "NX",
-      "NY": "NY"
-     }
-    },
-    {
-     "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/central_D2y_dirichlet_bc.esm",
      "bindings": {
       "NX": "NX",
       "NY": "NY"
@@ -135,7 +114,7 @@
       "x",
       "y"
      ],
-     "description": "|grad psi| by the first-order Godunov (Osher-Sethian / Rouy-Tourin) upwind rule: sqrt(max(D-x,0)^2 + min(D+x,0)^2 + max(D-y,0)^2 + min(D+y,0)^2), which is exactly fire_behavior's fire_upwinding = 4 ('sethian') Hamiltonian; the level-set gradient norm diagnostic grad_norm_ls."
+     "description": "|grad psi| of the selected scheme (fire_behavior grad / grad_norm_ls): with the Godunov rule (fire_upwinding = 4) sqrt(max(D-x,0)^2 + min(D+x,0)^2 + max(D-y,0)^2 + min(D+y,0)^2); with the hybrid rule (fire_upwinding = 9, the default) sqrt(diff2x^2 + diff2y^2) of the WENO5/ENO1 per-axis derivatives. Written as the compound sqrt(D(psi,x)^2 + D(psi,y)^2); the norm rule imported by the test selects the scheme."
     },
     "psi_xx": {
      "type": "unknown",
@@ -186,25 +165,97 @@
      "type": "parameter",
      "units": "m",
      "default": 0.0,
-     "description": "Prescribed level-set value on the left x wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). fire_behavior instead extrapolates linearly into a 5-cell halo and uses first-order ENO within 10 cells of the boundary, so the boundary cells are not asserted."
+     "description": "Prescribed level-set value on the left x wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). Read only by the Dirichlet-closed Godunov norm rule of the fire_upwinding = 4 test; the hybrid rules of the default scheme use fire_behavior's own guarded linear-extrapolation halo instead and do not read it."
     },
     "gR": {
      "type": "parameter",
      "units": "m",
      "default": 0.0,
-     "description": "Prescribed level-set value on the right x wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). fire_behavior instead extrapolates linearly into a 5-cell halo and uses first-order ENO within 10 cells of the boundary, so the boundary cells are not asserted."
+     "description": "Prescribed level-set value on the right x wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). Read only by the Dirichlet-closed Godunov norm rule of the fire_upwinding = 4 test; the hybrid rules of the default scheme use fire_behavior's own guarded linear-extrapolation halo instead and do not read it."
     },
     "gB": {
      "type": "parameter",
      "units": "m",
      "default": 0.0,
-     "description": "Prescribed level-set value on the bottom y wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). fire_behavior instead extrapolates linearly into a 5-cell halo and uses first-order ENO within 10 cells of the boundary, so the boundary cells are not asserted."
+     "description": "Prescribed level-set value on the bottom y wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). Read only by the Dirichlet-closed Godunov norm rule of the fire_upwinding = 4 test; the hybrid rules of the default scheme use fire_behavior's own guarded linear-extrapolation halo instead and do not read it."
     },
     "gT": {
      "type": "parameter",
      "units": "m",
      "default": 0.0,
-     "description": "Prescribed level-set value on the top y wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). fire_behavior instead extrapolates linearly into a 5-cell halo and uses first-order ENO within 10 cells of the boundary, so the boundary cells are not asserted."
+     "description": "Prescribed level-set value on the top y wall read by the Dirichlet-closed rules (free name of the imported EarthSciDiscretizations rules). Read only by the Dirichlet-closed Godunov norm rule of the fire_upwinding = 4 test; the hybrid rules of the default scheme use fire_behavior's own guarded linear-extrapolation halo instead and do not read it."
+    },
+    "wind_u": {
+     "type": "unknown",
+     "units": "m/s",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Mid-flame wind x-component uf on the fire grid (input field; free name wind_u of the hybrid WENO5/ENO1 rules, whose WENO upwind side is selected by the sign of (grad4 psi . U) d4 psi). Not read by the Godunov rules."
+    },
+    "wind_v": {
+     "type": "unknown",
+     "units": "m/s",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Mid-flame wind y-component vf on the fire grid (input field; free name wind_v of the hybrid rules)."
+    },
+    "bdy_eno1_cells": {
+     "type": "parameter",
+     "units": "1",
+     "default": 10,
+     "description": "Width in cells of the wall band where fire_behavior always uses first-order ENO1 (BDY_ENO1 = 10, a compile-time constant of level_set_mod.F90); free name of the hybrid rules."
+    },
+    "weno_band_cells": {
+     "type": "parameter",
+     "units": "1",
+     "default": 4,
+     "description": "Half-width in cells of the band |psi| < weno_band_cells dx around the front where the hybrid scheme uses WENO5 (namelist fire_lsm_band_ngp = 4); free name of the hybrid rules."
+    },
+    "nv_eps": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.1920928955078125e-07,
+     "description": "Regularisation of the normal's denominator sqrt(|grad psi|^2 + eps): fire_behavior's EPS = epsilon(0.0) of its default real32 kind."
+    },
+    "psi_x": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Per-axis upwind derivative diff2x of the selected scheme: for fire_upwinding = 4 the Godunov-upwind quantity max(D-x psi, 0) - min(D+x psi, 0) (godunov_upwind_D1x_extrapolate_bc; a magnitude for negative slopes, N44), for fire_upwinding = 9 the hybrid WENO5/ENO1 derivative (weno5_eno1_D1x_extrapolate_bc). Written as D(psi, x); the rule imported by the test selects the scheme."
+    },
+    "psi_y": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Per-axis upwind derivative diff2y of the selected scheme (see psi_x); D(psi, y)."
+    },
+    "nvx": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "x-component of the front normal, psi_x / sqrt(|grad psi|^2 + eps) (Calc_tend_ls nvx); the input ROSWRFFire takes for the wind and slope projections."
+    },
+    "nvy": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "y-component of the front normal, psi_y / sqrt(|grad psi|^2 + eps) (nvy)."
     }
    },
    "equations": [
@@ -248,6 +299,20 @@
      }
     },
     {
+     "lhs": "wind_u",
+     "rhs": {
+      "op": "input_wind_u",
+      "args": []
+     }
+    },
+    {
+     "lhs": "wind_v",
+     "rhs": {
+      "op": "input_wind_v",
+      "args": []
+     }
+    },
+    {
      "lhs": "grad_mag",
      "rhs": {
       "op": "sqrt",
@@ -279,6 +344,80 @@
             "wrt": "y"
            },
            2
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "psi_x",
+     "rhs": {
+      "op": "D",
+      "args": [
+       "psi"
+      ],
+      "wrt": "x"
+     }
+    },
+    {
+     "lhs": "psi_y",
+     "rhs": {
+      "op": "D",
+      "args": [
+       "psi"
+      ],
+      "wrt": "y"
+     }
+    },
+    {
+     "lhs": "nvx",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "psi_x",
+       {
+        "op": "sqrt",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "^",
+            "args": [
+             "grad_mag",
+             2
+            ]
+           },
+           "nv_eps"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "nvy",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "psi_y",
+       {
+        "op": "sqrt",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "^",
+            "args": [
+             "grad_mag",
+             2
+            ]
+           },
+           "nv_eps"
           ]
          }
         ]
@@ -391,13 +530,48 @@
    "tests": [
     {
      "id": "godunov_step20_stage1",
-     "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1) rerun with fire_upwinding = 4 (classical Godunov Hamiltonian, the scheme EarthSciDiscretizations' godunov_norm_D2 rule implements), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (c9dda02, -DESM_DUMP=ON): ls_tend dump call 58 = Runge-Kutta stage 1 of step 20 (t = 10 s). The inputs psi and ros are the full 80x80 dumped lfn and ros fields injected as [x, y] const fields; grad_mag, tend_adv and tend are spot-checked at 13 interior cells (11 <= i, j <= 70, inside fire_behavior's BDY_ENO1 = 10 boundary band where it switches to ENO1, and away from the walls whose treatment differs): 10 cells within 150 m of the front where the level set is moving, plus three far-field cells. fire_viscosity = fire_viscosity_bg = 0.4 in test7, so the viscosity coefficient is uniform. Single precision: rel 1e-5 on grad_mag and the propagation term, 2e-5 on the total tendency (a sum of the two). The dumped Godunov gradient equals the rule's formula to 2e-7 relative over the whole interior (checked offline), so a whole-field assertion would pass in the interior; it is not used because the wall cells differ by construction.",
+     "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1) rerun with fire_upwinding = 4 (classical Godunov Hamiltonian, the scheme EarthSciDiscretizations' godunov_norm_D2 rule implements), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (c9dda02, -DESM_DUMP=ON): ls_tend dump call 58 = Runge-Kutta stage 1 of step 20 (t = 10 s). The inputs psi and ros are the full 80x80 dumped lfn and ros fields injected as [x, y] const fields; grad_mag, tend_adv and tend are spot-checked at 13 interior cells (the original 39 assertions), and the per-axis Godunov-upwind quantities psi_x, psi_y = max(D-,0) - min(D+,0) (fire_behavior's diff2x, diff2y for this option, EarthSciDiscretizations godunov_upwind_D1x/D1y_extrapolate_bc) and the front normal nvx, nvy = diff2/sqrt(grad^2 + eps) at the same cells (11 <= i, j <= 70, inside fire_behavior's BDY_ENO1 = 10 boundary band where it switches to ENO1, and away from the walls whose treatment differs): 10 cells within 150 m of the front where the level set is moving, plus three far-field cells. fire_viscosity = fire_viscosity_bg = 0.4 in test7, so the viscosity coefficient is uniform. Single precision: rel 1e-5 on grad_mag and the propagation term, 2e-5 on the total tendency (a sum of the two). The dumped Godunov gradient equals the rule's formula to 2e-7 relative over the whole interior (checked offline), so a whole-field assertion would pass in the interior; it is not used because the wall cells differ by construction. The scheme is selected per test: this test imports godunov_norm_D2_dirichlet_bc (the norm) and godunov_upwind_D1x/D1y_extrapolate_bc (the normal's per-axis quantities), the weno5 test the hybrid rules.",
      "parameter_overrides": {
       "Lx": 2000.0,
       "Ly": 2000.0,
       "fire_viscosity": 0.4
      },
      "expression_template_imports": [
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/godunov_norm_D2_dirichlet_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/godunov_upwind_D1x_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/godunov_upwind_D1y_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/central_D2x_dirichlet_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/central_D2y_dirichlet_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
       {
        "ref": "./tests/godunov_step20_stage1_inputs.esm"
       }
@@ -896,6 +1070,2195 @@
         "y": 50
        },
        "expected": -0.4736826419830322,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 56
+       },
+       "expected": 0.920306384563446,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 56
+       },
+       "expected": 0.4131341576576233,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 56
+       },
+       "expected": 0.9122934937477112,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 56
+       },
+       "expected": 0.40953710675239563,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 14,
+        "y": 55
+       },
+       "expected": 0.28484436869621277,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 14,
+        "y": 55
+       },
+       "expected": 1.6903833150863647,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 14,
+        "y": 55
+       },
+       "expected": 0.16616609692573547,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 14,
+        "y": 55
+       },
+       "expected": 0.9860978126525879,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 15,
+        "y": 66
+       },
+       "expected": 0.7073400616645813,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 15,
+        "y": 66
+       },
+       "expected": 0.5907135009765625,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 15,
+        "y": 66
+       },
+       "expected": 0.767546534538269,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 15,
+        "y": 66
+       },
+       "expected": 0.6409931182861328,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 62
+       },
+       "expected": 0.997007429599762,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 62
+       },
+       "expected": 0.15940673649311066,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 62
+       },
+       "expected": 0.987458348274231,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 62
+       },
+       "expected": 0.15787997841835022,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 19,
+        "y": 57
+       },
+       "expected": 0.7066952586174011,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 19,
+        "y": 57
+       },
+       "expected": 2.6298205852508545,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 19,
+        "y": 57
+       },
+       "expected": 0.2618122100830078,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 19,
+        "y": 57
+       },
+       "expected": 0.974280059337616,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 65
+       },
+       "expected": 0.20843414962291718,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 65
+       },
+       "expected": 0.932883620262146,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 65
+       },
+       "expected": 0.21805350482463837,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 65
+       },
+       "expected": 0.9759367108345032,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": 0.06373664736747742,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": 1.2588179111480713,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": 0.05056736618280411,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": 0.998720645904541,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 66
+       },
+       "expected": 0.20870117843151093,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 66
+       },
+       "expected": 0.9479522705078125,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 66
+       },
+       "expected": 0.21501082181930542,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 66
+       },
+       "expected": 0.9766116142272949,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 58
+       },
+       "expected": 0.8832383751869202,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 58
+       },
+       "expected": 0.2614684998989105,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 58
+       },
+       "expected": 0.9588665962219238,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 58
+       },
+       "expected": 0.2838570177555084,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 67
+       },
+       "expected": 0.511641263961792,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 67
+       },
+       "expected": 0.7850537300109863,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 67
+       },
+       "expected": 0.5460054278373718,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 67
+       },
+       "expected": 0.837781548500061,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": 0.21545898914337158,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": 0.9532006978988647,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": 0.22047516703605652,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": 0.9753925204277039,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": 0.9887866377830505,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": 0.29630860686302185,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": 0.9579133987426758,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": 0.2870568633079529,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": 0.7161474823951721,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": 0.7071484327316284,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": 0.7115633487701416,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": 0.7026219367980957,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      }
+     ]
+    },
+    {
+     "id": "weno5_eno1_step20_stage1",
+     "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1) with the shipped namelist, i.e. the DEFAULT scheme fire_upwinding = 9 (hybrid: 5th-order Jiang-Shu WENO5 within fire_lsm_band_ngp = 4 cells of the front, upwind side selected by the wind-relative propagation sign, first-order ENO1 minmod elsewhere and within BDY_ENO1 = 10 cells of the walls, one-cell guarded linear-extrapolation halo), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (c9dda02, -DESM_DUMP=ON): ls_tend dump call 58 = Runge-Kutta stage 1 of step 20 (t = 10 s). The inputs psi, ros and the mid-flame wind uf, vf are the full 80x80 dumped fields injected as [x, y] const fields; this test imports EarthSciDiscretizations' weno5_eno1_norm_D2_extrapolate_bc (|grad psi|) and weno5_eno1_D1x/D1y_extrapolate_bc (the per-axis derivatives diff2x, diff2y that also give the normal), with bdy_eno1_cells = 10 and weno_band_cells = 4 (the rules' free names), and central_D2x/D2y_extrapolate_bc for the viscosity term's second differences (fire_behavior's (diffrx - difflx) with the same extrapolated ghost, which makes the wall-cell second difference vanish when the ghost is the linear one). Asserted at 16 cells: 8 cells inside the WENO band around the front (|lfn| < 100 m, 11 <= i, j <= 70; the band spans i 13-28, j 56-69 at this step and the selector signo = (grad4 psi . U) d4 psi changes sign across it, so both upwind orientations are exercised), 3 ENO1 far-field cells, 2 cells inside the 10-cell wall strip (ENO1 by the index rule) and 3 wall cells (i = 1, j = 1, and the corner (80, 80)), where the guarded extrapolation ghost enters; per cell psi_x, psi_y (the dumped diff2x, diff2y), grad_mag (grad), nvx, nvy, tend_adv and tend. fire_viscosity = fire_viscosity_bg = 0.4, so the viscosity coefficient is uniform (viscosity_var = 0.4 on every cell of the dump). Single precision: rel 1e-5 on grad_mag and the propagation term, 2e-5 on the per-axis derivatives, the normal and the total tendency, with absolute floors for values near zero. The whole-field agreement of the transcribed scheme with the dump was checked offline in a NumPy replica: grad <= 7.4e-7 relative, diff2x/y <= 1.3e-5 relative on values above 1e-3, tend <= 1.1e-5, i.e. real32 roundoff.",
+     "parameter_overrides": {
+      "Lx": 2000.0,
+      "Ly": 2000.0,
+      "fire_viscosity": 0.4,
+      "bdy_eno1_cells": 10,
+      "weno_band_cells": 4
+     },
+     "expression_template_imports": [
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/weno5_eno1_norm_D2_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/weno5_eno1_D1x_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/weno5_eno1_D1y_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/central_D2x_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "../../../../EarthSciDiscretizations/grids/cartesian_uniform_2d/rules/central_D2y_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "./tests/weno5_eno1_step20_stage1_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": 2.545614004135132,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": 0.6075868010520935,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": -2.472041368484497,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": 0.23867985606193542,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": -0.9710983037948608,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": -0.045981667935848236,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": -0.039460472762584686,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 66
+       },
+       "expected": 1.0003001689910889,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 66
+       },
+       "expected": -0.08848945796489716,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 66
+       },
+       "expected": 0.996378481388092,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 66
+       },
+       "expected": -0.08846289664506912,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 66
+       },
+       "expected": 0.9960793852806091,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 66
+       },
+       "expected": -0.9031526446342468,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 66
+       },
+       "expected": -0.8391401767730713,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": 1.405798077583313,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": -0.9745906591415405,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": -1.0131343603134155,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": -0.6932649612426758,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": -0.7206826210021973,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": -0.024987636134028435,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 22,
+        "y": 58
+       },
+       "expected": -0.02279062196612358,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 56
+       },
+       "expected": 0.9756455421447754,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 56
+       },
+       "expected": 0.11277984827756882,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 56
+       },
+       "expected": -0.9691052436828613,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 56
+       },
+       "expected": 0.11559509485960007,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 56
+       },
+       "expected": -0.9932963848114014,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 56
+       },
+       "expected": -0.01734180375933647,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 23,
+        "y": 56
+       },
+       "expected": -0.015520437620580196,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 24,
+        "y": 60
+       },
+       "expected": 1.1697722673416138,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 24,
+        "y": 60
+       },
+       "expected": 1.1671230792999268,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 24,
+        "y": 60
+       },
+       "expected": 0.07868194580078125,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 24,
+        "y": 60
+       },
+       "expected": 0.9977352023124695,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 24,
+        "y": 60
+       },
+       "expected": 0.06726261228322983,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 24,
+        "y": 60
+       },
+       "expected": -0.3580305576324463,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 24,
+        "y": 60
+       },
+       "expected": -0.6409715414047241,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 57
+       },
+       "expected": 0.9737127423286438,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 57
+       },
+       "expected": 0.7053143382072449,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 57
+       },
+       "expected": -0.671303391456604,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 57
+       },
+       "expected": 0.7243556380271912,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 57
+       },
+       "expected": -0.6894264817237854,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 57
+       },
+       "expected": -0.01854361779987812,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 57
+       },
+       "expected": -0.01669306494295597,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 65
+       },
+       "expected": 1.0395927429199219,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 65
+       },
+       "expected": 0.6479994058609009,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 65
+       },
+       "expected": 0.8129266500473022,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 65
+       },
+       "expected": 0.6233203411102295,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 65
+       },
+       "expected": 0.7819663882255554,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 65
+       },
+       "expected": -0.8968417048454285,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 25,
+        "y": 65
+       },
+       "expected": -0.8568363785743713,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 58
+       },
+       "expected": 0.9949598908424377,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 58
+       },
+       "expected": 0.9392926096916199,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 58
+       },
+       "expected": -0.3281381130218506,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 58
+       },
+       "expected": 0.944050669670105,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 58
+       },
+       "expected": -0.3298003375530243,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 58
+       },
+       "expected": -0.020028969272971153,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 26,
+        "y": 58
+       },
+       "expected": -0.01698843389749527,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": 0.9772482514381409,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": 0.21545898914337158,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": -0.9532006978988647,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": 0.22047516703605652,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": -0.9753925204277039,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": -0.01737029105424881,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 30,
+        "y": 30
+       },
+       "expected": -0.016839029267430305,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": 1.0322295427322388,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": 0.9887866377830505,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": -0.29630860686302185,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": 0.9579133987426758,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": -0.2870568633079529,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": -0.018347566947340965,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 50
+       },
+       "expected": -0.01802239753305912,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": 1.0064423084259033,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": 0.7161474823951721,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": -0.7071484327316284,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": 0.7115633487701416,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": -0.7026219367980957,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": -0.01788920722901821,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 60,
+        "y": 20
+       },
+       "expected": -0.01775367558002472,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 60
+       },
+       "expected": 0.9391743540763855,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 60
+       },
+       "expected": -0.9390014410018921,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 60
+       },
+       "expected": -0.018022460862994194,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 60
+       },
+       "expected": -0.999815821647644,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 60
+       },
+       "expected": -0.019189685583114624,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 60
+       },
+       "expected": -0.01968720741569996,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 60
+       },
+       "expected": -0.02005324885249138,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 75,
+        "y": 40
+       },
+       "expected": 0.9454014897346497,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 75,
+        "y": 40
+       },
+       "expected": 0.8839452862739563,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 75,
+        "y": 40
+       },
+       "expected": -0.3352978527545929,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 75,
+        "y": 40
+       },
+       "expected": 0.9349945187568665,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 75,
+        "y": 40
+       },
+       "expected": -0.35466185212135315,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 75,
+        "y": 40
+       },
+       "expected": -0.016804225742816925,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 75,
+        "y": 40
+       },
+       "expected": -0.017417730763554573,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 1,
+        "y": 60
+       },
+       "expected": 0.9394055604934692,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 1,
+        "y": 60
+       },
+       "expected": -0.9392932057380676,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 1,
+        "y": 60
+       },
+       "expected": -0.014527588151395321,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 1,
+        "y": 60
+       },
+       "expected": -0.999880313873291,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 1,
+        "y": 60
+       },
+       "expected": -0.0154646597802639,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 1,
+        "y": 60
+       },
+       "expected": -0.016697648912668228,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 1,
+        "y": 60
+       },
+       "expected": -0.016350295394659042,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 1
+       },
+       "expected": 0.9623169302940369,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 1
+       },
+       "expected": 0.2623876929283142,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 1
+       },
+       "expected": -0.925854504108429,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 1
+       },
+       "expected": 0.2726624310016632,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 1
+       },
+       "expected": -0.9621096849441528,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 1
+       },
+       "expected": -0.01810791902244091,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 1
+       },
+       "expected": -0.01777046173810959,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 80,
+        "y": 80
+       },
+       "expected": 1.0361480712890625,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "psi_x",
+       "time": 0.0,
+       "coords": {
+        "x": 80,
+        "y": 80
+       },
+       "expected": 0.9808251857757568,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "psi_y",
+       "time": 0.0,
+       "coords": {
+        "x": 80,
+        "y": 80
+       },
+       "expected": 0.3340429663658142,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvx",
+       "time": 0.0,
+       "coords": {
+        "x": 80,
+        "y": 80
+       },
+       "expected": 0.9466071724891663,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "nvy",
+       "time": 0.0,
+       "coords": {
+        "x": 80,
+        "y": 80
+       },
+       "expected": 0.3223892152309418,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 1e-07
+       }
+      },
+      {
+       "variable": "tend_adv",
+       "time": 0.0,
+       "coords": {
+        "x": 80,
+        "y": 80
+       },
+       "expected": -0.5494412183761597,
+       "tolerance": {
+        "rel": 1e-05,
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "tend",
+       "time": 0.0,
+       "coords": {
+        "x": 80,
+        "y": 80
+       },
+       "expected": -0.5494412183761597,
        "tolerance": {
         "rel": 2e-05,
         "abs": 1e-09
