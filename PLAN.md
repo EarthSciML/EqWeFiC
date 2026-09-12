@@ -1044,6 +1044,32 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     inline test here asserts instantaneous derivatives over a ~1 s span, so
     none of them exercise it; the first long single-column integration would.
 
+    **(u) RESOLVED 2026-09-12.** Fixed upstream by PR #255 (`8e115ce44`, merged
+    at `60da85338`), which was aimed at #207 and never linked to #234. Bisected:
+    the probe errors at `ebc432873` with the reported message and failure time
+    (t = 39.763 s) and passes at the next commit. The cause was tape export
+    ordering — an observed whose body is a bare `Expr::Variable` emits nothing
+    into its home chunk, so its `Export` ran after the `Fallback` of a later
+    rule reading it and the reader took the preallocated `0.0`; in the probe
+    that ghost zero lands in the surface relaxation term and drags cell 1 toward
+    0 K until Newton gives up. On current main (`3564d09b5`)
+    `delta_direct`/`delta_split` are green at all three spans, a `lev` sweep of
+    55-70 is green in both forms on all three solvers, and `ESS_TAPE_CHECK=1`
+    reports no tape-vs-oracle divergence on any probe. **The pre-fix corruption
+    was size-independent**: `lev = 58` "passed" only because the corrupted ODE
+    happened not to defeat Newton, and the N = 4 minimal case diverges on the
+    tape check too — so any long integration run on a CLI older than
+    `60da85338` is suspect, not merely the 59-level ones. An earlier attempt on
+    the abandoned branch `claude/issue-234-alias-elimination` diagnosed this
+    correctly (naming `compute_exports` in `tape/lower.rs`, the function #255
+    rewrote) but landed no fix. Nothing upstream guards the shape: #255's tests
+    are `coupled_const_array_fold.rs` and `scalar_param_array_default.rs`,
+    neither a bare alias feeding a per-cell rule — the silent form this repo's
+    factoring and `<x>_in`/`variable_map` conventions generate. Phase 3.1 is
+    unblocked on this axis; the remaining Phase 3 blockers are (s) `maxiters`
+    (still unfiled upstream) and (t) `table_lookup` on the `esm_problem`
+    carrier (EarthSciAST #274).
+
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
     wind, pressure, and temperature plus the numerics that step them. Per the
