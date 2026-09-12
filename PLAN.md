@@ -426,6 +426,36 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   `eqwefic/*` branches exist only on the fork, so `main` is the only possible
   base for any of them.
 
+- **Couplings repaired for EarthSciAST main @ 3564d09b5 (2026-09-12).** The
+  update brought three behaviour changes that the assemblies in `couplings/`
+  were written around. (1) A mounted component's inline tests no longer run
+  under the coupling (#214), so the whole directory runs as
+  `./esm test couplings` and the `--model` selector CLAUDE.md prescribed is
+  obsolete. (2) A top-level `models.<k>` `{ref}` mount now runs the full §4.7
+  edge pipeline (#261/#298): the leaf resolves in its own scope, folds its
+  metaparameters and merges its index sets into the importing document, so the
+  document-level redeclarations every RRTM-bearing assembly carried now collide
+  (folded literal 103 against the unfolded `NLEV + NBUF`) and were deleted —
+  the metaparameters stay, they still close each mount edge's `bindings`.
+  (3) A mount-edge `expression_template_imports` injection does not reach a
+  component the mounted leaf itself mounts through a nested `subsystems.<k>`
+  ref: the injection is consumed by `resolve_template_machinery` -> `lower` ->
+  `expand` before the leaf's nested refs are loaded, and `expand` then seals the
+  leaf. That blocks `couplings/microphysics_column{,_mixed}.esm` (2 x 40),
+  whose Melt/Cold/IceDep/SatAdj stages each carry the shared `sd`/`sat`
+  size-distribution subsystem — filed as **EarthSciAST #311** with a four-case
+  repro in `data/eqwefic/esm-repro/mount-nested-subsystem/` (a TEST-scope
+  injection into the same nested subsystem passes, and both mount forms fail
+  alike, which is what makes it a defect rather than a design limit). There is
+  no fix inside the coupling document: a document-level and a test-level import
+  both fail to reach the sealed leaf, and `TemplateImport` has no way to name a
+  scope inside it. The alternative to the upstream fix is for
+  `hydrometeor_slopes.esm` to import the `input_<x>()` -> `<x>_in` library
+  itself (it already declares those parameters), which is a WSM6 component
+  decision that collides with the const-array library its own standalone tests
+  inject at test scope. All other assemblies are green at their historical
+  counts: 325 assertions over 14 files.
+
 - **RADM2 reaction-system tests executed for the first time, 2026-09-12.** The
   three box trajectory tests written 2026-09-06 had never run: the Rust CLI
   reported "no inline tests found" (gap (p), EarthSciAST #206, closed by #251).
