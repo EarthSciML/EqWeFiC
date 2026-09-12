@@ -515,8 +515,13 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   ATOL 1e-3. That block forces `"esm": "1.1.0"` (below it,
   `solver_version_too_old`); the bump is required ONLY by the two daylight
   trajectory tests — the 540 rate-constant and 177 tendency assertions are green
-  at 1.0.0 with no block — and **esm 1.1.0 is unreleased upstream, so
-  EarthSciModels PR #24 cannot carry this file until it is released**.
+  at 1.0.0 with no block. **It does NOT block EarthSciModels PR #24** (checked
+  2026-09-12): that repo's CI installs `earthsci_ast` from
+  `git+https://github.com/EarthSciML/EarthSciAST.git@main`
+  (`.github/workflows/test-esm.yml`, both jobs), never from a release, and main
+  has carried esm 1.1.0 since PR #299. No version needs minting; the only real
+  condition is that the PYTHON binding on main honours the `solver` block the
+  same way the Rust CLI does, which the gate itself will show.
   **The mechanism reproduces the KPP Rosenbrock reference at better than
   rel 1e-7 on every species at every output time** (all 108 pass at 1e-7; 6 fail
   at 1e-8 — the fast NO3/N2O5 night pair; 34 at 1e-9), so the declared rel 1e-5
@@ -1086,7 +1091,10 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     dump the forcing at model resolution.
 
     **Three upstream blockers found (repros in `data/eqwefic/phase3_probes/`).**
-    (s) `SolveOptions::maxiters` is pinned at its 10 000 default by the
+    (s) **DEFERRED 2026-09-12 (user decision): 3-D simulations will be solved
+    by a different method, so the inline-test runner's iteration cap is not on
+    the critical path and no upstream issue was filed.** Original finding:
+    `SolveOptions::maxiters` is pinned at its 10 000 default by the
     inline-test runner (`pkg/earthsci-ast-rs/src/bin/esm.rs:3719`, `..Default::default()`)
     and there is no CLI flag and no document field for it. A *scalar* ODE with
     600 s structure already exceeds it between a 54 000 s span (passes) and a
