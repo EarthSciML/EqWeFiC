@@ -2,7 +2,7 @@
  "esm": "1.0.0",
  "metadata": {
   "name": "ScmPhysicsColumn",
-  "description": "Single-column PHYSICS-DRIVER SUITE of the EqWeather reference case (WRF 4.8 em_scm_xy: mp_physics = 6 WSM6, ra_lw_physics = 1 RRTM, ra_sw_physics = 1 Dudhia, sf_sfclay_physics = 1 revised MM5, sf_surface_physics = 1 five-layer slab, bl_pbl_physics = 1 YSU, cu = shcu = fdda = 0), i.e. what WRF's radiation_driver, surface_driver and pbl_driver together do to one column in one time step. Eight components are mounted by reference as top-level systems and coupled in the WRF call order with variable_map/param_to_var edges (esm-spec 10.4): the RRTM longwave chain (RRTMColumn -> RRTMSetcoef -> RRTMGasOptics -> RTRNSweep -> RRTMLWHeating) and the Dudhia shortwave scheme (DudhiaSW) give rthraten = dthdt_lw + dthdt_sw; the revised MM5 surface layer (SfclayRev) gives u*, z0, Ri_b, wind speed, 10 m wind and the profile functions fm/fh -- YSU's psim/psih arguments are those FULL profile functions, not the stability corrections psim/psih, which are exposed separately; the YSU boundary layer receives them together with rthraten and the land scheme's surface fluxes and returns the tendency vector WRF hands to the dynamics: rthblten, rublten, rvblten, rqvblten, rqcblten, rqiblten, plus rthraten and rth_phys_sum = rthraten + rthblten. Every mounted stage keeps its `input_<x>` rewrite targets for standalone testing; the mount-edge libraries injected here (esm-spec 9.7.10) lower them either to the dumped column state of the step or to the additive `<x>_in` coupling-target parameters that the document's coupling fills from the upstream stage. One document holds one regime; the companion is couplings/scm_physics_column.esm. Regime: WRF step 900 (kernel call 1800), 09:58 UTC = 03:32 local solar time -- the deep stable night of the reference run: gsw = 0 exactly (cos zenith -0.552, so the whole Dudhia branch is the zero-sun path), glw = 251.9, olr = 240.1, slab hfx = -19.08 W/m^2 (SfclayRev's own -19.07), Ri_b = +0.037 (regime 1, stable), u* = 0.267 m/s, a shallow h = 263 m over 6 layers found by the Hong (2010) stable-regime search, tsk = 277.7 K, thin cirrus aloft (qi <= 5.2e-8, four cloudy layers). WHAT IS NOT MOUNTED, and why -- both are EarthSciAST index-set limitations, not physics. (1) The 5-layer SLAB land-surface scheme. Its soil column and the atmospheric column are both the EarthSciDiscretizations grids/column_nonuniform_1d axis `lev`, at 4 and 59 cells; esm index sets are document-scoped and a section 4.7 subsystem-ref edge carries no `prefix`/`rename` (those three fields ride on `expression_template_imports` only, esm-spec 9.7.7 and esm-schema.json $defs/SubsystemRef), so the two sizes cannot coexist under one name. Both components re-export `lev` under the CHILD's metaparameter name NLEV, so mounting slab.esm next to ysu.esm either fails at load with [template_import_index_set_conflict] (whenever the document pins `lev` or the sizes reach the registry in different forms) or, if both mounts are bound to the document's single NLEV, silently forces the 4-layer soil column to the atmosphere's 59 layers -- neither of which is a usable land-surface mount. WRF's order is surface layer -> land surface -> PBL and the PBL receives the LAND scheme's sub-stepped flux, not the surface layer's, so the slab's driver-level hfx/qfx are prescribed here as hfx_lsm/qfx_lsm and coupled into YSU while SfclayRev's own hfx/qfx are exposed and checked separately (the two differ; FORTRAN_BUGS.md N12). couplings/surface_soil_column.esm mounts the slab with the surface layer, which has no atmospheric column and therefore no conflict. (2) The WSM6 MICROPHYSICS. Four of its seven stages (melting_freezing, cold_accretion, ice_deposition, saturation_adjustment) mount hydrometeor_slopes.esm / saturation.esm as section 4.7 subsystems, whose `lev` reaches the document FOLDED to a literal integer, while YSU's `lev` -- which comes from the column_nonuniform_1d grid through an `expression_template_imports` edge -- reaches it SYMBOLICALLY as size \"NLEV\" (the document must therefore declare a metaparameter literally named NLEV and must NOT declare `lev` itself). The two definitions are not deep-equal, so mounting any of those four stages beside YSU fails at load with [template_import_index_set_conflict] models.Pbl EVEN WHEN BOTH SIZES ARE THE SAME INTEGER (verified with a two-mount probe at NLEV = 40 and at 59, with and without threading NLEV into the nested subsystem edge, with the document declaring `lev` symbolically or literally, and with a renamed grid injected at the mount edge). This is the unresolved half of PLAN.md gap (m)/(n): sizing the document's index sets by a literal integer, which is what makes couplings/microphysics_column.esm load, only works when EVERY contributor of that axis arrives folded. Microphysics is in any case a separate driver call at the END of WRF's time step, on the state the RK dynamics leaves behind, so it is not chained to the physics suite even in WRF; the WSM6 chain is couplings/microphysics_column{,_mixed}.esm. KNOWN BINDING LIMITATIONS (Rust CLI, EarthSciAST issue #198): the mounted components' own inline tests are re-run inside this document under the coupling and error, so run `./esm test --model ScmPhysicsColumn couplings/scm_physics_column_night.esm`; the leaves' index sets are redeclared at document level because a top-level ref mount does not merge them; and a parent test cannot set a mounted component's parameter, so the shared surface and radiation scalars are prescribed in this model and coupled in. Residuals of the whole assembly against the step-900 references, measured with zero tolerances: surface-layer outputs <= 2.5e-5 relative -- rmol 2.5e-5, psim 2.4e-5, psih and Ri_b 2.1e-5, hfx 8.5e-6, u* 2.3e-6, qsfc / z0 / regime exact; the stable regime amplifies real32 roundoff in theta_v1 - theta_vs through the bulk Richardson number, an order above the daytime companion -- PBL height 3.5e-6 relative and kpbl exact, K_h / K_m Linf 2.3e-5 m^2/s, longwave fluxes Linf 2.0e-4 (F_up) and 6.2e-4 W/m^2 (F_dn), dthdt_lw and rthraten 5.9e-9 K/s, dthdt_sw and gsw exactly zero, glw 2.6e-7 and olr 1.3e-7 relative, and the PBL tendencies 1.7e-6 K/s (rthblten, column max 7.9e-5), 2.5e-5 and 4.5e-6 m/s^2 (rublten / rvblten, max 5.1e-4 / 2.6e-4), 2.4e-10 1/s (rqvblten, max 1.5e-8), rqcblten exactly zero and rqiblten 2.1e-17 (max 3.1e-15).",
+  "description": "Single-column PHYSICS-DRIVER SUITE of the EqWeather reference case (WRF 4.8 em_scm_xy: mp_physics = 6 WSM6, ra_lw_physics = 1 RRTM, ra_sw_physics = 1 Dudhia, sf_sfclay_physics = 1 revised MM5, sf_surface_physics = 1 five-layer slab, bl_pbl_physics = 1 YSU, cu = shcu = fdda = 0), i.e. what WRF's radiation_driver, surface_driver and pbl_driver together do to one column in one time step. Nine components are mounted by reference as top-level systems and coupled in the WRF call order with variable_map/param_to_var edges (esm-spec 10.4): the RRTM longwave chain (RRTMColumn -> RRTMSetcoef -> RRTMGasOptics -> RTRNSweep -> RRTMLWHeating) and the Dudhia shortwave scheme (DudhiaSW) give rthraten = dthdt_lw + dthdt_sw; the revised MM5 surface layer (SfclayRev) gives u*, z0, Ri_b, wind speed, 10 m wind and the profile functions fm/fh -- YSU's psim/psih arguments are those FULL profile functions, not the stability corrections psim/psih, which are exposed separately; the YSU boundary layer receives them together with rthraten and the land scheme's surface fluxes and returns the tendency vector WRF hands to the dynamics: rthblten, rublten, rvblten, rqvblten, rqcblten, rqiblten, plus rthraten and rth_phys_sum = rthraten + rthblten. Every mounted stage keeps its `input_<x>` rewrite targets for standalone testing; the mount-edge libraries injected here (esm-spec 9.7.10) lower them either to the dumped column state of the step or to the additive `<x>_in` coupling-target parameters that the document's coupling fills from the upstream stage. One document holds one regime; the companion is couplings/scm_physics_column.esm. Regime: WRF step 900 (kernel call 1800), 09:58 UTC = 03:32 local solar time -- the deep stable night of the reference run: gsw = 0 exactly (cos zenith -0.552, so the whole Dudhia branch is the zero-sun path), glw = 251.9, olr = 240.1, slab hfx = -19.08 W/m^2 (SfclayRev's own -19.07), Ri_b = +0.037 (regime 1, stable), u* = 0.267 m/s, a shallow h = 263 m over 6 layers found by the Hong (2010) stable-regime search, tsk = 277.7 K, thin cirrus aloft (qi <= 5.2e-8, four cloudy layers). THE LAND SURFACE IS LIVE (2026-09-12). The 5-layer SLAB scheme is mounted as Lsm with `index_set_rename` {lev: soil, lev_nodes: soil_nodes} and NSOIL = 4 bound at the edge, so its soil column and the atmospheric column coexist under distinct axis names -- the conflict that kept it out of this document until EarthSciAST #213/#298. It is wired the way WRF wires it: SfclayRev's flhc and flqc set the exchange, this step's Sw.gsw (0 at night) and Heat.glw (251.9 W/m^2) close the surface energy balance, and the slab's hfx/qfx drive YSU, which is WRF's order (surface layer -> land surface -> PBL) and replaces the hfx_lsm/qfx_lsm values this document used to prescribe from the dump. Fifteen slab outputs are exposed and eight of them asserted. The esm slab is an INSTANTANEOUS flux calculator while WRF's SLAB sub-steps the soil and reports the flux at the end of its internal step (FORTRAN_BUGS N12), so the coupled fluxes sit 2.7e-4 (hfx) and 2.4e-4 (qfx, lh) from the driver-level values they are checked against; qsfc agrees to better than 5e-5 and the stable-night PBL is flux-insensitive enough that K_h and K_m stay green at their original Linf abs 0.002 and 0.001. WHAT IS NOT MOUNTED, and why. The WSM6 MICROPHYSICS is the one namelist scheme of the six that is not here, and as of 2026-09-12 the reason is no longer an EarthSciAST limitation. The index-set half of the old reason is fixed: EarthSciAST #213 added a mount-edge `index_set_rename` and #298 made a top-level `models.<k>` `{ref}` mount run the same section 4.7 edge pipeline as a `subsystems.<k>` mount, which is exactly what lets the slab's 4-cell soil column sit beside the 59-layer atmosphere in this document. What remains are three reasons of substance. (1) THE REFERENCE COLUMN IS CLOUD-FREE. At both dumped steps qc = qr = qs = qg = 0 in every layer and qi is a 2.1e-9 (step 1410) / 5.2e-8 (step 900) kg/kg trace, so every WSM6 process rate would evaluate to zero or to numerical dust: the mount would add seven components and about a hundred coupling edges that assert nothing. (2) THERE IS NO MICROPHYSICS REFERENCE IN THIS RUN. The merged suite dump (tools/merge_dumps.py over subassembly_all/_pbl/_rad plus the sfclayrev, sw, ysu and rrtm kernel dumps) carries no mp_ variables at all; the WSM6 kernel dumps that exist are from the idealized supercell (qss_ref, columns 24 and 30), a different case on a different grid, and they are where the chain is actually exercised -- couplings/microphysics_column.esm and microphysics_column_mixed.esm, 7 mounts and 106 edges, hydrometeors present. (3) MICROPHYSICS IS NOT PART OF THIS DRIVER CALL. WRF runs it at the END of the time step on the state the RK dynamics leaves behind, not inside radiation_driver / surface_driver / pbl_driver, so chaining it here would misrepresent the call order this document exists to pin. Two WSM6 stages are also genuinely not rate-shaped -- sedimentation is an in-place PLM update and saturation adjustment relaxes to a target state -- but that is a property of those stages, not the reason the scheme is absent from this document. KNOWN BINDING BEHAVIOUR (Rust CLI, current EarthSciAST main). A mounted component's own inline tests no longer run under the coupling (EarthSciAST #214, esm-spec 6.6: tests do not cross a mount edge), so this file can be run whole -- `./esm test couplings/scm_physics_column.esm` -- and the leaves are listed as un-asserted in the runner summary; they are exercised when their own files are the test target. The document no longer redeclares the leaves' index sets: since #298 they merge into the importing registry, and the 44-entry index_sets block that used to be needed now collides with the leaf's own folded declaration (rlay arrives as the literal 103, not as NLEV + NBUF). What has NOT changed is that a parent test cannot set a mounted component's parameter: a scoped override `Lsm.thc` in parameter_overrides is rejected with `Invalid parameter 'Lsm.thc'` (probed 2026-09-12), which is why every shared surface, soil and radiation scalar is declared in this model as an <x>0 parameter with an <x> = <x>0 observed and coupled into the mounts. Residuals of the whole assembly against the step-900 references, measured with zero tolerances: surface-layer outputs <= 2.5e-5 relative -- rmol 2.5e-5, psim 2.4e-5, psih and Ri_b 2.1e-5, hfx 8.5e-6, u* 2.3e-6, qsfc / z0 / regime exact; the stable regime amplifies real32 roundoff in theta_v1 - theta_vs through the bulk Richardson number, an order above the daytime companion -- PBL height 3.5e-6 relative and kpbl exact, K_h / K_m Linf 2.3e-5 m^2/s, longwave fluxes Linf 2.0e-4 (F_up) and 6.2e-4 W/m^2 (F_dn), dthdt_lw and rthraten 5.9e-9 K/s, dthdt_sw and gsw exactly zero, glw 2.6e-7 and olr 1.3e-7 relative, and the PBL tendencies 1.7e-6 K/s (rthblten, column max 7.9e-5), 2.5e-5 and 4.5e-6 m/s^2 (rublten / rvblten, max 5.1e-4 / 2.6e-4), 2.4e-10 1/s (rqvblten, max 1.5e-8), rqcblten exactly zero and rqiblten 2.1e-17 (max 3.1e-15).",
   "license": "MIT",
   "tags": [
    "wrf",
@@ -28,12 +28,12 @@
   "NLEV": {
    "type": "integer",
    "default": 59,
-   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of model layers (WRF kte). Bound into the column grid at the import edge; 59 is the em_scm_xy reference column."
+   "description": "Number of model layers (WRF kte), bound into every mount edge so all column schemes resolve their grid at the same size; 59 is the em_scm_xy reference column. The leaves' own index sets merge into this document's registry at the mount edge (esm-spec 4.7), so the document declares no index_sets of its own."
   },
   "NBUF": {
    "type": "integer",
    "default": 44,
-   "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Number of buffer layers MM5ATM adds above the model top, nint(p_top / (100 deltap)) with deltap = 4 hPa (RRTMINIT: NLAYERS = kme + nint(p_top*0.01/deltap) - 1); 44 for the reference column (p_top = 177.6 hPa)."
+   "description": "Number of buffer layers MM5ATM adds above the model top, nint(p_top / (100 deltap)) with deltap = 4 hPa (RRTMINIT: NLAYERS = kme + nint(p_top*0.01/deltap) - 1); 44 for the reference column (p_top = 177.6 hPa). Bound into each RRTM mount edge."
   },
   "NGPT": {
    "type": "integer",
@@ -54,412 +54,31 @@
    "type": "integer",
    "default": 181,
    "description": "Declared at document level because the mounted leaves' index sets are redeclared here (a top-level ref mount does not merge the leaf's index_sets; EarthSciAST issue #198) and bound into every mount edge. Temperature nodes of the TOTPLNK table (160..340 K)."
-  }
- },
- "index_sets": {
-  "rlay": {
-   "kind": "interval",
-   "size": {
-    "op": "+",
-    "args": [
-     "NLEV",
-     "NBUF"
-    ]
-   }
   },
-  "rlev": {
-   "kind": "interval",
-   "size": {
-    "op": "+",
-    "args": [
-     "NLEV",
-     "NBUF",
-     1
-    ]
-   }
-  },
-  "bands": {
-   "kind": "interval",
-   "size": "NBANDS"
-  },
-  "o3nodes": {
-   "kind": "interval",
-   "size": 31
-  },
-  "o3edges": {
-   "kind": "interval",
-   "size": 32
-  },
-  "gpts": {
-   "kind": "interval",
-   "size": "NGPT"
-  },
-  "gl": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     "NGPT",
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "refnodes_b02": {
-   "kind": "interval",
-   "size": 11
-  },
-  "g01": {
-   "kind": "interval",
-   "size": 8
-  },
-  "gl01": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     8,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g02": {
-   "kind": "interval",
-   "size": 14
-  },
-  "gl02": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     14,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g03": {
-   "kind": "interval",
-   "size": 16
-  },
-  "gl03": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     16,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g04": {
-   "kind": "interval",
-   "size": 14
-  },
-  "gl04": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     14,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g05": {
-   "kind": "interval",
-   "size": 16
-  },
-  "gl05": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     16,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g06": {
-   "kind": "interval",
-   "size": 8
-  },
-  "gl06": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     8,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g07": {
-   "kind": "interval",
-   "size": 12
-  },
-  "gl07": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     12,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g08": {
-   "kind": "interval",
-   "size": 8
-  },
-  "gl08": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     8,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g09": {
-   "kind": "interval",
-   "size": 12
-  },
-  "gl09": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     12,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g10": {
-   "kind": "interval",
-   "size": 6
-  },
-  "gl10": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     6,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g11": {
-   "kind": "interval",
-   "size": 8
-  },
-  "gl11": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     8,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g12": {
-   "kind": "interval",
-   "size": 8
-  },
-  "gl12": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     8,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g13": {
-   "kind": "interval",
-   "size": 4
-  },
-  "gl13": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     4,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g14": {
-   "kind": "interval",
-   "size": 2
-  },
-  "gl14": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     2,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g15": {
-   "kind": "interval",
-   "size": 2
-  },
-  "gl15": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     2,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "g16": {
-   "kind": "interval",
-   "size": 2
-  },
-  "gl16": {
-   "kind": "interval",
-   "size": {
-    "op": "*",
-    "args": [
-     2,
-     {
-      "op": "+",
-      "args": [
-       "NLEV",
-       "NBUF"
-      ]
-     }
-    ]
-   }
-  },
-  "tnodes": {
-   "kind": "interval",
-   "size": "PLANCK_NODES"
-  },
-  "lev_down": {
-   "kind": "interval",
-   "size": "NLEV"
-  },
-  "lev_down_nodes": {
-   "kind": "interval",
-   "size": {
-    "op": "+",
-    "args": [
-     "NLEV",
-     1
-    ]
-   }
-  },
-  "secant_steps": {
-   "kind": "interval",
-   "size": 33
+  "NSOIL": {
+   "type": "integer",
+   "default": 4,
+   "description": "Number of PROGNOSTIC soil layers of the mounted slab (WRF num_soil_layers - 1 = 4; the deepest WRF layer is the fixed reservoir T_deep). Bound into the Lsm mount edge, whose column axis is renamed soil/soil_nodes so it does not collide with the 59-layer atmospheric lev (esm-spec 4.7 mount-edge index_set_rename, EarthSciAST #213)."
   }
  },
  "models": {
   "Sfc": {
    "ref": "../components/atmospheric_dynamics/sfclayrev/sfclayrev.esm"
+  },
+  "Lsm": {
+   "ref": "../components/land_surface/slab/slab.esm",
+   "bindings": {
+    "NLEV": "NSOIL"
+   },
+   "index_set_rename": {
+    "lev": "soil",
+    "lev_nodes": "soil_nodes"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/scm_step900_soil_inputs.esm"
+    }
+   ]
   },
   "Pbl": {
    "ref": "../components/atmospheric_dynamics/ysu/ysu.esm",
@@ -881,28 +500,6 @@
      "type": "unknown",
      "units": "1",
      "description": "YSU top-down mixing switch (namelist ysu_topdown_pblmix). Coupling source (variable_map param_to_var) for the mounted components."
-    },
-    "hfx_lsm0": {
-     "type": "parameter",
-     "units": "W/m^2",
-     "default": 70.73406219482422,
-     "description": "Prescribed: Sensible heat flux the PBL scheme receives: in WRF the slab land-surface scheme recomputes hfx from its own energy balance after sfclayrev, so pbl_driver sees the slab value (driver-level hfx_out), not sfclayrev's. Prescribed because the slab cannot be co-mounted (gap (n), see the document description)."
-    },
-    "hfx_lsm": {
-     "type": "unknown",
-     "units": "W/m^2",
-     "description": "Sensible heat flux the PBL scheme receives: in WRF the slab land-surface scheme recomputes hfx from its own energy balance after sfclayrev, so pbl_driver sees the slab value (driver-level hfx_out), not sfclayrev's. Prescribed because the slab cannot be co-mounted (gap (n), see the document description). Coupling source (variable_map param_to_var) for the mounted components."
-    },
-    "qfx_lsm0": {
-     "type": "parameter",
-     "units": "kg/(m^2*s)",
-     "default": 7.956730405567214e-05,
-     "description": "Prescribed: Moisture flux the PBL scheme receives (slab value, see hfx_lsm)."
-    },
-    "qfx_lsm": {
-     "type": "unknown",
-     "units": "kg/(m^2*s)",
-     "description": "Moisture flux the PBL scheme receives (slab value, see hfx_lsm). Coupling source (variable_map param_to_var) for the mounted components."
     },
     "co2vmr0": {
      "type": "parameter",
@@ -1579,6 +1176,259 @@
       "lev"
      ],
      "description": "Boundary-layer cloud-ice tendency, WRF's RQIBLTEN."
+    },
+    "tmn": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Deep-soil (reservoir) temperature TMN, the slab's lower boundary condition. Coupling source (variable_map param_to_var) for the mounted slab."
+    },
+    "tmn0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.0,
+     "description": "Prescribed: Deep-soil (reservoir) temperature TMN, the slab's lower boundary condition."
+    },
+    "thc": {
+     "type": "unknown",
+     "units": "cal/(cm*K*s^0.5)",
+     "description": "Land-use thermal inertia THC of the slab (LANDUSE.TBL, time-invariant for this case). Coupling source (variable_map param_to_var) for the mounted slab."
+    },
+    "thc0": {
+     "type": "parameter",
+     "units": "cal/(cm*K*s^0.5)",
+     "default": 0.0,
+     "description": "Prescribed: Land-use thermal inertia THC of the slab (LANDUSE.TBL, time-invariant for this case)."
+    },
+    "snowc": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Snow-cover flag SNOWC (0 here; the SCM case is snow-free). Coupling source (variable_map param_to_var) for the mounted slab."
+    },
+    "snowc0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: Snow-cover flag SNOWC (0 here; the SCM case is snow-free)."
+    },
+    "radiation": {
+     "type": "unknown",
+     "units": "1",
+     "description": "WRF slab `radiation` flag: .TRUE. when a radiation scheme supplies GSW/GLW, so the slab closes the surface energy balance with them. Coupling source (variable_map param_to_var) for the mounted slab."
+    },
+    "radiation0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: WRF slab `radiation` flag: .TRUE. when a radiation scheme supplies GSW/GLW, so the slab closes the surface energy balance with them."
+    },
+    "ifsnow": {
+     "type": "unknown",
+     "units": "1",
+     "description": "WRF slab `ifsnow` flag (snow-cover effects on the surface energy balance). Coupling source (variable_map param_to_var) for the mounted slab."
+    },
+    "ifsnow0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Prescribed: WRF slab `ifsnow` flag (snow-cover effects on the surface energy balance)."
+    },
+    "T_deep": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Temperature of the fixed deepest WRF soil layer, TSLB(num_soil_layers) \u2014 the slab's reservoir boundary value. Coupling source (variable_map param_to_var) for the mounted slab."
+    },
+    "T_deep0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.0,
+     "description": "Prescribed: Temperature of the fixed deepest WRF soil layer, TSLB(num_soil_layers) \u2014 the slab's reservoir boundary value."
+    },
+    "z_deep": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Depth of the fixed deepest WRF soil layer centre, ZS(num_soil_layers). Coupling source (variable_map param_to_var) for the mounted slab."
+    },
+    "z_deep0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Prescribed: Depth of the fixed deepest WRF soil layer centre, ZS(num_soil_layers)."
+    },
+    "lsm_hfx": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Land-surface output hfx of the mounted slab at the assembly state: sensible heat flux the slab recomputes from its own energy balance (WRF driver-level HFX, the value pbl_driver then sees)."
+    },
+    "lsm_hfx_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Lsm.hfx through the coupling."
+    },
+    "lsm_qfx": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Land-surface output qfx of the mounted slab at the assembly state: moisture flux the slab recomputes (WRF driver-level QFX)."
+    },
+    "lsm_qfx_in": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 0.0,
+     "description": "Receives Lsm.qfx through the coupling."
+    },
+    "lsm_lh": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Land-surface output lh of the mounted slab at the assembly state: latent heat flux."
+    },
+    "lsm_lh_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Lsm.lh through the coupling."
+    },
+    "lsm_qsfc": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Land-surface output qsfc of the mounted slab at the assembly state: surface specific humidity."
+    },
+    "lsm_qsfc_in": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.0,
+     "description": "Receives Lsm.qsfc through the coupling."
+    },
+    "lsm_capg": {
+     "type": "unknown",
+     "units": "J/(K*m^3)",
+     "description": "Land-surface output capg of the mounted slab at the assembly state: soil heat capacity per unit volume."
+    },
+    "lsm_capg_in": {
+     "type": "parameter",
+     "units": "J/(K*m^3)",
+     "default": 0.0,
+     "description": "Receives Lsm.capg through the coupling."
+    },
+    "lsm_rnet": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Land-surface output rnet of the mounted slab at the assembly state: net radiation at the surface."
+    },
+    "lsm_rnet_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Lsm.rnet through the coupling."
+    },
+    "lsm_upflux": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Land-surface output upflux of the mounted slab at the assembly state: upward longwave flux from the surface."
+    },
+    "lsm_upflux_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Lsm.upflux through the coupling."
+    },
+    "lsm_xinet": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Land-surface output xinet of the mounted slab at the assembly state: net longwave flux at the surface."
+    },
+    "lsm_xinet_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Lsm.xinet through the coupling."
+    },
+    "lsm_hm": {
+     "type": "unknown",
+     "units": "K/s",
+     "description": "Land-surface output hm of the mounted slab at the assembly state: soil heat-diffusion term at the surface node."
+    },
+    "lsm_hm_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "default": 0.0,
+     "description": "Receives Lsm.hm through the coupling."
+    },
+    "lsm_qs": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Land-surface output qs of the mounted slab at the assembly state: soil heat flux."
+    },
+    "lsm_qs_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Lsm.qs through the coupling."
+    },
+    "lsm_G_sfc": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Land-surface output G_sfc of the mounted slab at the assembly state: ground heat flux into the soil column."
+    },
+    "lsm_G_sfc_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Receives Lsm.G_sfc through the coupling."
+    },
+    "lsm_theta_air": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Land-surface output theta_air of the mounted slab at the assembly state: potential temperature of the lowest atmospheric layer as the slab forms it."
+    },
+    "lsm_theta_air_in": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.0,
+     "description": "Receives Lsm.theta_air through the coupling."
+    },
+    "lsm_land": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Land-surface output land of the mounted slab at the assembly state: land indicator the slab derives from XLAND."
+    },
+    "lsm_land_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives Lsm.land through the coupling."
+    },
+    "lsm_dTsk_dt": {
+     "type": "unknown",
+     "units": "K/s",
+     "description": "Land-surface output dTsk_dt of the mounted slab at the assembly state: instantaneous skin-temperature tendency."
+    },
+    "lsm_dTsk_dt_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "default": 0.0,
+     "description": "Receives Lsm.dTsk_dt through the coupling."
+    },
+    "lsm_dTs_dt": {
+     "type": "unknown",
+     "units": "K/s",
+     "description": "Land-surface output dTs_dt of the mounted slab at the assembly state: soil-layer temperature tendencies.",
+     "shape": [
+      "soil"
+     ]
+    },
+    "lsm_dTs_dt_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "default": 0.0,
+     "description": "Receives Lsm.dTs_dt through the coupling.",
+     "shape": [
+      "soil"
+     ]
+    },
+    "dTsk_dt_wrf_step": {
+     "type": "unknown",
+     "units": "K/s",
+     "description": "The coupled slab's instantaneous skin tendency, named for comparison with WRF's finite-step (tsk_out - tsk)/dt, which sub-steps the soil and re-evaluates the fluxes at the updated TSLB(1) (FORTRAN_BUGS N12: the two are 0.5-11 % apart)."
     }
    },
    "equations": [
@@ -1701,14 +1551,6 @@
     {
      "lhs": "topdown",
      "rhs": "topdown0"
-    },
-    {
-     "lhs": "hfx_lsm",
-     "rhs": "hfx_lsm0"
-    },
-    {
-     "lhs": "qfx_lsm",
-     "rhs": "qfx_lsm0"
     },
     {
      "lhs": "co2vmr",
@@ -1981,12 +1823,104 @@
     {
      "lhs": "pbl_dqidt",
      "rhs": "pbl_dqidt_in"
+    },
+    {
+     "lhs": "tmn",
+     "rhs": "tmn0"
+    },
+    {
+     "lhs": "thc",
+     "rhs": "thc0"
+    },
+    {
+     "lhs": "snowc",
+     "rhs": "snowc0"
+    },
+    {
+     "lhs": "radiation",
+     "rhs": "radiation0"
+    },
+    {
+     "lhs": "ifsnow",
+     "rhs": "ifsnow0"
+    },
+    {
+     "lhs": "T_deep",
+     "rhs": "T_deep0"
+    },
+    {
+     "lhs": "z_deep",
+     "rhs": "z_deep0"
+    },
+    {
+     "lhs": "lsm_hfx",
+     "rhs": "lsm_hfx_in"
+    },
+    {
+     "lhs": "lsm_qfx",
+     "rhs": "lsm_qfx_in"
+    },
+    {
+     "lhs": "lsm_lh",
+     "rhs": "lsm_lh_in"
+    },
+    {
+     "lhs": "lsm_qsfc",
+     "rhs": "lsm_qsfc_in"
+    },
+    {
+     "lhs": "lsm_capg",
+     "rhs": "lsm_capg_in"
+    },
+    {
+     "lhs": "lsm_rnet",
+     "rhs": "lsm_rnet_in"
+    },
+    {
+     "lhs": "lsm_upflux",
+     "rhs": "lsm_upflux_in"
+    },
+    {
+     "lhs": "lsm_xinet",
+     "rhs": "lsm_xinet_in"
+    },
+    {
+     "lhs": "lsm_hm",
+     "rhs": "lsm_hm_in"
+    },
+    {
+     "lhs": "lsm_qs",
+     "rhs": "lsm_qs_in"
+    },
+    {
+     "lhs": "lsm_G_sfc",
+     "rhs": "lsm_G_sfc_in"
+    },
+    {
+     "lhs": "lsm_theta_air",
+     "rhs": "lsm_theta_air_in"
+    },
+    {
+     "lhs": "lsm_land",
+     "rhs": "lsm_land_in"
+    },
+    {
+     "lhs": "lsm_dTsk_dt",
+     "rhs": "lsm_dTsk_dt_in"
+    },
+    {
+     "lhs": "lsm_dTs_dt",
+     "rhs": "lsm_dTs_dt_in"
+    },
+    {
+     "lhs": "dTsk_dt_wrf_step",
+     "rhs": "lsm_dTsk_dt"
     }
    ],
    "tests": [
     {
      "id": "scm_step900_physics_column",
-     "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, p_top = 177.6 hPa, data/eqwefic/scm_ref) dumped by the instrumented ctessum-claude/WRF fork (module_esm_dump, commit 592f693) at TWO levels for the same step: the PHYSICS-DRIVER level (hooks around radiation_driver, surface_driver + pbl_driver and the physics-tendency sum in dyn_em/module_first_rk_step_part1.F -- dumps subassembly_all, _pbl and _rad) and the KERNEL level (sfclayrev, sw, ysu and rrtm scm_ref dumps of the same call). The seven dumps are merged into one column namespace by tools/merge_dumps.py (esm_dump_scm_suite_<step>.json, variables tagged all_/pbl_/rad_/sfc_/sw_/ysu_/rrtm_) because tools/fill_tests.py admits two dumps per test; the numbers are transcribed by fill_tests.py from the sidecar couplings/scm_physics_column_night.esm.fill.json. All references are real32 model values. The DRIVER-level tendency vector (rthblten, rublten, rvblten, rqvblten, rqcblten, rqiblten, rthraten, rth_phys_sum, hfx, qfx, gsw, glw, olr, pblh) is the contract this document exists to pin: it is what WRF hands to the dynamics, and rqcblten/rqiblten are asserted here for the first time. Regime: WRF step 900 (kernel call 1800), 09:58 UTC = 03:32 local solar time -- the deep stable night of the reference run: gsw = 0 exactly (cos zenith -0.552, so the whole Dudhia branch is the zero-sun path), glw = 251.9, olr = 240.1, slab hfx = -19.08 W/m^2 (SfclayRev's own -19.07), Ri_b = +0.037 (regime 1, stable), u* = 0.267 m/s, a shallow h = 263 m over 6 layers found by the Hong (2010) stable-regime search, tsk = 277.7 K, thin cirrus aloft (qi <= 5.2e-8, four cloudy layers). Residuals of the whole assembly against the step-900 references, measured with zero tolerances: surface-layer outputs <= 2.5e-5 relative -- rmol 2.5e-5, psim 2.4e-5, psih and Ri_b 2.1e-5, hfx 8.5e-6, u* 2.3e-6, qsfc / z0 / regime exact; the stable regime amplifies real32 roundoff in theta_v1 - theta_vs through the bulk Richardson number, an order above the daytime companion -- PBL height 3.5e-6 relative and kpbl exact, K_h / K_m Linf 2.3e-5 m^2/s, longwave fluxes Linf 2.0e-4 (F_up) and 6.2e-4 W/m^2 (F_dn), dthdt_lw and rthraten 5.9e-9 K/s, dthdt_sw and gsw exactly zero, glw 2.6e-7 and olr 1.3e-7 relative, and the PBL tendencies 1.7e-6 K/s (rthblten, column max 7.9e-5), 2.5e-5 and 4.5e-6 m/s^2 (rublten / rvblten, max 5.1e-4 / 2.6e-4), 2.4e-10 1/s (rqvblten, max 1.5e-8), rqcblten exactly zero and rqiblten 2.1e-17 (max 3.1e-15). The PBL TENDENCIES are asserted only LOOSELY and document a known gap rather than test the physics: WRF's rthblten/rublten/rvblten/rqvblten/rqcblten/rqiblten are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s while the assembly evaluates the instantaneous right-hand side (PLAN.md 0.3), which at this regime is the dominant term of their residual; the physics itself is pinned by ysu.esm's own small-dt tests, and a stage-3 comparison at the WRF step must apply the same implicit step to the assembled tendencies. The driver-level th2/t2/q2 are overwritten by the land-surface branch of surface_driver, so those three are referenced to the kernel-level sfclayrev dump, and the slab's driver-level hfx/qfx are prescribed (hfx_lsm/qfx_lsm) because the land scheme is not co-mounted -- see the model description. TOLERANCES: each is the smallest of {1, 2, 5} x 10^k that is at least 5x the residual measured in a zero-tolerance run (relative for the scalars, absolute for the Linf_error column assertions), with a 1e-6 relative floor; an assertion that is exact at zero tolerance keeps abs 0. ",
+     "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, p_top = 177.6 hPa, data/eqwefic/scm_ref) dumped by the instrumented ctessum-claude/WRF fork (module_esm_dump, commit 592f693) at TWO levels for the same step: the PHYSICS-DRIVER level (hooks around radiation_driver, surface_driver + pbl_driver and the physics-tendency sum in dyn_em/module_first_rk_step_part1.F -- dumps subassembly_all, _pbl and _rad) and the KERNEL level (sfclayrev, sw, ysu and rrtm scm_ref dumps of the same call). The seven dumps are merged into one column namespace by tools/merge_dumps.py (esm_dump_scm_suite_<step>.json, variables tagged all_/pbl_/rad_/sfc_/sw_/ysu_/rrtm_) because tools/fill_tests.py admits two dumps per test; the numbers are transcribed by fill_tests.py from the sidecar couplings/scm_physics_column_night.esm.fill.json. All references are real32 model values. The DRIVER-level tendency vector (rthblten, rublten, rvblten, rqvblten, rqcblten, rqiblten, rthraten, rth_phys_sum, hfx, qfx, gsw, glw, olr, pblh) is the contract this document exists to pin: it is what WRF hands to the dynamics, and rqcblten/rqiblten are asserted here for the first time. Regime: WRF step 900 (kernel call 1800), 09:58 UTC = 03:32 local solar time -- the deep stable night of the reference run: gsw = 0 exactly (cos zenith -0.552, so the whole Dudhia branch is the zero-sun path), glw = 251.9, olr = 240.1, slab hfx = -19.08 W/m^2 (SfclayRev's own -19.07), Ri_b = +0.037 (regime 1, stable), u* = 0.267 m/s, a shallow h = 263 m over 6 layers found by the Hong (2010) stable-regime search, tsk = 277.7 K, thin cirrus aloft (qi <= 5.2e-8, four cloudy layers). Residuals of the whole assembly against the step-900 references, measured with zero tolerances: surface-layer outputs <= 2.5e-5 relative -- rmol 2.5e-5, psim 2.4e-5, psih and Ri_b 2.1e-5, hfx 8.5e-6, u* 2.3e-6, qsfc / z0 / regime exact; the stable regime amplifies real32 roundoff in theta_v1 - theta_vs through the bulk Richardson number, an order above the daytime companion -- PBL height 3.5e-6 relative and kpbl exact, K_h / K_m Linf 2.3e-5 m^2/s, longwave fluxes Linf 2.0e-4 (F_up) and 6.2e-4 W/m^2 (F_dn), dthdt_lw and rthraten 5.9e-9 K/s, dthdt_sw and gsw exactly zero, glw 2.6e-7 and olr 1.3e-7 relative, and the PBL tendencies 1.7e-6 K/s (rthblten, column max 7.9e-5), 2.5e-5 and 4.5e-6 m/s^2 (rublten / rvblten, max 5.1e-4 / 2.6e-4), 2.4e-10 1/s (rqvblten, max 1.5e-8), rqcblten exactly zero and rqiblten 2.1e-17 (max 3.1e-15). The PBL TENDENCIES are asserted only LOOSELY and document a known gap rather than test the physics: WRF's rthblten/rublten/rvblten/rqvblten/rqcblten/rqiblten are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s while the assembly evaluates the instantaneous right-hand side (PLAN.md 0.3), which at this regime is the dominant term of their residual; the physics itself is pinned by ysu.esm's own small-dt tests, and a stage-3 comparison at the WRF step must apply the same implicit step to the assembled tendencies. The driver-level th2/t2/q2 are overwritten by the land-surface branch of surface_driver, so those three are referenced to the kernel-level sfclayrev dump, and the slab's driver-level hfx/qfx are prescribed (hfx_lsm/qfx_lsm) because the land scheme is not co-mounted -- see the model description. TOLERANCES: each is the smallest of {1, 2, 5} x 10^k that is at least 5x the residual measured in a zero-tolerance run (relative for the scalars, absolute for the Linf_error column assertions), with a 1e-6 relative floor; an assertion that is exact at zero tolerance keeps abs 0. SLAB COUPLING (2026-09-12): the slab land surface is co-mounted (EarthSciAST #213 index_set_rename gives its 4-cell soil column the axis name soil/soil_nodes), fed by Sfc.flhc/flqc and by this step's Sw.gsw (0 at night) and Heat.glw, and its hfx/qfx now drive YSU instead of the values prescribed from the dump. The slab's esm form is an INSTANTANEOUS flux calculator, while WRF's SLAB sub-steps the soil and reports the flux at the END of its internal step (FORTRAN_BUGS N12), so the coupled fluxes sit a measured 2.7e-4 (hfx) and 2.4e-4 (qfx, lh) from the driver-level hfx_out/qfx_out/lh_out; qsfc agrees to better than 5e-5. The stable-night PBL is far less flux-sensitive than the daytime one, so pbl_K_h and pbl_K_m stay green at their original Linf abs 0.002 and 0.001. WSM6 remains un-mounted: its stages are in-place state increments, not rates.",
      "parameter_overrides": {
       "psfc0": 97135.1484375,
       "tsk0": 277.69512939453125,
@@ -2018,8 +1952,6 @@
       "isftcflx0": 0.0,
       "iz0tlnd0": 0.0,
       "topdown0": 1.0,
-      "hfx_lsm0": -19.078828811645508,
-      "qfx_lsm0": 2.9627963158418424e-06,
       "co2vmr0": 0.00037900000461377203,
       "n2ovmr0": 3.1900000863060995e-07,
       "ch4vmr0": 1.7739999975674436e-06,
@@ -2029,7 +1961,14 @@
       "solcon0": 1384.8056640625,
       "obscur0": 0.0,
       "cssca0": 9.999999747378752e-06,
-      "icloud0": 1.0
+      "icloud0": 1.0,
+      "tmn0": 288.0,
+      "thc0": 0.03999999910593033,
+      "snowc0": 0.0,
+      "radiation0": 1.0,
+      "ifsnow0": 1.0,
+      "T_deep0": 288.0,
+      "z_deep0": 0.22999998927116394
      },
      "time_span": {
       "start": 0,
@@ -3639,6 +3578,99 @@
        "tolerance": {
         "rel": 1e-06
        }
+      },
+      {
+       "variable": "lsm_hfx",
+       "time": 0.0,
+       "expected": -19.078828811645508,
+       "tolerance": {
+        "rel": 0.001
+       }
+      },
+      {
+       "variable": "lsm_qfx",
+       "time": 0.0,
+       "expected": 2.9627963158418424e-06,
+       "tolerance": {
+        "rel": 0.0005
+       }
+      },
+      {
+       "variable": "lsm_lh",
+       "time": 0.0,
+       "expected": 7.406991004943848,
+       "tolerance": {
+        "rel": 0.0005
+       }
+      },
+      {
+       "variable": "lsm_qsfc",
+       "time": 0.0,
+       "expected": 0.005455366801470518,
+       "tolerance": {
+        "rel": 0.0005
+       }
+      },
+      {
+       "variable": "lsm_capg",
+       "time": 0.0,
+       "expected": 2364560.0,
+       "tolerance": {
+        "rel": 1e-06
+       }
+      },
+      {
+       "variable": "lsm_land",
+       "time": 0.0,
+       "expected": 1.0,
+       "tolerance": {
+        "abs": 0.0
+       }
+      },
+      {
+       "variable": "dTsk_dt_wrf_step",
+       "time": 0.0,
+       "expected": -5.645751953125e-05,
+       "tolerance": {
+        "rel": 0.15
+       }
+      },
+      {
+       "variable": "lsm_dTs_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 1e-05
+       },
+       "reference": {
+        "op": "aggregate",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -5.645751953125e-05,
+            -5.5948893229166664e-05,
+            -5.4931640625e-05,
+            -4.57763671875e-05
+           ]
+          },
+          "k"
+         ]
+        }
+       }
       }
      ]
     }
@@ -3869,20 +3901,6 @@
    "to": "Pbl.topdown",
    "transform": "param_to_var",
    "description": "shared state topdown into the PBL scheme"
-  },
-  {
-   "type": "variable_map",
-   "from": "ScmPhysicsColumn.hfx_lsm",
-   "to": "Pbl.hfx",
-   "transform": "param_to_var",
-   "description": "slab-recomputed sensible heat flux into the PBL scheme (WRF order: sfclayrev -> slab -> YSU)"
-  },
-  {
-   "type": "variable_map",
-   "from": "ScmPhysicsColumn.qfx_lsm",
-   "to": "Pbl.qfx",
-   "transform": "param_to_var",
-   "description": "slab-recomputed moisture flux into the PBL scheme"
   },
   {
    "type": "variable_map",
@@ -4576,6 +4594,258 @@
    "to": "Pbl.rthraten_in",
    "transform": "param_to_var",
    "description": "radiation tendency into the PBL scheme (WRF order: radiation_driver -> surface_driver -> pbl_driver; YSU reads rthraten in its cloud-top entrainment branch)"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.t1",
+   "to": "Lsm.t_air",
+   "transform": "param_to_var",
+   "description": "lowest-layer temperature into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.qv1",
+   "to": "Lsm.qv_air",
+   "transform": "param_to_var",
+   "description": "lowest-layer water-vapour mixing ratio into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.p1",
+   "to": "Lsm.p_air",
+   "transform": "param_to_var",
+   "description": "lowest-layer pressure into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.psfc",
+   "to": "Lsm.psfc",
+   "transform": "param_to_var",
+   "description": "surface pressure into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.tsk",
+   "to": "Lsm.tsk",
+   "transform": "param_to_var",
+   "description": "skin temperature entering the step into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.emiss",
+   "to": "Lsm.emiss",
+   "transform": "param_to_var",
+   "description": "surface emissivity into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.mavail",
+   "to": "Lsm.mavail",
+   "transform": "param_to_var",
+   "description": "surface moisture availability into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.xland",
+   "to": "Lsm.xland",
+   "transform": "param_to_var",
+   "description": "land/water mask into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.tmn",
+   "to": "Lsm.tmn",
+   "transform": "param_to_var",
+   "description": "prescribed tmn into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.thc",
+   "to": "Lsm.thc",
+   "transform": "param_to_var",
+   "description": "prescribed thc into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.snowc",
+   "to": "Lsm.snowc",
+   "transform": "param_to_var",
+   "description": "prescribed snowc into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.radiation",
+   "to": "Lsm.radiation",
+   "transform": "param_to_var",
+   "description": "prescribed radiation into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.ifsnow",
+   "to": "Lsm.ifsnow",
+   "transform": "param_to_var",
+   "description": "prescribed ifsnow into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.T_deep",
+   "to": "Lsm.T_deep",
+   "transform": "param_to_var",
+   "description": "prescribed T_deep into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.z_deep",
+   "to": "Lsm.z_deep",
+   "transform": "param_to_var",
+   "description": "prescribed z_deep into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sw.gsw",
+   "to": "Lsm.gsw",
+   "transform": "param_to_var",
+   "description": "Dudhia net surface shortwave into the land-surface energy balance (WRF order: radiation_driver -> surface_driver, so the slab sees this step's GSW)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Heat.glw",
+   "to": "Lsm.glw",
+   "transform": "param_to_var",
+   "description": "RRTM downward surface longwave into the land-surface energy balance"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.flhc",
+   "to": "Lsm.flhc",
+   "transform": "param_to_var",
+   "description": "surface-layer heat exchange coefficient into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sfc.flqc",
+   "to": "Lsm.flqc",
+   "transform": "param_to_var",
+   "description": "surface-layer moisture exchange coefficient into the land surface"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.hfx",
+   "to": "Pbl.hfx",
+   "transform": "param_to_var",
+   "description": "slab-recomputed sensible heat flux into the PBL scheme (WRF order: sfclayrev -> slab -> YSU); computed here, no longer prescribed"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.qfx",
+   "to": "Pbl.qfx",
+   "transform": "param_to_var",
+   "description": "slab-recomputed moisture flux into the PBL scheme; computed here, no longer prescribed"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.hfx",
+   "to": "ScmPhysicsColumn.lsm_hfx_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.hfx"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.qfx",
+   "to": "ScmPhysicsColumn.lsm_qfx_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.qfx"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.lh",
+   "to": "ScmPhysicsColumn.lsm_lh_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.lh"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.qsfc",
+   "to": "ScmPhysicsColumn.lsm_qsfc_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.qsfc"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.capg",
+   "to": "ScmPhysicsColumn.lsm_capg_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.capg"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.rnet",
+   "to": "ScmPhysicsColumn.lsm_rnet_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.rnet"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.upflux",
+   "to": "ScmPhysicsColumn.lsm_upflux_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.upflux"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.xinet",
+   "to": "ScmPhysicsColumn.lsm_xinet_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.xinet"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.hm",
+   "to": "ScmPhysicsColumn.lsm_hm_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.hm"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.qs",
+   "to": "ScmPhysicsColumn.lsm_qs_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.qs"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.G_sfc",
+   "to": "ScmPhysicsColumn.lsm_G_sfc_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.G_sfc"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.theta_air",
+   "to": "ScmPhysicsColumn.lsm_theta_air_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.theta_air"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.land",
+   "to": "ScmPhysicsColumn.lsm_land_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.land"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.dTsk_dt",
+   "to": "ScmPhysicsColumn.lsm_dTsk_dt_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.dTsk_dt"
+  },
+  {
+   "type": "variable_map",
+   "from": "Lsm.dTs_dt",
+   "to": "ScmPhysicsColumn.lsm_dTs_dt_in",
+   "transform": "param_to_var",
+   "description": "expose Lsm.dTs_dt"
   }
  ]
 }
