@@ -410,6 +410,50 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   arguments by up to 0.28 Pa (N50). Remaining: slab (gap (n)) and WSM6
   (in-place step) in the same document; the other five dumped steps as
   regimes; tighten the `subassembly_pbl` hook's pressure fields in the fork.
+
+  **Slab co-mounted 2026-09-12 (gap (n) closed).** EarthSciAST #213 + #298
+  removed the index-set obstruction, and `couplings/scm_physics_column{,_night}.esm`
+  now mount nine components — SfclayRev, the slab, YSU, the five RRTM stages and
+  DudhiaSW — at 2 x 50/50 (167 coupling edges each). The soil column enters
+  through a mount-edge `index_set_rename` (`lev` -> `soil`, `lev_nodes` ->
+  `soil_nodes`, `NSOIL = 4` bound at the edge), radiation feeds the surface
+  energy balance directly (the dumped `pbl_gsw`/`pbl_glw` are bit-identical to
+  `sw_gsw`/`rrtm_glw`, so radiation_driver's own output is what surface_driver
+  saw), and the slab's `hfx`/`qfx` now DRIVE YSU instead of being prescribed
+  from the dump. Mutation-checked: cutting `Sfc.flhc -> Lsm.flhc` fails 6
+  assertions including `pbl_hpbl`, `K_h` and `K_m`; cutting `Sw.gsw -> Lsm.gsw`
+  fails both soil-temperature tendencies. The residual against WRF is the N12
+  sub-stepping gap (the esm slab is an instantaneous flux calculator, WRF's SLAB
+  reports the flux at the end of its internal sub-step): hfx 7.5e-4 day /
+  2.7e-4 night, qfx and lh 3.1e-4 / 2.4e-4, qsfc 1.8e-4, `lsm_dTs_dt` Linf
+  5.2e-6 K/s; `lsm_capg` and `lsm_land` exact. Because YSU now sees the
+  instantaneous flux, the day column's `K_h`/`K_m` moved by Linf 0.042 / 0.025
+  m^2/s (2.4e-4 of their column maxima) and those two assertions loosened from
+  `abs` 0.002/0.001 to 0.06/0.04 — the one place this work weakened an existing
+  assertion. Gap (m)'s other half is also gone: a document must no longer
+  redeclare a mounted leaf's index sets, and doing so now breaks the load.
+  **WSM6 is absent for physics reasons, not format reasons**: the SCM reference
+  column is cloud-free (`qc = qr = qs = qg = 0` in every layer at both steps,
+  `qi` a 2.1e-9 / 5.2e-8 kg/kg trace), the merged suite dump carries no `mp_`
+  variables at all, and microphysics is a separate driver call at the end of
+  WRF's step — mounting it would add ~7 components and ~100 edges asserting
+  nothing. It is covered on the supercell column by
+  `couplings/microphysics_column{,_mixed}.esm` instead.
+  Three hazards found while doing this: (i) `tools/fill_tests.py` is
+  DESTRUCTIVE on this document family — regenerating the day document reproduced
+  all 50 assertions and 47 overrides bit-identically (a strong check on the hand
+  transcription) but wiped `tests/rrtm_couple_heating_call2820_inputs.esm`,
+  which is only half generated: its two coupling-target lowerings
+  `input_F_up -> F_up_in` and `input_F_dn -> F_dn_in` cannot be expressed in a
+  sidecar `libraries` entry, and without them every assertion fails with
+  `unlowered_operator`. The file was restored and both sidecars carry a warning
+  `_note`; the `libraries` schema needs a way to carry hand-authored lowerings
+  before that script is safe to re-run here. (ii) A parent test still cannot set
+  a mounted component's parameter (`"Lsm.thc": 0.02` -> `Invalid parameter
+  'Lsm.thc'`, probed on current main), which is what forces the
+  prescribe-and-couple idiom. (iii) `.esm` refs reach
+  `../EarthSciDiscretizations` by relative sibling path, which does not exist
+  from a nested git worktree; a worktree agent must symlink it.
 - **EarthSciModels fire PRs opened 2026-09-06:** #22 (4 fire_behavior-derived
   tests appended to the existing `wildland_fire/level_set/fire_heat_flux.esm`,
   PLAN 1.3) and #23 (`components/wildland_fire/fire_behavior/`, 464
