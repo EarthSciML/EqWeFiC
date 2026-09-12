@@ -426,6 +426,44 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   `eqwefic/*` branches exist only on the fork, so `main` is the only possible
   base for any of them.
 
+- **RADM2 reaction-system tests executed for the first time, 2026-09-12.** The
+  three box trajectory tests written 2026-09-06 had never run: the Rust CLI
+  reported "no inline tests found" (gap (p), EarthSciAST #206, closed by #251).
+  With the runner fixed they failed to LOAD — `H2O` and `M` carry
+  `"constant": true`, and esm-spec §7.4 lowers a reservoir species to a
+  PARAMETER, so their values belong in `parameter_overrides`, not
+  `initial_conditions`. With that fixed only the night regime ran: both daylight
+  regimes collapsed the step size to zero at t ~ 6.5e-15 s under the runner's
+  default `abstol` of 1e-6, which is meaningless for a state carried in
+  molec/cm3 (1e-3 ... 1e19). Isolated by flag (`--abstol 1e-3` alone fixes it,
+  `--reltol 1e-9` alone does not) and fixed durably by the document-scoped
+  `solver` block (esm-spec §2.2) carrying the box driver's own RTOL 1e-9 /
+  ATOL 1e-3. That block forces `"esm": "1.1.0"` (below it,
+  `solver_version_too_old`); the bump is required ONLY by the two daylight
+  trajectory tests — the 540 rate-constant and 177 tendency assertions are green
+  at 1.0.0 with no block — and **esm 1.1.0 is unreleased upstream, so
+  EarthSciModels PR #24 cannot carry this file until it is released**.
+  **The mechanism reproduces the KPP Rosenbrock reference at better than
+  rel 1e-7 on every species at every output time** (all 108 pass at 1e-7; 6 fail
+  at 1e-8 — the fast NO3/N2O5 night pair; 34 at 1e-9), so the declared rel 1e-5
+  has ~100x margin. Gap (q) closed too: a right-hand-side `D(state, t)` now
+  resolves, so `models.RADM2Tendencies` exposes one observed
+  `d<SPC>_dt = D(RADM2.<SPC>, t)` per variable species — the derivative-test
+  shape of §6 — asserted against `Vdot` from `radm2_Fun` at all three box states
+  (177 assertions). `constraint_equations` on the reaction system is NOT a
+  usable home for these (the observed never materialises); the sibling-model
+  form documented in `flatten.rs` phase 5b' is. 102 of the 177 are bit-identical
+  to KPP, max residual 9.5e-7 (`dALD_dt`, rural morning), every other species
+  within 3.9e-8; the outlier is cancellation, not stoichiometry — ALD's net is
+  1.1 % of its largest of 35 terms, and reconstructing the budget from this
+  document's stoichiometry times the dump's `A` reproduces the esm value, not
+  the Fortran one. Tolerance held at rel 1e-5 because evaluation ORDER differs
+  between bindings. Mutation-checked: a 10 % error in `k_R040` fails 34
+  assertions across all three surfaces. Note for any index-mapped comparison
+  against KPP `A`/`RCONST`: the document has 157 reactions to KPP's 156,
+  `R060x` being a shadow reaction of rate `0.9 k_R060` standing in for
+  radm2.eqn's negative product `-0.9 OH`.
+
 - **Slab done.** `SlabLandSurface` written as instantaneous tendencies: surface
   budget from consumer-supplied `FLHC/FLQC`, soil heat equation
   `D(K·D(T) − F, lev)/capg` with the surface flux G and the fixed deepest layer
