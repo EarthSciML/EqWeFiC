@@ -559,6 +559,40 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   `R060x` being a shadow reaction of rate `0.9 k_R060` standing in for
   radm2.eqn's negative product `-0.9 OH`.
 
+- **Julia could not run any of it, and one bug was why (2026-09-12).** The
+  refreshed EarthSciModels PR #24 came back with `radm2.esm` at 0 pass / 115
+  errors in `julia-inline-tests` while the Rust CLI ran the same file at
+  825/825. Two symptoms — `Unsupported operator: apply_expression_template` (112
+  errors, present since the branch was opened) and `Variable 'RADM2.SULF' not
+  found in variable dictionary` (3, on the new tendency model) — turned out to
+  be **one root cause**: `run_file_tests!` compiled each container through
+  `MTK.System(model::Model)`, which wraps that one model in a SYNTHETIC
+  single-model `EsmFile` (`flatten(::Model)`, `src/flatten.jl:1313`) and
+  flattens that, dropping everything the document supplies around the
+  container. `Model` has no `expression_templates` field — the registry is
+  document-scoped — so `expand_flattened_refs` returned early on an empty
+  registry and a §9.6.4 Option-B `apply_expression_template` reference (the form
+  the spec says SURVIVES the load fixpoint for the build to resolve) reached
+  `_esm_to_symbolic` with no arm; and sibling components' variables were absent,
+  so any equation reading another component died in `_resolve_lowering_var`.
+  §6.6 selects which tests RUN, not what the system CONTAINS: Rust and the
+  Python gate both build over the whole flattened document, and Julia was the
+  1-of-3 outlier (Go and TS execute no inline tests). **Two of this session's
+  working assumptions were wrong**: the `SULF` failure has nothing to do with
+  product-only species — the minimal repro fails on an ordinary substrate, and a
+  plain read without `D` fails identically — and the template gap was not the
+  larger of the two, it was the same fix. Filed as **EarthSciAST #314**, fixed
+  by **PR #315** (`fix/julia-gaps`, CI 20/20 green incl. julia 1.10/1.12/1.13;
+  local `Pkg.test()` 25571 pass / 7 pre-existing broken; the new
+  `container_in_document_test.jl` is 16/16 with the fix and 7/5 without).
+  Effect on EarthSciModels: `gaschem/radm2/radm2.esm` 0/115 -> **825/0** and
+  `urban_canopy/urban_radiation.esm` 0/13 -> **31/0**, both matching Rust. The
+  other five files failing in that Julia shard are unrelated and unchanged. Two
+  further Julia gaps surfaced and are NOT addressed: `Unsupported operator: and`
+  (`fuel_model_lookup.esm`) and an unqualified subsystem-scoped
+  `Variable 'T_ww' not found` (`urban_canopy_model.esm`). Repro fixtures kept in
+  `data/eqwefic/esm-repro/julia-gaps/`.
+
 - **Slab done.** `SlabLandSurface` written as instantaneous tendencies: surface
   budget from consumer-supplied `FLHC/FLQC`, soil heat equation
   `D(K·D(T) − F, lev)/capg` with the surface flux G and the fixed deepest layer
