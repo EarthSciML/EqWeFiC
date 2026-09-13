@@ -1147,7 +1147,15 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     rewrote) but landed no fix. Nothing upstream guards the shape: #255's tests
     are `coupled_const_array_fold.rs` and `scalar_param_array_default.rs`,
     neither a bare alias feeding a per-cell rule — the silent form this repo's
-    factoring and `<x>_in`/`variable_map` conventions generate. Phase 3.1 is
+    factoring and `<x>_in`/`variable_map` conventions generate. **EarthSciAST
+    PR #312** (opened 2026-09-12 from here) closes that hole:
+    `tests/alias_observed_export_order.rs`, four cells and four tests, pinning
+    the analytic zero tendency, the taped-vs-oracle path bitwise (the
+    `ESS_TAPE_CHECK=1` invariant without the env var), and that removing the
+    inert alias moves no bit. Verified to FAIL at `ebc432873` (4/4 failed, cell
+    0 tendency -0.288 K/s against 0) and pass on main. No cross-binding fixture:
+    the defect is in the Rust array runtime's tape lowering, which no other
+    binding has. Phase 3.1 is
     unblocked on this axis; the remaining Phase 3 blockers are (s) `maxiters`
     (still unfiled upstream) and (t) `table_lookup` on the `esm_problem`
     carrier (EarthSciAST #274).
