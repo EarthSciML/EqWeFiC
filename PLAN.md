@@ -493,7 +493,23 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   alike, which is what makes it a defect rather than a design limit). There is
   no fix inside the coupling document: a document-level and a test-level import
   both fail to reach the sealed leaf, and `TemplateImport` has no way to name a
-  scope inside it. The alternative to the upstream fix is for
+  scope inside it. **Fixed upstream the same day by EarthSciAST PR #313**
+  (opened from here; 21/21 CI checks green): the nested `{ref}` walk now runs
+  BEFORE the injection and the §9.6.3 fixpoint at both mount edges, so the
+  grandchild no longer arrives after `expand` has sealed the leaf, and nested
+  edge `bindings` fold against the leaf's own closed metaparameter environment
+  rather than an empty map. The semantics were settled by probe, not argument:
+  §9.7.10 defines all three injection forms as extending the target's effective
+  scope "as if the target had added those entries to the END of its own
+  `expression_template_imports`", and a leaf that DECLARES the library itself
+  does lower a rewrite target in a nested `subsystems.<k>` mount — so the
+  injected form must too. The contrary sentence ("a parent still cannot
+  discretize a grandchild it does not directly mount") is amended by that PR;
+  what stays deferred is TARGETING, not reach. Rust only, per the #298 -> #307
+  precedent; Julia and Python have the same inversion by inspection.
+  **Verified independently in this session**: a CLI built from the PR branch
+  runs `./esm test couplings` at **505/0/0 over 52 files**, the microphysics
+  pair included. Rebuild `./esm` once #313 merges. The alternative to the upstream fix is for
   `hydrometeor_slopes.esm` to import the `input_<x>()` -> `<x>_in` library
   itself (it already declares those parameters), which is a WSM6 component
   decision that collides with the const-array library its own standalone tests
