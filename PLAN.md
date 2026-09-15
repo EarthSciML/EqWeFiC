@@ -1242,8 +1242,43 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     dynamics.
 3.2 **EqAtmChem.esm**: EqWeather + emissions + RADM2 + deposition +
     photolysis, compared with a WRF-Chem `chem_opt=1` SCM-like run.
-3.3 **EqAtmFire.esm**: EqWeather + SFIRE fire components via the
-    `wildlandfire.esm`-style coupling, compared with `test/em_fire/hill`.
+3.3 **EqAtmFire.esm**: EqWeather + the fire_behavior (CFBM) components via the
+    `wildlandfire.esm`-style coupling, compared with a **real-data WRF 4.8 + CFBM
+    simulation of the Last Chance Fire (eastern Colorado, 2012-06-25)** with the
+    reference physics suite on (decided 2026-09-15; replaces `test/em_fire/hill`).
+
+    **Why not an idealized case.** CFBM refuses any non-Lambert domain
+    (`dyn_em/start_em.F:2261`) and locates each fire cell's atmospheric column by
+    inverse-projecting its lat/lon (`phys/fire_behavior/io/wrf_mod.F90`), while
+    the ideal `em_fire` init writes Cartesian metres into those arrays
+    (`set_ideal_coord`, "fake coordinates, in m"), so no shipped ideal case runs
+    CFBM. The alternatives considered were WRF-SFIRE `em_fire/hill` (runs, but
+    SFIRE on a WRF 4.4 base, contradicting decision 5), WRF 4.8's in-tree
+    WRF-Fire `em_fire` (not CFBM), patching the ideal init to Lambert (cheap and
+    CFBM-true), and the existing offline replay (one-way only). Every idealized
+    fire case also switches the whole physics suite OFF and runs a 3-D TKE
+    closure, so it would test none of the six schemes; the real-data case is the
+    only option that exercises them.
+
+    **Why this fire.** It is CFBM's own test7 case (Lambert 100 m domain,
+    Anderson-13 fuels, ignition line at 39.685 N -103.585 W, 18:00 UTC), and the
+    level-set algorithm transcribed here was evaluated on it (Munoz-Esparza et al.
+    2018, JAMES), so the existing 486 fire assertions and the offline replay are
+    already on this domain. Flat grass plains on a late-June midday exercise
+    sfclayrev, YSU, slab, Dudhia and RRTM without steep-terrain grey-zone issues.
+    About 45,000 acres (~182 km2) burned by the next morning. Runner-up: the
+    Marshall Fire (2021-12-30; HRRR forcing, but a winter downslope windstorm in
+    Front Range terrain).
+
+    **Data path (verified reachable 2026-09-15).** HRRR's AWS archive starts
+    2014-07-30 and GFS's 2021-02, so forcing is ERA5 (0.25 deg hourly, NCAR AWS
+    bucket, netCDF needing conversion) or NARR (32 km 3-hourly, NCEI). WPS 4.3 in
+    `data/eqwefic/apptainer/wps_wrf_latest.sif` carries `Vtable.NARR` and a
+    `GEOGRID.TBL.FIRE` reading NFUEL_CAT from LANDFIRE; geog static data and
+    LANDFIRE are downloadable. test7's 1.9 km domain is far too small for the
+    burn scar, so only its projection, location and ignition are reused; its
+    `wrf.nc` came from WRF 4.3.3 with SFIRE, MYNN and RRTMG (N52) and is not a
+    reference. Setup, builds and runs live under `data/eqwefic/lastchance/`.
 
 ## 6. Test and authoring conventions (normative; summarized in CLAUDE.md)
 
