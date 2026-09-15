@@ -1,0 +1,499 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "WRFCurvature",
+  "description": "WRF-ARW's Earth-curvature (metric) momentum terms, SUBROUTINE curvature of dyn_em/module_big_step_utilities_em.F:4175-4469 on its 'normal code' path (map_proj /= 6, not polar), written as instantaneous decoupled tendencies of a single column on the EarthSciDiscretizations column_nonuniform_1d grid. rk_tendency applies them unconditionally, so even the idealized Cartesian em_scm_xy column carries them: du/dt = -u w / a, dv/dt = -v w / a on the layers, and dw/dt = (u^2 + v^2)/a on the interior interfaces (Skamarock et al. 2021, section 2.3; a = the Earth radius, WRF reradius = 1/a). In the reference column the w term is (3^2 + 9^2)/a = 1.4e-5 m/s^2, a few percent of the pressure-gradient-plus-buoyancy tendency, so it is not negligible; PLAN.md 3.1 did not list it. Discretization as in WRF for a horizontally uniform column: w enters the u and v terms as the mean of the two bounding interfaces, and u, v enter the w term linearly interpolated onto the interior interfaces 2..NLEV with the weights w_above/w_below (WRF fzm/fzp); the surface and top interfaces get no term. WRF multiplies the interpolated MASS-COUPLED wind by the interpolated wind; with a constant dry column mass the coupling mass cancels and the product is the square of the interpolated wind. Not transcribed: the vxgm terms (the zonal gradient of the map factor times the wind, plus the tan(latitude) terms of the polar and global-projection branch), identically zero for the uniform map factors of the idealized column, and the general map-factor ratios (all 1 there). Consumer-supplied column fields are rewrite-target ops input_<name>.",
+  "license": "MIT",
+  "tags": ["wrf", "dynamics", "curvature", "metric-terms", "column"],
+  "references": [
+   {"citation": "Skamarock, W. C., et al. (2021). A Description of the Advanced Research WRF Model Version 4.3. NCAR/TN-556+STR, section 2.3 (curvature terms).", "doi": "10.5065/1dfh-6p97"},
+   {"citation": "WRF v4.8.0 dyn_em/module_big_step_utilities_em.F:4175-4469 (curvature), called from dyn_em/module_em.F:773 (rk_tendency)."}
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {"type": "integer", "default": 59, "description": "Number of model layers (WRF kde - 1). Bound into the column grid at the import edge; 59 is the em_scm_xy reference column."}
+ },
+ "models": {
+  "WRFCurvature": {
+   "expression_template_imports": [
+    {"ref": "../../../../EarthSciDiscretizations/grids/column_nonuniform_1d/grid.esm", "bindings": {"NLEV": "NLEV"}},
+    {"ref": "./column_staggering.esm"}
+   ],
+   "subsystems": {"wrf": {"ref": "../../../lib/wrf_constants.esm"}},
+   "variables": {
+    "w_above_in": {"type": "parameter", "units": "1", "shape": ["lev_nodes"], "default": 0.0, "description": "Coupling target (assembly input path): a shaped parameter that receives the interface interpolation weight of the layer above (WRF fnm), from the column geometry through a document-level `coupling.variable_map` (`param_to_var`) when an assembly's mount-edge template library lowers `input_w_above` to this parameter. Unused in the component's own inline tests, which lower `input_w_above` to a dumped profile."},
+    "w_below_in": {"type": "parameter", "units": "1", "shape": ["lev_nodes"], "default": 0.0, "description": "Coupling target (assembly input path): a shaped parameter that receives the interface interpolation weight of the layer below (WRF fnp), from the column geometry through a document-level `coupling.variable_map` (`param_to_var`) when an assembly's mount-edge template library lowers `input_w_below` to this parameter. Unused in the component's own inline tests, which lower `input_w_below` to a dumped profile."},
+    "u": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Zonal wind on the layers, through `input_u`."},
+    "v": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Meridional wind on the layers, through `input_v`."},
+    "w": {"type": "unknown", "units": "m/s", "shape": ["lev_nodes"], "description": "Vertical velocity on the interfaces, through `input_w`."},
+    "w_above": {"type": "unknown", "units": "1", "shape": ["lev_nodes"], "description": "Interpolation weight of the layer above each interior interface (WRF fnm), through `input_w_above`."},
+    "w_below": {"type": "unknown", "units": "1", "shape": ["lev_nodes"], "description": "Interpolation weight of the layer below each interior interface (WRF fnp), through `input_w_below`."},
+    "w_c": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Vertical velocity at the layers, the mean of the two bounding interfaces."},
+    "u_w": {"type": "unknown", "units": "m/s", "shape": ["lev_nodes"], "description": "Zonal wind on the interior interfaces; 0 on the faces."},
+    "v_w": {"type": "unknown", "units": "m/s", "shape": ["lev_nodes"], "description": "Meridional wind on the interior interfaces; 0 on the faces."},
+    "du_dt": {"type": "unknown", "units": "m/s^2", "shape": ["lev"], "description": "Curvature tendency of u, -u w / a."},
+    "dv_dt": {"type": "unknown", "units": "m/s^2", "shape": ["lev"], "description": "Curvature tendency of v, -v w / a."},
+    "dw_dt": {"type": "unknown", "units": "m/s^2", "shape": ["lev_nodes"], "description": "Curvature tendency of w, (u^2 + v^2)/a; 0 on the surface and top interfaces."}
+   },
+   "equations": [
+    {"lhs": "u", "rhs": {"op": "input_u", "args": []}},
+    {"lhs": "v", "rhs": {"op": "input_v", "args": []}},
+    {"lhs": "w", "rhs": {"op": "input_w", "args": []}},
+    {"lhs": "w_above", "rhs": {"op": "input_w_above", "args": []}},
+    {"lhs": "w_below", "rhs": {"op": "input_w_below", "args": []}},
+    {"lhs": "w_c", "rhs": {"op": "apply_expression_template", "args": [], "name": "column_cell_center", "bindings": {"ze": "w"}}},
+    {"lhs": "u_w", "rhs": {"op": "apply_expression_template", "args": [], "name": "interpolate_to_interfaces", "bindings": {"f": "u", "wa": "w_above", "wb": "w_below"}}},
+    {"lhs": "v_w", "rhs": {"op": "apply_expression_template", "args": [], "name": "interpolate_to_interfaces", "bindings": {"f": "v", "wa": "w_above", "wb": "w_below"}}},
+    {"lhs": "du_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["wrf.reradius"]}, "u", "w_c"]}},
+    {"lhs": "dv_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["wrf.reradius"]}, "v", "w_c"]}},
+    {"lhs": "dw_dt", "rhs": {"op": "*", "args": ["wrf.reradius", {"op": "+", "args": [{"op": "^", "args": ["u_w", 2]}, {"op": "^", "args": ["v_w", 2]}]}]}}
+   ],
+   "tests": [
+     {
+       "id": "curvature_step60",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: curvature, normal-code branch (dyn_em/module_big_step_utilities_em.F:4175-4469); the vxgm map-factor-gradient terms are identically zero in this column. The eta interpolation weights are the dumped fnm/fnp. Measured residual over the three regimes (zero tolerance): Linf <= 1.2e-11 m/s^2 in du_dt and <= 5.5e-12 in dv_dt (values <= 5e-10, <= 9e-10), <= 2.1e-11 in dw_dt (values 1.41e-5, <= 1.5e-6 relative). These are NOT transcription errors but the resolution of the reference: the dump records each routine's contribution as the difference of the single-precision tendency array across the call, and curvature is added onto a tendency that already holds the Coriolis (and, for w, the pressure-gradient-plus-buoyancy) term of O(40) in mass-coupled units, so a ~3e-5 coupled increment is quantized to one ulp of 40, 3.8e-6, i.e. 4.8e-11 m/s^2 after dividing by mu = 79265 Pa (the level-1 u increment, ~1e-6 coupled, even rounds to exactly 0). Linf bounds are therefore set at that quantization limit, abs 5e-11 m/s^2; the w term, far above it, is also asserted pointwise at rel 1e-5. A sign error or a missing term moves each tendency by its full value (up to 9e-10 in u and v, 1.4e-5 in w) and fails. Regime: step 60 (t = 1 h, early afternoon, convective boundary layer).",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/curvature_step60_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "du_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, -1.2031418262753202e-11, -2.4062836525506403e-11, -3.609425478825961e-11, -4.8125673051012806e-11, -6.617280044514261e-11, -7.820421870789581e-11, -9.023563697064901e-11, -9.625134610202561e-11, -1.0828276436477881e-10, -1.2632989175890863e-10, -1.383613100216618e-10, -1.5039272828441502e-10, -1.7445556480992142e-10, -1.7671145573418765e-10, -1.6450379599297615e-10, -1.6120808034580596e-10, -1.6062060875094496e-10, -1.6025931372010545e-10, -1.6171036855941212e-10, -1.6113758375442264e-10, -1.6011538317936452e-10, -1.6067054383650814e-10, -1.5976877493839653e-10, -1.6048255292615264e-10, -1.6261801217347236e-10, -1.6391338704014085e-10, -1.6470059897725458e-10, -1.6664219259827017e-10, -1.7056356549396733e-10, -1.7098067032631864e-10, -1.6962067358421544e-10, -1.7033738892994583e-10, -1.6864840809472047e-10, -1.6986447429608274e-10, -1.7288701565164257e-10, -1.7321306238679042e-10, -1.7270489945723566e-10, -1.7318956352299597e-10, -1.7573037817076978e-10, -1.8095887536503265e-10, -1.7981918047100233e-10, -1.816403424150714e-10, -1.9086364645438905e-10, -1.9411530173194466e-10, -1.972083396788878e-10, -2.0329160804367343e-10, -2.1027370794859637e-10, -2.1368691791473875e-10, -2.1190687898230992e-10, -2.279331040901179e-10, -3.1262888392122773e-10, -3.575880850759398e-10, -2.9182651474719985e-10, -2.488059698555291e-10, -2.646735776327246e-10, -2.8768484000342984e-10, -3.0179590771199093e-10, -3.1422093194330103e-10]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dv_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [1.2031418262753202e-11, 3.9102109353947904e-11, 7.218850957651922e-11, 1.0527490979909051e-10, 1.3986523730450598e-10, 1.7746341937560973e-10, 2.1355767416386934e-10, 2.4664407438644064e-10, 2.782265473261678e-10, 3.113129475487391e-10, 3.4891112961984284e-10, 3.8801323897379073e-10, 4.346349847419594e-10, 5.015597488285241e-10, 5.275024944575857e-10, 4.934643902513395e-10, 4.836521459381738e-10, 4.81891199832578e-10, 4.808087834190466e-10, 4.851619479369666e-10, 4.834362501270624e-10, 4.803740544388494e-10, 4.820351303733189e-10, 4.793327610369583e-10, 4.814755636792138e-10, 4.878834101001601e-10, 4.917665973421912e-10, 4.941341078694811e-10, 4.999559513745536e-10, 5.117215387406322e-10, 5.129743219166733e-10, 5.088899256534021e-10, 5.110386030116063e-10, 5.059775352218788e-10, 5.096257338259655e-10, 5.186889518556836e-10, 5.196670920611272e-10, 5.181411345934757e-10, 5.195951267907566e-10, 5.272161020550909e-10, 5.429045309958539e-10, 5.394810402768014e-10, 5.449504008249572e-10, 5.72618844263923e-10, 5.82375278775577e-10, 5.916573299743808e-10, 6.099027290317762e-10, 6.30849028746545e-10, 6.410915960029464e-10, 6.357529478846471e-10, 6.838286858500968e-10, 9.379329151517785e-10, 1.072800972202498e-09, 8.754949653709647e-10, 7.464202961699415e-10, 7.940197231813701e-10, 8.63053785670796e-10, 9.0538919181496e-10, 9.426686705458516e-10]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 8.757765604804157e-06, 1.0093228969133238e-05, 1.0622620396258076e-05, 1.0889805109473602e-05, 1.1028581503425328e-05, 1.1093448894988962e-05, 1.1113252609449455e-05, 1.11070158230075e-05, 1.1090657605952003e-05, 1.1082373974478097e-05, 1.1111514069510487e-05, 1.124914747872725e-05, 1.1857203326308535e-05, 1.3090760577952095e-05, 1.3981278032088037e-05, 1.4125775365423703e-05, 1.4128446340278034e-05, 1.412851852878761e-05, 1.4128506497369348e-05, 1.412851852878761e-05, 1.412854409555142e-05, 1.4128470403114558e-05, 1.412847641882369e-05, 1.4128542591624137e-05, 1.4128458371696296e-05, 1.4128458371696296e-05, 1.4128536575915005e-05, 1.4128470403114558e-05, 1.4128434308859771e-05, 1.4128506497369348e-05, 1.4128446340278034e-05, 1.4128440324568903e-05, 1.4128542591624137e-05, 1.4128542591624137e-05, 1.4128538079842287e-05, 1.4128536575915005e-05, 1.4128548607333267e-05, 1.4128551615187832e-05, 1.4128551615187832e-05, 1.412853958376957e-05, 1.412851251307848e-05, 1.4128514017005762e-05, 1.4128542591624137e-05, 1.4128548607333267e-05, 1.412853958376957e-05, 1.4128441828496186e-05, 1.4128456867769013e-05, 1.4128548607333267e-05, 1.412852905627859e-05, 1.4128530560205872e-05, 1.4128566654460661e-05, 1.4128590717297186e-05, 1.4128614780133713e-05, 1.4128662905806763e-05, 1.412869749613427e-05, 1.4128708023625249e-05, 1.412871403933438e-05, 1.4128723062898077e-05, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 2
+           },
+           "expected": 8.757765604804157e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 30
+           },
+           "expected": 1.4128434308859771e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 59
+           },
+           "expected": 1.4128723062898077e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "curvature_step900",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: curvature, normal-code branch (dyn_em/module_big_step_utilities_em.F:4175-4469); the vxgm map-factor-gradient terms are identically zero in this column. The eta interpolation weights are the dumped fnm/fnp. Measured residual over the three regimes (zero tolerance): Linf <= 1.2e-11 m/s^2 in du_dt and <= 5.5e-12 in dv_dt (values <= 5e-10, <= 9e-10), <= 2.1e-11 in dw_dt (values 1.41e-5, <= 1.5e-6 relative). These are NOT transcription errors but the resolution of the reference: the dump records each routine's contribution as the difference of the single-precision tendency array across the call, and curvature is added onto a tendency that already holds the Coriolis (and, for w, the pressure-gradient-plus-buoyancy) term of O(40) in mass-coupled units, so a ~3e-5 coupled increment is quantized to one ulp of 40, 3.8e-6, i.e. 4.8e-11 m/s^2 after dividing by mu = 79265 Pa (the level-1 u increment, ~1e-6 coupled, even rounds to exactly 0). Linf bounds are therefore set at that quantization limit, abs 5e-11 m/s^2; the w term, far above it, is also asserted pointwise at rel 1e-5. A sign error or a missing term moves each tendency by its full value (up to 9e-10 in u and v, 1.4e-5 in w) and fails. Regime: step 900 (t = 15 h, pre-dawn, deep stable night).",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/curvature_step900_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "du_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 2.4062836525506403e-11, 3.609425478825961e-11, 4.5117818485324503e-11, 3.609425478825961e-11, 2.4062836525506403e-11, 2.4062836525506403e-11, 1.2031418262753202e-11, 1.2031418262753202e-11, 1.2031418262753202e-11, 1.2031418262753202e-11, 1.2031418262753202e-11, 2.4062836525506403e-11, 2.4062836525506403e-11, 3.0078545656883e-11, 3.9102109353947904e-11, 4.737370940959073e-11, 5.282544580990078e-11, 5.505783787037256e-11, 5.529870122426557e-11, 5.7531093284737356e-11, 6.0571258788143e-11, 6.295345610530435e-11, 6.722437459994379e-11, 7.067870757772645e-11, 7.346332293736757e-11, 8.040429983065024e-11, 8.695460811335035e-11, 9.038544222733856e-11, 9.374871710791777e-11, 1.0057513704020255e-10, 1.0871161862902735e-10, 1.1445709082676789e-10, 1.200615698417418e-10, 1.2947873950736356e-10, 1.4201538334169722e-10, 1.5336533455441167e-10, 1.6029749937377142e-10, 1.7093660995670405e-10, 1.8479506487947496e-10, 1.9606277006890885e-10, 2.0347666159605465e-10, 2.1178350994738913e-10, 2.3278561946366972e-10, 2.498222957146386e-10, 2.601147980566033e-10, 2.7414361974188387e-10, 2.797128504611661e-10, 2.876554664236868e-10, 2.9741336961432795e-10, 3.0110966745524397e-10, 3.0089707617185366e-10, 2.963794196073726e-10, 2.948108704490937e-10, 2.937534215783439e-10, 2.9402365851198e-10, 2.94746248573659e-10, 2.9260785196836495e-10, 2.8964112041431695e-10]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dv_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [-6.015709131376601e-12, -1.2031418262753202e-11, -4.8125673051012806e-11, -8.421992783927241e-11, -1.2332203719322032e-10, -1.4437701915303843e-10, -1.5640843741579162e-10, -1.5640843741579162e-10, -1.5640843741579162e-10, -1.5640843741579162e-10, -1.5640843741579162e-10, -1.6843985567854483e-10, -1.6843985567854483e-10, -1.6843985567854483e-10, -1.5039272828441502e-10, -1.4738487371872671e-10, -1.511446919258371e-10, -1.5998026471254648e-10, -1.6543200111285652e-10, -1.6593135196848837e-10, -1.7260603900291295e-10, -1.817236899475923e-10, -1.88874320766291e-10, -2.0168634191071575e-10, -2.1204805574994997e-10, -2.204083272994421e-10, -2.412253832633415e-10, -2.6087630811144185e-10, -2.7117101347188725e-10, -2.812740562245092e-10, -3.0175469290791397e-10, -3.2619066568859384e-10, -3.434011968146669e-10, -3.6022858630996655e-10, -3.8849533285132356e-10, -4.260881909610989e-10, -4.601536493134807e-10, -4.809820875395305e-10, -5.128920758933927e-10, -5.544953455624614e-10, -5.883058045256988e-10, -6.105606972180205e-10, -6.355032724568312e-10, -6.985184130795959e-10, -7.49641659943387e-10, -7.805456031910497e-10, -8.226981588013134e-10, -8.394087883171344e-10, -8.632278241307734e-10, -8.924677540859925e-10, -9.033345099119336e-10, -9.025942957024089e-10, -8.890912610945288e-10, -8.844039721070316e-10, -8.812419062476923e-10, -8.820625306317638e-10, -8.842207544033844e-10, -8.77820802131994e-10, -8.689079401135857e-10]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 5.92026389029818e-06, 1.0095220168855722e-05, 1.4826918296103909e-05, 1.9240290662883453e-05, 2.1155612742167772e-05, 2.076410437618865e-05, 1.9972202441843367e-05, 1.9359959660706643e-05, 1.9070447643050014e-05, 1.8889928243435663e-05, 1.863868816727285e-05, 1.817223008122591e-05, 1.7427328882324072e-05, 1.642961600324885e-05, 1.5343126296667333e-05, 1.4561950371703294e-05, 1.4232602328178687e-05, 1.4147970324263916e-05, 1.4132798705834585e-05, 1.4130792466839271e-05, 1.4130636058401854e-05, 1.4130672152656644e-05, 1.4130708246911431e-05, 1.4130738325457088e-05, 1.4130966922404081e-05, 1.4131049638404638e-05, 1.4130906765312767e-05, 1.413096090669495e-05, 1.4131141377968891e-05, 1.4131218078260315e-05, 1.4131263196078802e-05, 1.4131321849242831e-05, 1.4131345912079358e-05, 1.4131418100588934e-05, 1.4131536910844278e-05, 1.4131658728954188e-05, 1.413169181535441e-05, 1.4131851231646393e-05, 1.4132043734338597e-05, 1.4132117426775456e-05, 1.4132257292012761e-05, 1.4132440771141268e-05, 1.4132573116742159e-05, 1.413266936808826e-05, 1.413278065870719e-05, 1.4132994216381355e-05, 1.4133218301546499e-05, 1.4133225821182912e-05, 1.4133069412745496e-05, 1.4132263307721892e-05, 1.4130485665673571e-05, 1.4129159201810102e-05, 1.412885089671712e-05, 1.4128796755334936e-05, 1.4128771188571128e-05, 1.4128756149298299e-05, 1.4128753141443734e-05, 1.4128756149298299e-05, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 2
+           },
+           "expected": 5.92026389029818e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 30
+           },
+           "expected": 1.4131141377968891e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 59
+           },
+           "expected": 1.4128756149298299e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "curvature_step1410",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: curvature, normal-code branch (dyn_em/module_big_step_utilities_em.F:4175-4469); the vxgm map-factor-gradient terms are identically zero in this column. The eta interpolation weights are the dumped fnm/fnp. Measured residual over the three regimes (zero tolerance): Linf <= 1.2e-11 m/s^2 in du_dt and <= 5.5e-12 in dv_dt (values <= 5e-10, <= 9e-10), <= 2.1e-11 in dw_dt (values 1.41e-5, <= 1.5e-6 relative). These are NOT transcription errors but the resolution of the reference: the dump records each routine's contribution as the difference of the single-precision tendency array across the call, and curvature is added onto a tendency that already holds the Coriolis (and, for w, the pressure-gradient-plus-buoyancy) term of O(40) in mass-coupled units, so a ~3e-5 coupled increment is quantized to one ulp of 40, 3.8e-6, i.e. 4.8e-11 m/s^2 after dividing by mu = 79265 Pa (the level-1 u increment, ~1e-6 coupled, even rounds to exactly 0). Linf bounds are therefore set at that quantization limit, abs 5e-11 m/s^2; the w term, far above it, is also asserted pointwise at rel 1e-5. A sign error or a missing term moves each tendency by its full value (up to 9e-10 in u and v, 1.4e-5 in w) and fails. Regime: step 1410 (t = 23.5 h, late morning of the second day).",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/curvature_step1410_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "du_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, -4.8125673051012806e-11, -7.218850957651922e-11, -9.625134610202561e-11, -1.4437701915303843e-10, -1.6843985567854483e-10, -1.9250269220405122e-10, -2.1656552872955762e-10, -2.6469120178057044e-10, -2.8875403830607686e-10, -3.3687971135708966e-10, -3.6094254788259603e-10, -4.0906822093360887e-10, -4.5719389398462166e-10, -4.5719389398462166e-10, -3.6695825701397265e-10, -3.1883258396295985e-10, -3.0680116570020667e-10, -3.010674429343633e-10, -2.976366088203751e-10, -2.952338499973936e-10, -2.943482365681407e-10, -2.975000216745699e-10, -2.9923710174662454e-10, -2.9757813703819907e-10, -2.975683152474725e-10, -2.978679257608516e-10, -2.995944497026861e-10, -3.0294882071690564e-10, -3.0145297116849087e-10, -2.959799389228671e-10, -2.911949827827243e-10, -2.8878047452784557e-10, -2.876451856707767e-10, -2.846402684630627e-10, -2.797657229047036e-10, -2.741950235064342e-10, -2.6992116765382045e-10, -2.6515236698253634e-10, -2.5561035960300657e-10, -2.5046851446898574e-10, -2.454955674184874e-10, -2.342337369450021e-10, -2.2726632382995067e-10, -2.2229925149540096e-10, -2.180900175182219e-10, -2.1563144889372865e-10, -2.1222411364353487e-10, -2.1260890753816882e-10, -2.176420704271404e-10, -2.2721638874438749e-10, -2.385428410933075e-10, -2.460448533596824e-10, -2.511793550987675e-10, -2.543634511429141e-10, -2.574065540042941e-10, -2.599091829984019e-10, -2.603732855583421e-10, -2.6084913755017953e-10]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dv_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [1.2031418262753202e-11, 4.8125673051012806e-11, 7.218850957651922e-11, 1.0828276436477881e-10, 1.4437701915303843e-10, 1.8047127394129801e-10, 2.1656552872955762e-10, 2.5265978351781725e-10, 2.8875403830607686e-10, 3.3687971135708966e-10, 3.8500538440810245e-10, 4.3313105745911524e-10, 5.053195670356345e-10, 6.015709131376601e-10, 7.639950596848283e-10, 8.963406605751135e-10, 8.90324951443737e-10, 9.019803878857791e-10, 8.990665287752686e-10, 8.924369118272622e-10, 8.858542926068448e-10, 8.832811670213535e-10, 8.927218355507698e-10, 8.979738316088271e-10, 8.930155713482003e-10, 8.929920724844058e-10, 8.938967787404918e-10, 8.990665287752686e-10, 9.091240424792888e-10, 9.046592583583453e-10, 8.881983042703401e-10, 8.738404984919374e-10, 8.666028484432499e-10, 8.632072626249533e-10, 8.541836989278884e-10, 8.395674056477469e-10, 8.228244651942085e-10, 8.100058349943415e-10, 7.957185258073221e-10, 7.670616614100028e-10, 7.516229078970557e-10, 7.367011293875864e-10, 7.029097632511819e-10, 6.819957744741305e-10, 6.670974948284556e-10, 6.544433566751497e-10, 6.470235904320553e-10, 6.368427076931143e-10, 6.380176508828363e-10, 6.531274203026611e-10, 6.818019088478263e-10, 7.156828644024471e-10, 7.381646679982839e-10, 7.535622984995906e-10, 7.63096228144691e-10, 7.722262710683244e-10, 7.797389312573562e-10, 7.811294030884428e-10, 7.825435573681973e-10]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 5.739576050828152e-06, 6.427376138654964e-06, 6.68706227043823e-06, 6.8199131908955505e-06, 6.893232653788768e-06, 6.933561967805517e-06, 6.954947813767561e-06, 6.96678672933811e-06, 6.977260078935837e-06, 6.9959328400796295e-06, 7.037838269888799e-06, 7.134294150101291e-06, 7.379065835020591e-06, 8.37396336222233e-06, 1.071687753478305e-05, 1.2940945357744292e-05, 1.3730398898473107e-05, 1.4017588852405025e-05, 1.410288860003338e-05, 1.4121768903142205e-05, 1.4124952717199988e-05, 1.4125209888765354e-05, 1.4125131684546645e-05, 1.4125211392692636e-05, 1.4125101606000988e-05, 1.4125005354654887e-05, 1.412514973167404e-05, 1.4125185825928827e-05, 1.4125053480327937e-05, 1.4124873009053997e-05, 1.4124788789126156e-05, 1.4124803828398985e-05, 1.4124860977635734e-05, 1.4124885040472259e-05, 1.4124921134727046e-05, 1.4124897071890521e-05, 1.4124836914799207e-05, 1.4124836914799207e-05, 1.4124833906944642e-05, 1.4124845938362905e-05, 1.412484293050834e-05, 1.4124836914799207e-05, 1.4124873009053997e-05, 1.4124818867671813e-05, 1.4124736151671257e-05, 1.4124560192179164e-05, 1.4124427846578274e-05, 1.4124572223597427e-05, 1.4124906095454219e-05, 1.4126527329065124e-05, 1.4128210223694627e-05, 1.4128509505223913e-05, 1.4128613276206429e-05, 1.412866140187948e-05, 1.4128680952934157e-05, 1.4128689976497855e-05, 1.4128702007916117e-05, 1.4128712535407097e-05, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-11
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 2
+           },
+           "expected": 5.739576050828152e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 30
+           },
+           "expected": 1.4125053480327937e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 59
+           },
+           "expected": 1.4128712535407097e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}

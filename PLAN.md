@@ -1227,6 +1227,36 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     (still unfiled upstream) and (t) `table_lookup` on the `esm_problem`
     carrier (EarthSciAST #274).
 
+    **Column dynamics done 2026-09-15 (derivative level).** EqWeather-SCM's
+    non-physics terms are FIVE components, not the three listed above: the
+    Rayleigh sponge, perturbation Coriolis, vertical momentum + geopotential
+    (`pg_buoy_w`, dφ/dt = g w), the column geometry / equation of state
+    (`calc_p_rho_phi` + `phy_prep`), and Earth curvature, which `rk_tendency`
+    applies even to this Cartesian column (N66, 1.4e-5 m/s² in w). All live in
+    `components/atmospheric_dynamics/wrf_arw/` with a shared
+    `column_staggering.esm` template library: 185 assertions against the
+    `dyn_column` dumps of fork commit 83347b2, each mutation-checked except the
+    sponge's above-top base-state extrapolation (u, v, θ are constant above 4 km
+    in this sounding). Coupled as `couplings/scm_dynamics_column{,_night}.esm`
+    (2 × 8). `w_damp` is inert (`w_damping = 0`). WRF's real32 p′ rounding drives
+    a w tendency of up to half the physical one (N67), so w cannot be matched to
+    WRF beyond ~3e-4 m/s²; θm, u and v tendencies match to ≤1e-10. The sponge
+    relaxes θm toward a DRY reference (N64). The physics suite cannot be mounted
+    as a unit (a top-level `{ref}` to a multi-model document needs a model
+    selector), so EqWeather-SCM must re-mount all nine physics components and
+    their ~167 edges. **24 h acceptance still needs:** (1) a state document with
+    D(u, v, w, φ′, θm, qv, soil T, TSK) = physics + dynamics tendencies, including
+    WRF's `use_theta_m` conversion of physics θ/qv tendencies into θm; (2)
+    geometry → physics coupling-target parameters (p, π, z, dz8w, ρ, p8w, t8w,
+    p_hyd) in sfclayrev, YSU, slab, Dudhia and the RRTM stages, replacing the
+    dumped profile libraries — EarthSciModels PR #16–#21 territory; (3)
+    time-dependent solar geometry for Dudhia and RRTM; (4) a float64-balanced
+    initial state, since WRF's real32 state starts an acoustic adjustment in the
+    esm column; (5) checkpointed windows of ≤6 h restarted from wrfout frames,
+    because the pinned `maxiters` (gap (s)) is likely to be exceeded by
+    undamped vertical acoustic modes (WRF damps them with `epssm`) plus the
+    physics' regime switching over 24 h.
+
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
     wind, pressure, and temperature plus the numerics that step them. Per the

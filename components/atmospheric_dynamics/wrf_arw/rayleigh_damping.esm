@@ -1,0 +1,742 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "WRFRayleighDamping",
+  "description": "WRF-ARW's upper-level Rayleigh damping layer (damp_opt = 2), SUBROUTINE rk_rayleigh_damp of dyn_em/module_big_step_utilities_em.F:5836-6110, written as instantaneous decoupled tendencies of a single column on the EarthSciDiscretizations column_nonuniform_1d grid. Within the depth zdamp below the model top z_top the horizontal wind and the (moist, use_theta_m = 1) potential temperature relax toward the base-state sounding and w relaxes to zero, with the strength dampcoef sin^2(pi/2 (1 - (z_top - z)/zdamp)) rising from 0 at the bottom of the layer to dampcoef at the top (Klemp and Lilly 1978; Skamarock et al. 2021, section 4.3). Below the layer the strength is exactly 0: WRF applies the damper only to layers with z >= z_top - zdamp, and 1 - min(1, (z_top - z)/zdamp) = max(0, 1 - (z_top - z)/zdamp) vanishes there, so the max form is identical everywhere. The reference state is interpolated to the layer's CURRENT height (WRF recomputes z from the geopotential each step, so the model levels move against the fixed base profile): linearly in height between the base levels z_base, and linearly EXTRAPOLATED above the top base level (WRF's `if (k2+1 .gt. ktf)` branch), which the closed function interp.linear does not do (it clamps), so that branch is written out. Heights: layer centres zc from the interface heights ze (WRF phb + ph over g), z_top = ze[NLEV+1]. Decoupling: WRF adds (c1 mu + c2) dampcoef dcoef (u - u00) to the mass-coupled tendency ru_tendf; dividing by the same coupling mass gives the decoupled rate written here, exactly, for any hybrid coordinate. Note (FORTRAN_BUGS N64): with use_theta_m = 1 the damped field t is the MOIST potential temperature but t_base is the DRY base-state theta (set in module_initialize_scm_xy.F before the dry-to-moist conversion), so the sponge relaxes theta_m toward a dry reference; theta_base here is WRF's t_base + t0 unchanged. Consumer-supplied column fields are rewrite-target ops input_<name>.",
+  "license": "MIT",
+  "tags": ["wrf", "dynamics", "rayleigh-damping", "sponge", "column"],
+  "references": [
+   {"citation": "Klemp, J. B., and D. K. Lilly (1978). Numerical simulation of hydrostatic mountain waves. J. Atmos. Sci. 35, 78-107.", "doi": "10.1175/1520-0469(1978)035<0078:NSOHMW>2.0.CO;2"},
+   {"citation": "Skamarock, W. C., et al. (2021). A Description of the Advanced Research WRF Model Version 4.3. NCAR/TN-556+STR, section 4.3 (upper damping layer).", "doi": "10.5065/1dfh-6p97"},
+   {"citation": "WRF v4.8.0 dyn_em/module_big_step_utilities_em.F:5836-6110 (rk_rayleigh_damp), called from dyn_em/module_em.F:934 (rk_tendency, rk_step 1)."}
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {"type": "integer", "default": 59, "description": "Number of model layers (WRF kde - 1). Bound into the column grid at the import edge; 59 is the em_scm_xy reference column."}
+ },
+ "models": {
+  "WRFRayleighDamping": {
+   "expression_template_imports": [
+    {"ref": "../../../../EarthSciDiscretizations/grids/column_nonuniform_1d/grid.esm", "bindings": {"NLEV": "NLEV"}}
+   ],
+   "subsystems": {"wrf": {"ref": "../../../lib/wrf_constants.esm"}},
+   "expression_templates": {
+    "sponge_strength": {
+     "params": ["z", "z_top", "depth"],
+     "description": "Normalised damping profile sin^2(pi/2 max(0, 1 - (z_top - z)/depth)): 0 at and below z_top - depth, 1 at z_top.",
+     "body": {"op": "^", "args": [{"op": "sin", "args": [{"op": "*", "args": [0.5, "wrf.piconst", {"op": "max", "args": [0.0, {"op": "-", "args": [1.0, {"op": "/", "args": [{"op": "-", "args": ["z_top", "z"]}, "depth"]}]}]}]}]}, 2]}
+    },
+    "base_at_height": {
+     "params": ["fb", "zb", "z"],
+     "description": "Base-state profile fb (on the base heights zb, both shape [lev]) at height z: linear interpolation, and linear extrapolation from the top two base levels when z >= zb[NLEV] (rk_rayleigh_damp's k2+1 > ktf branch).",
+     "body": {"op": "ifelse", "args": [
+      {"op": ">=", "args": ["z", {"op": "index", "args": ["zb", "NLEV"]}]},
+      {"op": "+", "args": [{"op": "index", "args": ["fb", "NLEV"]},
+       {"op": "*", "args": [
+        {"op": "/", "args": [{"op": "-", "args": [{"op": "index", "args": ["fb", "NLEV"]}, {"op": "index", "args": ["fb", {"op": "-", "args": ["NLEV", 1]}]}]},
+                             {"op": "-", "args": [{"op": "index", "args": ["zb", "NLEV"]}, {"op": "index", "args": ["zb", {"op": "-", "args": ["NLEV", 1]}]}]}]},
+        {"op": "-", "args": ["z", {"op": "index", "args": ["zb", "NLEV"]}]}]}]},
+      {"op": "fn", "name": "interp.linear", "args": ["fb", "zb", "z"]}]}
+    }
+   },
+   "variables": {
+    "ze_in": {"type": "parameter", "units": "m", "shape": ["lev_nodes"], "default": 0.0, "description": "Coupling target (assembly input path): a shaped parameter that receives the interface heights, from the column geometry's z_w through a document-level `coupling.variable_map` (`param_to_var`) when an assembly's mount-edge template library lowers `input_ze` to this parameter. Unused in the component's own inline tests, which lower `input_ze` to a dumped profile."},
+    "dampcoef": {"type": "parameter", "units": "1/s", "default": 0.003, "description": "Inverse e-folding time of the damper at the model top (namelist dampcoef)."},
+    "zdamp": {"type": "parameter", "units": "m", "default": 5000.0, "description": "Depth of the damping layer below the model top (namelist zdamp)."},
+    "ze": {"type": "unknown", "units": "m", "shape": ["lev_nodes"], "description": "Interface (full-level) heights, (phb + ph)/g, consumer-supplied through `input_ze`."},
+    "u": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Zonal wind on the layers, consumer-supplied through `input_u`."},
+    "v": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Meridional wind on the layers, consumer-supplied through `input_v`."},
+    "w": {"type": "unknown", "units": "m/s", "shape": ["lev_nodes"], "description": "Vertical velocity on the interfaces, consumer-supplied through `input_w`."},
+    "theta_m": {"type": "unknown", "units": "K", "shape": ["lev"], "description": "Moist potential temperature theta (1 + (R_v/R_d) q_v) on the layers (WRF t + t0 with use_theta_m = 1), consumer-supplied through `input_theta_m`."},
+    "u_base": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Base-state (initial sounding) zonal wind on the base heights (WRF u_base), through `input_u_base`."},
+    "v_base": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Base-state meridional wind (WRF v_base), through `input_v_base`."},
+    "theta_base": {"type": "unknown", "units": "K", "shape": ["lev"], "description": "Base-state potential temperature, WRF t_base + t0: the DRY initial theta (see N64 in the component description), through `input_theta_base`."},
+    "z_base": {"type": "unknown", "units": "m", "shape": ["lev"], "description": "Heights of the base-state layers, the initial layer-centre heights (WRF z_base), through `input_z_base`."},
+    "zc": {"type": "unknown", "units": "m", "shape": ["lev"], "description": "Current layer-centre heights, (ze[k] + ze[k+1])/2 (the grid's column_cell_center)."},
+    "z_top": {"type": "unknown", "units": "m", "description": "Current model-top height ze[NLEV+1]."},
+    "sponge_c": {"type": "unknown", "units": "1", "shape": ["lev"], "description": "Damping profile on the layers (WRF dcoef at the u, v and theta points)."},
+    "sponge_w": {"type": "unknown", "units": "1", "shape": ["lev_nodes"], "description": "Damping profile on the interfaces (WRF dcoef at the w points)."},
+    "u_ref": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Base-state zonal wind at the current layer heights (WRF u00)."},
+    "v_ref": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Base-state meridional wind at the current layer heights (WRF v00)."},
+    "theta_ref": {"type": "unknown", "units": "K", "shape": ["lev"], "description": "Base-state potential temperature at the current layer heights (WRF t00 + t0)."},
+    "du_dt": {"type": "unknown", "units": "m/s^2", "shape": ["lev"], "description": "Rayleigh-damping tendency of u, -dampcoef sponge_c (u - u_ref)."},
+    "dv_dt": {"type": "unknown", "units": "m/s^2", "shape": ["lev"], "description": "Rayleigh-damping tendency of v."},
+    "dtheta_m_dt": {"type": "unknown", "units": "K/s", "shape": ["lev"], "description": "Rayleigh-damping tendency of the moist potential temperature."},
+    "dw_dt": {"type": "unknown", "units": "m/s^2", "shape": ["lev_nodes"], "description": "Rayleigh-damping tendency of w, -dampcoef sponge_w w."}
+   },
+   "equations": [
+    {"lhs": "ze", "rhs": {"op": "input_ze", "args": []}},
+    {"lhs": "u", "rhs": {"op": "input_u", "args": []}},
+    {"lhs": "v", "rhs": {"op": "input_v", "args": []}},
+    {"lhs": "w", "rhs": {"op": "input_w", "args": []}},
+    {"lhs": "theta_m", "rhs": {"op": "input_theta_m", "args": []}},
+    {"lhs": "u_base", "rhs": {"op": "input_u_base", "args": []}},
+    {"lhs": "v_base", "rhs": {"op": "input_v_base", "args": []}},
+    {"lhs": "theta_base", "rhs": {"op": "input_theta_base", "args": []}},
+    {"lhs": "z_base", "rhs": {"op": "input_z_base", "args": []}},
+    {"lhs": "zc", "rhs": {"op": "apply_expression_template", "args": [], "name": "column_cell_center", "bindings": {"ze": "ze"}}},
+    {"lhs": "z_top", "rhs": {"op": "index", "args": ["ze", {"op": "+", "args": ["NLEV", 1]}]}},
+    {"lhs": "sponge_c", "rhs": {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": "lev"}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "sponge_strength", "bindings": {"z": {"op": "index", "args": ["zc", "k"]}, "z_top": "z_top", "depth": "zdamp"}}}},
+    {"lhs": "sponge_w", "rhs": {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": {"from": "lev_nodes"}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "sponge_strength", "bindings": {"z": {"op": "index", "args": ["ze", "kn"]}, "z_top": "z_top", "depth": "zdamp"}}}},
+    {"lhs": "u_ref", "rhs": {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": "lev"}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "u_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}}}}},
+    {"lhs": "v_ref", "rhs": {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": "lev"}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "v_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}}}}},
+    {"lhs": "theta_ref", "rhs": {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": "lev"}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "theta_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}}}}},
+    {"lhs": "du_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["dampcoef"]}, "sponge_c", {"op": "-", "args": ["u", "u_ref"]}]}},
+    {"lhs": "dv_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["dampcoef"]}, "sponge_c", {"op": "-", "args": ["v", "v_ref"]}]}},
+    {"lhs": "dtheta_m_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["dampcoef"]}, "sponge_c", {"op": "-", "args": ["theta_m", "theta_ref"]}]}},
+    {"lhs": "dw_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["dampcoef"]}, "sponge_w", "w"]}}
+   ],
+   "tests": [
+     {
+       "id": "rayleigh_step1",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: rk_rayleigh_damp (dyn_em/module_big_step_utilities_em.F:5836-6110). Measured esm-vs-Fortran residual over the four regimes (zero tolerance): Linf <= 1.4e-13 m/s^2 in du_dt (values <= 7.8e-8), <= 3.9e-14 in dv_dt, <= 2.7e-10 K/s in dtheta_m_dt (values <= 1.9e-4), <= 6.0e-13 m/s^2 in dw_dt (values <= 2.0e-6); damped layers 50-59 (z >= z_top - zdamp, ~7 km). At step 1 the only non-zero tendency is dtheta_m_dt: theta_m - theta_base = +0.050 K at the top because t_base is the DRY initial theta while the damped field is the moist theta (N64), so the damper cools the lid from the first step. Regime: step 1 (t = 1 min after 1999-10-22 19:00 UTC, the initial sounding: w = 0, u = u_base, v = v_base).",
+       "parameter_overrides": {
+         "dampcoef": 0.003000000026077032,
+         "zdamp": 5000.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/rayleigh_step1_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "du_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "dv_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "dtheta_m_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.4250827435861924e-10, -2.0794368280883143e-06, -8.654653342437797e-06, -2.0220321868894276e-05, -3.694834110789593e-05, -5.846644243519306e-05, -8.35657375183626e-05, -0.00010984741421559509, -0.00013336071571195022, -0.00014839019496592584]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 2e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 59
+           },
+           "expected": -0.00014839019496592584,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-12
+           }
+         }
+       ]
+     },
+     {
+       "id": "rayleigh_step60",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: rk_rayleigh_damp (dyn_em/module_big_step_utilities_em.F:5836-6110). Measured esm-vs-Fortran residual over the four regimes (zero tolerance): Linf <= 1.4e-13 m/s^2 in du_dt (values <= 7.8e-8), <= 3.9e-14 in dv_dt, <= 2.7e-10 K/s in dtheta_m_dt (values <= 1.9e-4), <= 6.0e-13 m/s^2 in dw_dt (values <= 2.0e-6); damped layers 50-59 (z >= z_top - zdamp, ~7 km). At step 1 the only non-zero tendency is dtheta_m_dt: theta_m - theta_base = +0.050 K at the top because t_base is the DRY initial theta while the damped field is the moist theta (N64), so the damper cools the lid from the first step. Regime: step 60 (t = 1 h, early afternoon, convective boundary layer).",
+       "parameter_overrides": {
+         "dampcoef": 0.003000000026077032,
+         "zdamp": 5000.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/rayleigh_step60_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "du_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.730088341664867e-13, 6.449524593243729e-09, 2.1787694157076584e-08, 4.883938054217753e-08, 5.8336369973393066e-08, 3.5024192902368145e-08, 2.54212911546731e-08, 2.6103207620481924e-08, 2.281576797940434e-08, 2.186034236317608e-08]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "dv_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.665206024199694e-14, -3.155728509509749e-10, -2.1376604299517157e-09, -3.0764962155108466e-09, -5.622782794021038e-09, -4.447516862091619e-09, -4.766491907916333e-09, -8.353026556048535e-09, 0.0, 2.820689420093308e-09]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "dtheta_m_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.20336511245804e-10, -1.3253990829522869e-06, -6.328001436371928e-05, -0.00019400414101473324, -5.59353989909668e-05, 8.813198559737054e-05, 7.85009495765101e-05, 2.672968460337349e-05, 4.137260341213054e-06, -1.083144784313558e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 2e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 59
+           },
+           "expected": -1.083144784313558e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.4319481304883095e-09, -4.8985041186765347e-08, -2.198985370735696e-07, -3.9523923358603616e-07, -4.92900417520273e-07, -7.44406312830328e-07, -1.1418052799899837e-06, -1.5265480410963195e-06, -1.8521078797863514e-06, -2.042059911318699e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-12
+           }
+         }
+       ]
+     },
+     {
+       "id": "rayleigh_step900",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: rk_rayleigh_damp (dyn_em/module_big_step_utilities_em.F:5836-6110). Measured esm-vs-Fortran residual over the four regimes (zero tolerance): Linf <= 1.4e-13 m/s^2 in du_dt (values <= 7.8e-8), <= 3.9e-14 in dv_dt, <= 2.7e-10 K/s in dtheta_m_dt (values <= 1.9e-4), <= 6.0e-13 m/s^2 in dw_dt (values <= 2.0e-6); damped layers 50-59 (z >= z_top - zdamp, ~7 km). At step 1 the only non-zero tendency is dtheta_m_dt: theta_m - theta_base = +0.050 K at the top because t_base is the DRY initial theta while the damped field is the moist theta (N64), so the damper cools the lid from the first step. Regime: step 900 (t = 15 h, pre-dawn, deep stable night).",
+       "parameter_overrides": {
+         "dampcoef": 0.003000000026077032,
+         "zdamp": 5000.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/rayleigh_step900_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "du_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.5437520057481135e-12, -1.172276215549222e-08, -6.435180886783603e-08, -7.416901731597839e-08, -7.344000031505159e-08, -7.726749524988995e-08, -7.348127019459058e-08, -7.46548387007806e-08, -7.668627435279828e-08, -7.545343583740274e-08]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "dv_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.6563067436803264e-11, 3.7496916654939594e-08, 2.061236911081793e-08, -1.5391754867433732e-09, -2.8111007821559364e-09, -4.4470501893434515e-09, -4.7663527505823e-09, -8.352989104734362e-09, 0.0, 2.8206890529235613e-09]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "dtheta_m_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0246210519823055e-09, 1.640884225569092e-05, 2.755519329678121e-05, 2.8542470424440777e-05, 2.6716678640231453e-05, 2.3053508816025775e-05, 1.7133435924492515e-05, 9.68946509972622e-06, 2.2714351406798815e-06, -4.513102672668608e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 2e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 59
+           },
+           "expected": -4.513102672668608e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.430455265274541e-09, 6.084874512125965e-08, 1.728914921851954e-07, 3.470783827359231e-07, 5.859428527779851e-07, 8.726493880839248e-07, 1.2057373227791437e-06, 1.5185476179288644e-06, 1.7508634951052833e-06, 1.8360265733418094e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-12
+           }
+         }
+       ]
+     },
+     {
+       "id": "rayleigh_step1410",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: rk_rayleigh_damp (dyn_em/module_big_step_utilities_em.F:5836-6110). Measured esm-vs-Fortran residual over the four regimes (zero tolerance): Linf <= 1.4e-13 m/s^2 in du_dt (values <= 7.8e-8), <= 3.9e-14 in dv_dt, <= 2.7e-10 K/s in dtheta_m_dt (values <= 1.9e-4), <= 6.0e-13 m/s^2 in dw_dt (values <= 2.0e-6); damped layers 50-59 (z >= z_top - zdamp, ~7 km). At step 1 the only non-zero tendency is dtheta_m_dt: theta_m - theta_base = +0.050 K at the top because t_base is the DRY initial theta while the damped field is the moist theta (N64), so the damper cools the lid from the first step. Regime: step 1410 (t = 23.5 h, late morning of the second day).",
+       "parameter_overrides": {
+         "dampcoef": 0.003000000026077032,
+         "zdamp": 5000.0
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/rayleigh_step1410_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "du_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.1095686163063672e-11, 2.940744454313557e-08, 4.008494933215035e-08, 5.568719618994715e-08, 5.446098435414164e-08, 5.3085313869887536e-08, 5.6798539704809485e-08, 5.429428341438388e-08, 5.2602946818063124e-08, 5.2182746010406895e-08]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "dv_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -7.970520863276565e-12, -1.111962746640299e-09, -4.449305713097971e-09, -3.0777034696382857e-09, -2.810889659551533e-09, -4.446937468231187e-09, -6.355081190974889e-09, -8.352967074549555e-09, 0.0, 2.8206890529235613e-09]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-12
+           }
+         },
+         {
+           "variable": "dtheta_m_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.491702116396774e-09, 1.0218651992740592e-05, 4.471716849735662e-06, 3.90252774688856e-06, 5.059605784417647e-06, 6.1545614736561115e-06, 5.795830074861117e-06, 3.2075392626315737e-06, -9.734720151576105e-07, -5.957295843747292e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 2e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 59
+           },
+           "expected": -5.957295843747292e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.731200286194552e-09, -4.6762177915562206e-08, -1.411858617003216e-07, -2.9280644086629177e-07, -5.041144043070729e-07, -7.605222096023756e-07, -1.0603217478418462e-06, -1.342824524405871e-06, -1.5678599836014964e-06, -1.6630431653508821e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-12
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}

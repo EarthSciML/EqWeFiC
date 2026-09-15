@@ -1,0 +1,337 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "WRFVerticalMomentum",
+  "description": "Vertical momentum and geopotential equations of a single WRF-ARW column with a fixed dry column mass (no horizontal divergence, so mu_t = 0 and the coordinate vertical velocity ww = 0), on the EarthSciDiscretizations column_nonuniform_1d grid. In the terrain-following dry-hydrostatic-pressure coordinate eta the vertical momentum equation in its perturbation (base-state split) form is mu_d dw/dt = g [ (1/(1+q_m)) dp'/deta - mu' - (q_m/(1+q_m)) mu_b ] (Skamarock et al. 2021, eqs. 2.18 and 2.33, the right-hand side of pg_buoy_w), and the geopotential equation reduces to dphi/dt = g w because every advective term carries u, v (horizontally uniform) or ww (zero). The base state mu_b, p_b is in exact hydrostatic balance, so only the perturbation pressure p' and the perturbation dry column mass mu' appear -- the split removes the O(g) cancellation of the full form. q_m is the total water mixing ratio on the interface (WRF cqw = 0.5 (q_t[k] + q_t[k-1]), the sum of every moist species). The column coordinate is s = 1 - eta (0 at the surface, 1 at the top, increasing with the lev index as the grid requires), so dp'/deta = -dp'/ds; the layer-to-interface difference on the interior interfaces 2..NLEV is the centred difference over the layer-centre spacing dzc (WRF rdn), and at the top interface the pressure lid p = p_top gives p' = 0 half a layer above the top layer centre (WRF's 2 rdnw(kde-1) (0 - p')). At the top interface WRF uses the moisture coefficient of the interface BELOW it (cqw(kde-1)); transcribed as is. The surface interface has no tendency (w is fixed by the flat lower boundary). NOT a D(p', lev) rule: EarthSciDiscretizations has no layer-to-interface gradient rule on column_nonuniform_1d yet, so the difference is written with the column_staggering neighbour templates, as the YSU component does for its interface density; a follow-up rule would let this read as D(p', wrt: lev). This is the continuous right-hand side the acoustic small step integrates (dyn_em/module_small_step_em.F advance_w); its instantaneous value is the large-step tendency rw_tend that pg_buoy_w computes at the time-level-n state, which is what the tests assert. Consumer-supplied column fields are rewrite-target ops input_<name>.",
+  "license": "MIT",
+  "tags": ["wrf", "dynamics", "vertical-momentum", "nonhydrostatic", "column"],
+  "references": [
+   {"citation": "Skamarock, W. C., et al. (2021). A Description of the Advanced Research WRF Model Version 4.3. NCAR/TN-556+STR, sections 2.2-2.5 (flux-form equations, perturbation form) and 3.1 (acoustic step).", "doi": "10.5065/1dfh-6p97"},
+   {"citation": "WRF v4.8.0 dyn_em/module_big_step_utilities_em.F (pg_buoy_w, calc_cq), called from dyn_em/module_em.F:730 (rk_tendency); dyn_em/module_small_step_em.F (advance_w, the geopotential update)."}
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {"type": "integer", "default": 59, "description": "Number of model layers (WRF kde - 1). Bound into the column grid at the import edge; 59 is the em_scm_xy reference column."}
+ },
+ "models": {
+  "WRFVerticalMomentum": {
+   "expression_template_imports": [
+    {"ref": "../../../../EarthSciDiscretizations/grids/column_nonuniform_1d/grid.esm", "bindings": {"NLEV": "NLEV"}},
+    {"ref": "./column_staggering.esm"}
+   ],
+   "subsystems": {"wrf": {"ref": "../../../lib/wrf_constants.esm"}},
+   "variables": {
+    "p_p_in": {"type": "parameter", "units": "Pa", "shape": ["lev"], "default": 0.0, "description": "Coupling target (assembly input path): a shaped parameter that receives the perturbation pressure, from the column geometry's equation of state through a document-level `coupling.variable_map` (`param_to_var`) when an assembly's mount-edge template library lowers `input_p_p` to this parameter. Unused in the component's own inline tests, which lower `input_p_p` to a dumped profile."},
+    "mu_p": {"type": "parameter", "units": "Pa", "default": 0.0, "description": "Perturbation dry column mass mu' (WRF mu)."},
+    "mu_b": {"type": "parameter", "units": "Pa", "default": 79438.7, "description": "Base-state dry column mass mu_b = p_surf - p_top (WRF mub)."},
+    "eta_w": {"type": "unknown", "units": "1", "shape": ["lev_nodes"], "description": "Eta value of each interface, 1 at the surface and 0 at the top (WRF znw), through `input_eta_w`."},
+    "p_p": {"type": "unknown", "units": "Pa", "shape": ["lev"], "description": "Perturbation pressure p' on the layers (WRF p), through `input_p_p`."},
+    "q_t": {"type": "unknown", "units": "kg/kg", "shape": ["lev"], "description": "Total water mixing ratio on the layers, the sum of every moist species (q_v + q_c + q_r + q_i + q_s + q_g), through `input_q_t`."},
+    "w": {"type": "unknown", "units": "m/s", "shape": ["lev_nodes"], "description": "Vertical velocity on the interfaces, through `input_w`."},
+    "ze": {"type": "unknown", "units": "1", "shape": ["lev_nodes"], "description": "Column coordinate s = 1 - eta on the interfaces (the grid's geometry input)."},
+    "zc": {"type": "unknown", "units": "1", "shape": ["lev"], "description": "Layer-centre coordinate s (1 - WRF znu)."},
+    "dz": {"type": "unknown", "units": "1", "shape": ["lev"], "description": "Layer thickness in s (-WRF dnw)."},
+    "dzc": {"type": "unknown", "units": "1", "shape": ["lev_nodes"], "description": "Layer-centre spacing across each interior interface in s (-WRF dn); 0 on the faces."},
+    "mu_d": {"type": "unknown", "units": "Pa", "description": "Dry column mass mu_b + mu'."},
+    "q_m": {"type": "unknown", "units": "kg/kg", "shape": ["lev_nodes"], "description": "Total water on the interfaces (WRF cqw); the top interface carries the value of the interface below it, the surface 0."},
+    "dpp_ds": {"type": "unknown", "units": "Pa", "shape": ["lev_nodes"], "description": "dp'/ds on the interfaces: centred on 2..NLEV, one-sided against the p' = 0 lid on the top interface, 0 on the surface."},
+    "dw_dt": {"type": "unknown", "units": "m/s^2", "shape": ["lev_nodes"], "description": "Pressure-gradient-plus-buoyancy tendency of w (WRF pg_buoy_w contribution to rw_tend over the coupling mass); 0 on the surface interface."},
+    "dphi_dt": {"type": "unknown", "units": "m^2/s^3", "shape": ["lev_nodes"], "description": "Geopotential tendency g w."}
+   },
+   "equations": [
+    {"lhs": "eta_w", "rhs": {"op": "input_eta_w", "args": []}},
+    {"lhs": "p_p", "rhs": {"op": "input_p_p", "args": []}},
+    {"lhs": "q_t", "rhs": {"op": "input_q_t", "args": []}},
+    {"lhs": "w", "rhs": {"op": "input_w", "args": []}},
+    {"lhs": "ze", "rhs": {"op": "-", "args": [1.0, "eta_w"]}},
+    {"lhs": "zc", "rhs": {"op": "apply_expression_template", "args": [], "name": "column_cell_center", "bindings": {"ze": "ze"}}},
+    {"lhs": "dz", "rhs": {"op": "apply_expression_template", "args": [], "name": "column_cell_thickness", "bindings": {"ze": "ze"}}},
+    {"lhs": "dzc", "rhs": {"op": "apply_expression_template", "args": [], "name": "interface_spacing", "bindings": {"zc": "zc"}}},
+    {"lhs": "mu_d", "rhs": {"op": "+", "args": ["mu_b", "mu_p"]}},
+    {"lhs": "q_m", "rhs": {"op": "makearray", "args": [], "regions": [[[1, 1]], [[2, "NLEV"]], [[{"op": "+", "args": ["NLEV", 1]}, {"op": "+", "args": ["NLEV", 1]}]]],
+      "values": [0.0,
+       {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": [2, "NLEV"]},
+        "expr": {"op": "*", "args": [0.5, {"op": "+", "args": [{"op": "apply_expression_template", "args": [], "name": "layer_above", "bindings": {"f": "q_t"}}, {"op": "apply_expression_template", "args": [], "name": "layer_below", "bindings": {"f": "q_t"}}]}]}},
+       {"op": "*", "args": [0.5, {"op": "+", "args": [{"op": "index", "args": ["q_t", "NLEV"]}, {"op": "index", "args": ["q_t", {"op": "-", "args": ["NLEV", 1]}]}]}]}]}},
+    {"lhs": "dpp_ds", "rhs": {"op": "makearray", "args": [], "regions": [[[1, 1]], [[2, "NLEV"]], [[{"op": "+", "args": ["NLEV", 1]}, {"op": "+", "args": ["NLEV", 1]}]]],
+      "values": [0.0,
+       {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": [2, "NLEV"]},
+        "expr": {"op": "/", "args": [{"op": "-", "args": [{"op": "apply_expression_template", "args": [], "name": "layer_above", "bindings": {"f": "p_p"}}, {"op": "apply_expression_template", "args": [], "name": "layer_below", "bindings": {"f": "p_p"}}]}, {"op": "index", "args": ["dzc", "kn"]}]}},
+       {"op": "/", "args": [{"op": "-", "args": [0.0, {"op": "index", "args": ["p_p", "NLEV"]}]}, {"op": "*", "args": [0.5, {"op": "index", "args": ["dz", "NLEV"]}]}]}]}},
+    {"lhs": "dw_dt", "rhs": {"op": "makearray", "args": [], "regions": [[[1, 1]], [[2, {"op": "+", "args": ["NLEV", 1]}]]],
+      "values": [0.0,
+       {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": [2, {"op": "+", "args": ["NLEV", 1]}]},
+        "expr": {"op": "*", "args": [{"op": "/", "args": ["wrf.g", "mu_d"]},
+         {"op": "-", "args": [
+          {"op": "-", "args": [
+           {"op": "/", "args": [{"op": "-", "args": [{"op": "index", "args": ["dpp_ds", "kn"]}]}, {"op": "+", "args": [1.0, {"op": "index", "args": ["q_m", "kn"]}]}]},
+           "mu_p"]},
+          {"op": "*", "args": [{"op": "/", "args": [{"op": "index", "args": ["q_m", "kn"]}, {"op": "+", "args": [1.0, {"op": "index", "args": ["q_m", "kn"]}]}]}, "mu_b"]}]}]}}]}},
+    {"lhs": "dphi_dt", "rhs": {"op": "*", "args": ["wrf.g", "w"]}}
+   ],
+   "tests": [
+     {
+       "id": "vertmom_step60",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: pg_buoy_w (dyn_em/module_big_step_utilities_em.F), with the moisture coefficient of calc_cq; the eta grid is the run's wrfout ZNW (single precision), the total water the sum of the six WSM6 species from the same step's radiation subassembly dump. The w tendency is a near-cancellation of O(g mu_b q) terms (~2e3 Pa m/s^2 against a residual of ~10), so single-precision rounding in the Fortran sum sets the floor: measured residual Linf <= 6.0e-9 m/s^2 over the three regimes against values <= 5.9e-4 (1e-5 of the profile maximum), well above the esm evaluation's own rounding. dphi_dt = g w is the geopotential equation of advance_w (dyn_em/module_small_step_em.F) and has no separate Fortran tendency to assert. Regime: step 60 (t = 1 h, early afternoon, convective boundary layer).",
+       "parameter_overrides": {
+         "mu_p": -97.75,
+         "mu_b": 79363.078125
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/vertmom_step60_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, 0.0002915334643646285, -0.00021564984154841602, -6.977828563448752e-06, -0.0002266935044346337, -5.660067024809661e-05, 0.00017738413232925817, -0.0002735044322235659, 3.8363891607891025e-05, 3.1331299036364785e-05, 4.6589985831809555e-05, 6.112917351212336e-06, 0.0001544885479093493, -0.00036817439277197177, 0.00017952564056010042, -9.678502973761569e-05, 0.0001557245475389002, -0.0002322370525877068, 0.0001079486037539491, 2.262270433407322e-05, -7.19273375645805e-05, -3.090073067099564e-05, -0.00024982703421352507, 8.515971996690345e-05, 6.579742621105384e-05, -0.00014964278592126108, 0.000197786963293562, 7.578355751052118e-06, -0.00021337992199045542, 0.00019948279169769708, 9.796531186919178e-05, -0.00023739157686267207, 9.118010330427515e-05, -0.0002717311696114917, 0.0001461245946871216, -3.63847954921777e-05, 7.259962915426662e-05, -7.713569040485331e-05, -7.478268074442468e-07, 3.178263964536458e-05, 3.275802371607142e-05, 5.0760631854774464e-05, -3.381933316815627e-05, -3.3889205629717206e-05, 5.1183175264162356e-05, -1.5981020061540247e-05, 2.258859375937103e-05, -9.4027180523791e-06, -3.443213541024221e-05, -3.28429444740245e-05, 0.0001486773127313482, -0.00033110927471841756, 0.00016569119395649101, 5.001811588454322e-05, 1.897285930559354e-05, 1.0214191344419675e-05, 1.1613903234235498e-05, 3.7621029734384725e-05, 2.9557582238251226e-05, 1.1958158204987655e-05]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-08
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 2
+           },
+           "expected": 0.003134526778012514,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 30
+           },
+           "expected": 0.0026866747066378593,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 59
+           },
+           "expected": 3.590811957110418e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "vertmom_step900",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: pg_buoy_w (dyn_em/module_big_step_utilities_em.F), with the moisture coefficient of calc_cq; the eta grid is the run's wrfout ZNW (single precision), the total water the sum of the six WSM6 species from the same step's radiation subassembly dump. The w tendency is a near-cancellation of O(g mu_b q) terms (~2e3 Pa m/s^2 against a residual of ~10), so single-precision rounding in the Fortran sum sets the floor: measured residual Linf <= 6.0e-9 m/s^2 over the three regimes against values <= 5.9e-4 (1e-5 of the profile maximum), well above the esm evaluation's own rounding. dphi_dt = g w is the geopotential equation of advance_w (dyn_em/module_small_step_em.F) and has no separate Fortran tendency to assert. Regime: step 900 (t = 15 h, pre-dawn, deep stable night).",
+       "parameter_overrides": {
+         "mu_p": -97.75,
+         "mu_b": 79363.078125
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/vertmom_step900_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, -0.00027984963377548623, -0.0002005422182328238, -0.0004819214904319817, -0.0001637438487535731, 0.00033297554019366275, 9.48984672597612e-05, 7.923564813272511e-05, 5.0561397584052404e-05, 0.00042765493337398663, 0.0005936460585563498, -0.00023099726306140316, 0.00034842496407068153, 0.0002735233215502384, 0.00011973348622508023, 0.0001107491810458067, -8.806651663489377e-05, -0.00010079326665330626, 2.7208808764996544e-05, 2.5935048529227994e-05, -0.00014762119483624373, 0.0001261636656841904, 5.3301541061976184e-05, -0.00013189700946035846, -7.325303141728022e-05, 5.301638441773067e-05, -1.0832158072794902e-05, -5.676118741484913e-05, -8.426270554690564e-05, 0.00013651993755080222, -2.4872794610809516e-05, 2.243480328337285e-06, -2.568105325828301e-05, 7.02711707307486e-05, -0.00015966480092569708, -5.314102615111459e-06, -0.00010773804190293267, 2.817003185640812e-05, 6.474839482130613e-05, -0.00011837002575045372, 2.1444311135164382e-05, 3.782473969270053e-05, 8.980530923364512e-05, -9.584032879133344e-05, -0.00012432053662626448, 2.510696210445748e-05, 1.1791255362992179e-05, -1.943747658464628e-05, 1.5427822969455268e-05, -4.733285672887955e-05, 4.110851979697225e-05, -7.436686402579113e-05, -5.5950095368374755e-06, -1.4924963827454368e-05, -1.2037521199666984e-05, -2.985523830413082e-07, -3.150598019026713e-05, -1.094826050706683e-05, -2.398192072590754e-05, 1.193170487604607e-05]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-08
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 2
+           },
+           "expected": 0.004877889528870583,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 30
+           },
+           "expected": 0.002686674240976572,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 59
+           },
+           "expected": 3.5935054256697185e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "vertmom_step1410",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, damp_opt = 2 dampcoef = 0.003 zdamp = 5000 m, pert_coriolis = .true., use_theta_m = 1, hybrid_opt = 0; data/eqwefic/scm_dyn, the scm_ref namelist re-run with the instrumented binary) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (dyn_em/module_em.F rk_tendency, rk_step 1 of the step; module_esm_dump), merged with the same step's radiation subassembly dump and the wrfout eta grid by tools/merge_dumps.py into data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_<step>.json. The rebuilt binary reproduces the archived scm_ref radiation subassembly dumps bit for bit (all but the three B9 variables). The column is horizontally uniform (u, v identical in the two tile columns, ww = 0, all map factors 1, c1 = 1, c2 = 0). Expected tendencies are the dumped mass-coupled increments of the named routine divided by the coupling mass of their grid point (muu, muv, mut), i.e. the instantaneous decoupled rate at the time-level-n state; references are single precision, so tolerances follow the rel 1e-5 real32 convention, with absolute Linf bounds on whole profiles where values pass through zero. Routine: pg_buoy_w (dyn_em/module_big_step_utilities_em.F), with the moisture coefficient of calc_cq; the eta grid is the run's wrfout ZNW (single precision), the total water the sum of the six WSM6 species from the same step's radiation subassembly dump. The w tendency is a near-cancellation of O(g mu_b q) terms (~2e3 Pa m/s^2 against a residual of ~10), so single-precision rounding in the Fortran sum sets the floor: measured residual Linf <= 6.0e-9 m/s^2 over the three regimes against values <= 5.9e-4 (1e-5 of the profile maximum), well above the esm evaluation's own rounding. dphi_dt = g w is the geopotential equation of advance_w (dyn_em/module_small_step_em.F) and has no separate Fortran tendency to assert. Regime: step 1410 (t = 23.5 h, late morning of the second day).",
+       "parameter_overrides": {
+         "mu_p": -97.75,
+         "mu_b": 79363.078125
+       },
+       "expression_template_imports": [
+         {
+           "ref": "./tests/vertmom_step1410_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dw_dt",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev_nodes"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0, -0.0003193258239860597, -0.00025207806444481313, 3.4966568001619145e-05, -0.0002987870139325502, 0.00024227322857143808, -0.0003854669336754982, -0.00011544103713147778, -0.0002701543078711388, -0.0003828306574314368, -2.0040247631755648e-05, -0.00024506434916854116, -2.7227695083814503e-05, -0.000157938749598886, -0.00041237739033826953, -0.00010188006466498076, -0.000465447110033159, 0.00010038158159890051, 0.00027576489508677197, 2.7833886061565058e-05, -6.677375775594887e-05, -2.5907665021261967e-05, -0.00017015326198476177, 8.93143130700513e-05, 1.416338651886762e-06, -0.00011803576888827792, -4.139674445287476e-05, 1.1483673659032175e-05, -0.00021337614412512092, 0.0002624513126425937, -2.4876570972216736e-05, -0.00017748422169778602, -2.568105325828301e-05, 0.0001842694362784118, -7.626322609382062e-05, -0.00019276368976042514, 0.00013321514758238918, -0.00012543095231198876, 0.00011816513069743904, -2.502009376067312e-05, 4.055071918347448e-05, -8.137903928052547e-05, 0.0001356842953953627, -7.589072736869665e-05, -7.89141385581987e-05, -1.4252142855364682e-05, 6.745076265373943e-06, 3.7333623214924074e-05, -5.933739078752463e-05, 8.999887369851086e-06, -5.531203316364616e-05, -6.918814174883581e-07, -4.103723063591087e-05, 1.968716611178048e-05, -1.2125924301243487e-05, -4.039810929039333e-07, -7.462702991037762e-06, -1.8828001029709992e-05, 2.18708760461066e-05, -1.828515697304011e-05]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 5e-08
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 2
+           },
+           "expected": 0.004700478166341782,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 30
+           },
+           "expected": 0.0026866747066378593,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "q_m",
+           "time": 0.0,
+           "coords": {
+             "lev_nodes": 59
+           },
+           "expected": 3.595113867049804e-06,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}

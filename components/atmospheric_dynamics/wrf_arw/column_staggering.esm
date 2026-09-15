@@ -1,0 +1,67 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "wrf_arw_column_staggering",
+  "description": "Template library for the vertical staggering of WRF-ARW's single column on the EarthSciDiscretizations column_nonuniform_1d grid: NLEV layers `lev` (WRF half levels, mass points, layer 1 at the surface) and NLEV+1 interfaces `lev_nodes` (WRF full levels, w points). The grid itself supplies the layer centre (column_cell_center) and thickness (column_cell_thickness) of an interface coordinate; this library adds the three interface-side operations the dynamics needs and the grid does not provide: the centre-to-centre spacing across an interior interface, the linear-interpolation weights that carry a layer field onto an interior interface, and that interpolation itself. They are what WRF precomputes as dn, fnm and fnp in dyn_em/module_initialize_scm_xy.F:333-338 and applies in module_big_step_utilities_em.F (perturbation_coriolis, phy_prep). Applied to an eta-type coordinate they reproduce WRF's weights exactly; applied to heights they give height-linear interpolation. Every template whose body references `kn` captures the enclosing interface index of an aggregate over lev_nodes by design (as the YSU component's above/below templates do). The two domain faces carry no centred value: the array templates return 0 there, and a consumer that needs a one-sided face value (a surface extrapolation, a lid condition) writes it itself.",
+  "license": "MIT",
+  "tags": ["template-library", "wrf", "staggering", "column"],
+  "references": [
+   {"citation": "Skamarock, W. C., et al. (2021). A Description of the Advanced Research WRF Model Version 4.3. NCAR Technical Note NCAR/TN-556+STR, Chapter 3 (vertical grid staggering).", "doi": "10.5065/1dfh-6p97"}
+  ]
+ },
+ "expression_templates": {
+  "layer_above": {
+   "params": ["f"],
+   "description": "Layer field f at the layer just ABOVE interface kn (layer kn, clamped to NLEV so the top interface reads the top layer).",
+   "body": {"op": "index", "args": ["f", {"op": "min", "args": ["kn", "NLEV"]}]}
+  },
+  "layer_below": {
+   "params": ["f"],
+   "description": "Layer field f at the layer just BELOW interface kn (layer kn-1, clamped to 1 so the surface interface reads layer 1).",
+   "body": {"op": "index", "args": ["f", {"op": "max", "args": [{"op": "-", "args": ["kn", 1]}, 1]}]}
+  },
+  "interface_spacing": {
+   "params": ["zc"],
+   "description": "Centre-to-centre distance across each interior interface, zc[kn] - zc[kn-1], shape [lev_nodes]; 0 on the two domain faces. In WRF's eta coordinate this is dn(k) = 0.5 (dnw(k) + dnw(k-1)).",
+   "body": {"op": "makearray", "args": [], "regions": [[[1, 1]], [[2, "NLEV"]], [[{"op": "+", "args": ["NLEV", 1]}, {"op": "+", "args": ["NLEV", 1]}]]],
+    "values": [0.0,
+     {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": [2, "NLEV"]},
+      "expr": {"op": "-", "args": [{"op": "apply_expression_template", "args": [], "name": "layer_above", "bindings": {"f": "zc"}}, {"op": "apply_expression_template", "args": [], "name": "layer_below", "bindings": {"f": "zc"}}]}},
+     0.0]}
+  },
+  "interface_weight_above": {
+   "params": ["dz", "dzc"],
+   "description": "Weight of the layer ABOVE an interior interface in linear interpolation onto it, dz[kn-1] / (2 dzc[kn]) -- proportional to the thickness of the layer below (WRF fnm). Shape [lev_nodes]; 0 on the faces.",
+   "body": {"op": "makearray", "args": [], "regions": [[[1, 1]], [[2, "NLEV"]], [[{"op": "+", "args": ["NLEV", 1]}, {"op": "+", "args": ["NLEV", 1]}]]],
+    "values": [0.0,
+     {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": [2, "NLEV"]},
+      "expr": {"op": "/", "args": [{"op": "apply_expression_template", "args": [], "name": "layer_below", "bindings": {"f": "dz"}}, {"op": "*", "args": [2, {"op": "index", "args": ["dzc", "kn"]}]}]}},
+     0.0]}
+  },
+  "interface_weight_below": {
+   "params": ["dz", "dzc"],
+   "description": "Weight of the layer BELOW an interior interface in linear interpolation onto it, dz[kn] / (2 dzc[kn]) (WRF fnp). Shape [lev_nodes]; 0 on the faces.",
+   "body": {"op": "makearray", "args": [], "regions": [[[1, 1]], [[2, "NLEV"]], [[{"op": "+", "args": ["NLEV", 1]}, {"op": "+", "args": ["NLEV", 1]}]]],
+    "values": [0.0,
+     {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": [2, "NLEV"]},
+      "expr": {"op": "/", "args": [{"op": "apply_expression_template", "args": [], "name": "layer_above", "bindings": {"f": "dz"}}, {"op": "*", "args": [2, {"op": "index", "args": ["dzc", "kn"]}]}]}},
+     0.0]}
+  },
+  "interface_value": {
+   "params": ["f", "wa", "wb"],
+   "description": "Layer field f linearly interpolated onto interior interface kn with the weights wa (layer above) and wb (layer below): wa[kn] f[kn] + wb[kn] f[kn-1].",
+   "body": {"op": "+", "args": [
+    {"op": "*", "args": [{"op": "index", "args": ["wa", "kn"]}, {"op": "apply_expression_template", "args": [], "name": "layer_above", "bindings": {"f": "f"}}]},
+    {"op": "*", "args": [{"op": "index", "args": ["wb", "kn"]}, {"op": "apply_expression_template", "args": [], "name": "layer_below", "bindings": {"f": "f"}}]}]}
+  },
+  "interpolate_to_interfaces": {
+   "params": ["f", "wa", "wb"],
+   "description": "Layer field f interpolated onto every interior interface (interface_value), shape [lev_nodes]; 0 on the two domain faces.",
+   "body": {"op": "makearray", "args": [], "regions": [[[1, 1]], [[2, "NLEV"]], [[{"op": "+", "args": ["NLEV", 1]}, {"op": "+", "args": ["NLEV", 1]}]]],
+    "values": [0.0,
+     {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": [2, "NLEV"]},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "interface_value", "bindings": {"f": "f", "wa": "wa", "wb": "wb"}}},
+     0.0]}
+  }
+ }
+}
