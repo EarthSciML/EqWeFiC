@@ -1176,7 +1176,17 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     **Three upstream blockers found (repros in `data/eqwefic/phase3_probes/`).**
     (s) **DEFERRED 2026-09-12 (user decision): 3-D simulations will be solved
     by a different method, so the inline-test runner's iteration cap is not on
-    the critical path and no upstream issue was filed.** Original finding:
+    the critical path and no upstream issue was filed.**
+    **Update 2026-09-15:** the 24 h single-column test runs in the inline-test
+    runner, so the cap does matter there. EarthSciAST **PR #362** makes Rust's
+    `SolveOptions::maxiters` an `Option` defaulting to no cap (matching Python);
+    an explicit cap keeps its old meaning. Verified from source for the PR:
+    SciML's `maxiters` caps integrator time-loop iterations for explicit and
+    implicit methods alike (SciMLBase `integrator_interface.jl:587`; default
+    1,000,000 for adaptive methods, OrdinaryDiffEqCore `solve.jl:52`), and the
+    Newton iteration inside implicit steps has its own `max_iter`; Rust already
+    counted steps the SciML way, only its 10,000 default was wrong. Python counts
+    right-hand-side evaluations instead, a spec gap noted in the PR. Original finding:
     `SolveOptions::maxiters` is pinned at its 10 000 default by the
     inline-test runner (`pkg/earthsci-ast-rs/src/bin/esm.rs:3719`, `..Default::default()`)
     and there is no CLI flag and no document field for it. A *scalar* ODE with
@@ -1290,6 +1300,39 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     declination. Neither component is wired into the physics or the SCM coupling
     yet. Two REAL*4 precision notes set the crossing tolerances (N68, N69). Fork
     1b4b556 adds the `theta_m_conv` hook and `kernels/solar_driver.F90`.
+
+    **Geometry inputs wired, 2026-09-15.** The physics components now have
+    additive coupling-target parameters for geometry: YSU
+    `p_in`/`p_int_in`/`exner_in`/`ze_in`, Dudhia `p_in`/`exner_in`/`ze_in`, RRTM
+    column `p_in`/`p_e_in`/`T_in`/`T_e_in`/`dz_m_in`, RRTM heating
+    `p_e_in`/`exner_in`; every standalone count is unchanged. sfclayrev and slab
+    needed none, because their lowest-layer inputs are plain parameters that a
+    coupling fills by indexing the geometry column (`Geo.p[1]`), and Dudhia's
+    `csza`/`solcon` are mapped directly from `WRFSolarGeometry`. **WRF passes YSU
+    (p2di) and RRTM (p8w) the hydrostatic interface pressure** — `psfc` at the
+    ground and `p_top` at the top — not the extrapolated `p8w` of `phy_prep`, so
+    those inputs come from `p_hyd_w`; `p8w` puts RRTM's top interface off by
+    64.7 Pa. `column_geometry.esm` gained `z_w_agl` and was re-factored onto 0D
+    templates in `lib/wrf_thermo.esm` (reused `exner_function`,
+    `temperature_from_theta`; new `wrf_equation_of_state`,
+    `moist_theta_to_dry_theta`, `moist_density_from_inverse_dry_density`), per
+    the user's 2026-09-15 rule that 0D processes are authored separately and
+    composed into columns; `moist_theta_tendency.esm` still inlines
+    θ = θm/(1 + ε qv) and should apply the new template. The wiring is
+    demonstrated by `couplings/geometry_radiation_column{,_night}.esm` (2 × 14)
+    and `geometry_surface_pbl_column{,_night}.esm` (2 × 41). The latter's
+    sfclayrev → slab → YSU edges and assertions were copied from
+    `scm_physics_column{,_night}.esm`, the duplication the assembly-composition
+    analysis (`data/eqwefic/design/assembly_composition.md`) proposes to remove
+    with pairwise coupling libraries. By day, geometry's p[1] is 0.30 Pa below
+    the surface-layer kernel's `p1` (N50 class), which moves surface fluxes by up
+    to 7e-5 relative; 14 day-time surface-layer tolerances are 3× measured. State
+    inputs (θ, T, u, v, q) and `psfc` remain prescribed pending that design.
+    `wrf_solar_geometry.esm` must be mounted under its own model name: its
+    model-qualified constant references (`WRFSolarGeometry.wrf.degrad`) are not
+    rewritten at a mount edge with a different key, and it is the only component
+    written that way even though CLAUDE.md's Constants bullet prescribes the
+    qualified form.
 
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
