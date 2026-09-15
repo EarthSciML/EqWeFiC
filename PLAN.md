@@ -458,6 +458,20 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   tests appended to the existing `wildland_fire/level_set/fire_heat_flux.esm`,
   PLAN 1.3) and #23 (`components/wildland_fire/fire_behavior/`, 464
   assertions).
+- **PR refresh 2026-09-15.** #15-#22 rebased onto EarthSciModels main b7912bc
+  with their `Co-Authored-By` trailers dropped; no file changes were needed and
+  every branch verifies at its full count in the EarthSciModels tree. #23 went
+  red on the current CLI (425/0/39, all in `godunov_step20_stage1`) from an
+  EarthSciAST loader defect, filed as **EarthSciAST #358** (Rust only; Python
+  passes, Julia's injection step does too): `aggregate` normalisation raises the
+  version only on the file that spelled it, so when a test injects a library the
+  re-serialised leaf, still at 1.0.0 but now holding the rule's `faq` body, fails
+  `faq_version_too_old`. Worked around by declaring `"esm": "1.1.0"` on
+  `level_set_tendency_wrffire.esm` in the PR (head 623fd30, 464/0/0); EqWeFiC's
+  copy is unaffected because it imports the rules at test scope. The newer fire
+  work (`fire_wind_wrffire`, `fire_flux_to_atmosphere_wrffire`, the WENO5/ENO1
+  and driver regimes) will follow as a separate PR once ESD #34 and #37 merge,
+  since it adds those dependencies.
 - **EarthSciModels RADM2 PR opened 2026-09-06:** #24
   (`components/gaschem/radm2/`, 540 assertions), base `main`. RADM2 is
   self-contained — its only refs are `./radm2_ratelaws.esm` and the four
