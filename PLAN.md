@@ -1273,6 +1273,24 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     undamped vertical acoustic modes (WRF damps them with `epssm`) plus the
     physics' regime switching over 24 h.
 
+    **Solar geometry and the θm conversion done 2026-09-15 (derivative level).**
+    Two decision-independent pieces of the 24 h list now exist as components.
+    `WRFMoistThetaTendency` (`components/atmospheric_dynamics/wrf_arw/moist_theta_tendency.esm`)
+    transcribes `conv_t_tendf_to_moist` as the product rule on θm = θ(1 + ε qv),
+    with 28 assertions over 7 steps; WRF converts all 59 layers, and the
+    conversion changes the physics θ tendency by up to 5.8e-4 K/s, almost
+    entirely through the vapour term. `WRFSolarGeometry`
+    (`components/atmospheric_radiation/wrf_solar/`) transcribes radconst +
+    calc_coszen as algebraic functions of xtime and julian, with 63 assertions (13
+    SCM regimes including the sunrise and sunset crossings and the 1440-minute
+    wrap, plus 6 synthetic regimes from a kernel driver that extracts both
+    subroutines verbatim), each physical term mutation-checked. Only DudhiaSW
+    takes solar geometry (`csza`, `solcon`); RRTM LW takes none. `lib/solar.esm`
+    cannot stand in for it: its formulation differs from WRF's by 0.022 rad in
+    declination. Neither component is wired into the physics or the SCM coupling
+    yet. Two REAL*4 precision notes set the crossing tolerances (N68, N69). Fork
+    1b4b556 adds the `theta_m_conv` hook and `kernels/solar_driver.F90`.
+
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
     wind, pressure, and temperature plus the numerics that step them. Per the

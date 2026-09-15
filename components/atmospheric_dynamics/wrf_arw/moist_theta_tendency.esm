@@ -1,0 +1,811 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "WRFMoistThetaTendency",
+  "description": "WRF-ARW's conversion of the physics temperature tendency into a tendency of the moist potential temperature when the dynamics carries theta_m (use_theta_m = 1, the WRF 4 default): SUBROUTINE conv_t_tendf_to_moist of dyn_em/module_big_step_utilities_em.F:6674-6707, called once per step from dyn_em/module_first_rk_step_part2.F after update_phy_ten has summed the physics tendencies. The physics schemes compute tendencies of the DRY potential temperature theta and of q_v; the dynamics prognoses theta_m = theta (1 + (R_v/R_d) q_v), so the tendency it needs is the product-rule derivative (1 + (R_v/R_d) q_v) dtheta/dt + (R_v/R_d) theta dq_v/dt, with theta recovered from the step's theta_m and q_v as theta_m / (1 + (R_v/R_d) q_v) (the Fortran's (t_1 + T0)/(1 + R_v/R_d moist_old)). Written as instantaneous decoupled rates of a single column on the EarthSciDiscretizations column_nonuniform_1d layer index `lev`: WRF applies the conversion to the mass-coupled t_tendf and moist_tend, but the conversion is linear and both carry the same column mass, so it holds unchanged for the decoupled rates. Consumer-supplied column fields are rewrite-target ops input_<name>.",
+  "license": "MIT",
+  "tags": [
+   "wrf",
+   "dynamics",
+   "moist-theta",
+   "physics-coupling",
+   "column"
+  ],
+  "references": [
+   {
+    "citation": "Skamarock, W. C., et al. (2021). A Description of the Advanced Research WRF Model Version 4.3. NCAR/TN-556+STR, section 2.2 (moist potential temperature theta_m).",
+    "doi": "10.5065/1dfh-6p97"
+   },
+   {
+    "citation": "WRF v4.8.0 dyn_em/module_big_step_utilities_em.F:6674-6707 (conv_t_tendf_to_moist), called from dyn_em/module_first_rk_step_part2.F:1005-1017."
+   }
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {
+   "type": "integer",
+   "default": 59,
+   "description": "Number of model layers (WRF kde - 1). Bound into the column grid at the import edge; 59 is the em_scm_xy reference column."
+  }
+ },
+ "models": {
+  "WRFMoistThetaTendency": {
+   "expression_template_imports": [
+    {
+     "ref": "../../../../EarthSciDiscretizations/grids/column_nonuniform_1d/grid.esm",
+     "bindings": {
+      "NLEV": "NLEV"
+     }
+    }
+   ],
+   "subsystems": {
+    "wrf": {
+     "ref": "../../../lib/wrf_constants.esm"
+    }
+   },
+   "variables": {
+    "theta_m": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Moist potential temperature theta (1 + (R_v/R_d) q_v) on the layers at the start of the step (WRF t_1 + t0 with use_theta_m = 1), consumer-supplied through `input_theta_m`.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "qv": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Water-vapour mixing ratio at the start of the step (WRF moist_old(P_qv), the value theta_m was formed with), consumer-supplied through `input_qv`.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "dtheta_dt_phys": {
+     "type": "unknown",
+     "units": "K/s",
+     "description": "Physics tendency of the DRY potential temperature, the sum the schemes deliver (radiation, PBL, cumulus; WRF t_tendf after update_phy_ten, decoupled), consumer-supplied through `input_dtheta_dt_phys`.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "dqv_dt_phys": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Physics tendency of the water-vapour mixing ratio (WRF moist_tend(P_qv) after update_phy_ten, decoupled), consumer-supplied through `input_dqv_dt_phys`.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "theta": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Dry potential temperature recovered from theta_m, theta_m / (1 + (R_v/R_d) q_v).",
+     "shape": [
+      "lev"
+     ]
+    },
+    "dtheta_m_dt_phys": {
+     "type": "unknown",
+     "units": "K/s",
+     "description": "Physics tendency of the moist potential temperature: the time derivative of theta_m = theta (1 + (R_v/R_d) q_v) by the product rule, (1 + (R_v/R_d) q_v) dtheta/dt + (R_v/R_d) theta dq_v/dt.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "theta_m_in": {
+     "type": "parameter",
+     "units": "K",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Coupling target (assembly input path): a shaped parameter that receives the layer theta_m from the SCM state document's moist potential temperature through a document-level `coupling.variable_map` (`param_to_var`) when an assembly's mount-edge template library lowers `input_theta_m` to this parameter. Unused in the component's own inline tests, which lower `input_theta_m` to a dumped profile."
+    },
+    "qv_in": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Coupling target (assembly input path): a shaped parameter that receives the layer q_v from the SCM state document's water-vapour mixing ratio through a document-level `coupling.variable_map` (`param_to_var`) when an assembly's mount-edge template library lowers `input_qv` to this parameter. Unused in the component's own inline tests, which lower `input_qv` to a dumped profile."
+    },
+    "dtheta_dt_phys_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Coupling target (assembly input path): a shaped parameter that receives the physics theta tendency from the physics suite's summed dry-theta tendency (rth_phys_sum) through a document-level `coupling.variable_map` (`param_to_var`) when an assembly's mount-edge template library lowers `input_dtheta_dt_phys` to this parameter. Unused in the component's own inline tests, which lower `input_dtheta_dt_phys` to a dumped profile."
+    },
+    "dqv_dt_phys_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Coupling target (assembly input path): a shaped parameter that receives the physics q_v tendency from the physics suite's summed vapour tendency through a document-level `coupling.variable_map` (`param_to_var`) when an assembly's mount-edge template library lowers `input_dqv_dt_phys` to this parameter. Unused in the component's own inline tests, which lower `input_dqv_dt_phys` to a dumped profile."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "theta_m",
+     "rhs": {
+      "op": "input_theta_m",
+      "args": []
+     }
+    },
+    {
+     "lhs": "qv",
+     "rhs": {
+      "op": "input_qv",
+      "args": []
+     }
+    },
+    {
+     "lhs": "dtheta_dt_phys",
+     "rhs": {
+      "op": "input_dtheta_dt_phys",
+      "args": []
+     }
+    },
+    {
+     "lhs": "dqv_dt_phys",
+     "rhs": {
+      "op": "input_dqv_dt_phys",
+      "args": []
+     }
+    },
+    {
+     "lhs": "theta",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "theta_m",
+       {
+        "op": "+",
+        "args": [
+         1,
+         {
+          "op": "*",
+          "args": [
+           "WRFMoistThetaTendency.wrf.rvovrd",
+           "qv"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "dtheta_m_dt_phys",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           1,
+           {
+            "op": "*",
+            "args": [
+             "WRFMoistThetaTendency.wrf.rvovrd",
+             "qv"
+            ]
+           }
+          ]
+         },
+         "dtheta_dt_phys"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "WRFMoistThetaTendency.wrf.rvovrd",
+         "theta",
+         "dqv_dt_phys"
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "thetam_conv_step1",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist, use_theta_m = 1, hybrid_opt = 0; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, around the call of conv_t_tendf_to_moist (dyn_em/module_big_step_utilities_em.F:6674-6707) in dyn_em/module_first_rk_step_part2.F (`theta_m_conv` hook, column its). Regime: step 1 (19:00 UTC, afternoon; the first physics step). Inputs are the step's theta_m = t_1 + t0, moist_old(P_qv) (equal to moist(P_qv) at this point in every dumped step), and the physics tendencies t_tendf and moist_tend(P_qv) as update_phy_ten left them; the expected value is t_tendf after the call. All tendencies are decoupled by the column mass c1h mut + c2h (c1h = 1, c2h = 0 under hybrid_opt = 0). The Fortran loop runs k = kts..kte-1 with k_end = kde = 60, so all 59 layers are converted. A float64 replay of the dumped inputs reproduces the dumped output to at most 7e-11 K/s (relative 1.5e-7) in every dumped step, while the conversion itself changes the tendency by up to 5.8e-4 K/s (almost all of it the vapour term). Single-precision reference: the whole profile is bounded at abs 1e-9 K/s (Linf) and the three layers of largest tendency are checked at rel 1e-5.",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/thetam_conv_step1_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.0016832416156053018, 0.00033945633582940435, 8.79078884008085e-05, 2.8155112897762306e-05, 3.235486893721395e-05, 6.234398205429534e-05, 0.00010071916514822597, 0.00013899619593196904, 0.00017110527201763865, 0.00019353915076171437, 0.00020326070515787464, 0.00019653437233822676, 0.0001684003565323882, 9.979841875570486e-05, -0.00025081433239616655, -2.397605691343173e-05, -1.08351914941244e-05, -7.08502173249711e-06, -5.268664836096709e-06, -4.178475092417578e-06, -3.7188260371437133e-06, -3.598803616409053e-06, -3.609418335171367e-06, -3.849379708676489e-06, -4.599288233466559e-06, -6.00384803287863e-06, -6.324819577419614e-06, -6.8645053867955206e-06, -7.4295774887058364e-06, -8.246209251326568e-06, -8.884625630930268e-06, -9.787618161877402e-06, -1.0862994597802338e-05, -1.220936218689568e-05, -1.4073473286308232e-05, -1.7131897406882166e-05, -1.7685936698245537e-05, -1.8952153234763343e-05, -2.4443441418684905e-05, -1.7811171730942535e-05, -1.6694617014049686e-05, -1.6813300939502613e-05, -1.7515642500227247e-05, -1.976691636773514e-05, -2.234574108566464e-05, -2.1178525074321902e-05, -9.369848217685258e-06, -7.905686276126789e-06, -6.029047086466325e-06, -4.524861128129526e-06, -2.510272516531989e-06, -8.571350622250149e-07, 9.610234450647783e-07, 3.194405089688675e-06, 5.710393469850023e-06, 8.479350314603993e-06, 1.2453343558027846e-05, 1.718162626641669e-05, 1.389873197531457e-05]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 0.0016832416156053018,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 0.00033945633582940435,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 15
+           },
+           "expected": -0.00025081433239616655,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "thetam_conv_step60",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist, use_theta_m = 1, hybrid_opt = 0; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, around the call of conv_t_tendf_to_moist (dyn_em/module_big_step_utilities_em.F:6674-6707) in dyn_em/module_first_rk_step_part2.F (`theta_m_conv` hook, column its). Regime: step 60 (xtime 59, afternoon convective boundary layer). Inputs are the step's theta_m = t_1 + t0, moist_old(P_qv) (equal to moist(P_qv) at this point in every dumped step), and the physics tendencies t_tendf and moist_tend(P_qv) as update_phy_ten left them; the expected value is t_tendf after the call. All tendencies are decoupled by the column mass c1h mut + c2h (c1h = 1, c2h = 0 under hybrid_opt = 0). The Fortran loop runs k = kts..kte-1 with k_end = kde = 60, so all 59 layers are converted. A float64 replay of the dumped inputs reproduces the dumped output to at most 7e-11 K/s (relative 1.5e-7) in every dumped step, while the conversion itself changes the tendency by up to 5.8e-4 K/s (almost all of it the vapour term). Single-precision reference: the whole profile is bounded at abs 1e-9 K/s (Linf) and the three layers of largest tendency are checked at rel 1e-5.",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/thetam_conv_step60_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.00012466782351441884, 0.00012834740419313492, 0.00012989559506376773, 0.00013033091583935068, 0.00013109570497264083, 0.00013087833333888768, 0.00013109497105612681, 0.00013057663349453087, 0.00013000992963151868, 0.0001289296165542878, 0.000128223913716086, 0.0001261492640765299, 0.0001224507940711413, 0.0001137780304363635, -0.0001383008160506367, -2.6524302277919162e-05, -1.1564472152302978e-05, -7.210786899561311e-06, -5.1081957950172386e-06, -3.860588102733706e-06, -3.2203963369726085e-06, -2.8940929942321202e-06, -2.6793180789236992e-06, -2.6211662866506952e-06, -2.883483915197117e-06, -3.6206688391925035e-06, -3.5301230172197676e-06, -3.5954852008594575e-06, -3.6478842832846718e-06, -3.8295124532882975e-06, -3.91460465895162e-06, -4.088876744633035e-06, -4.3425118249937755e-06, -4.742557986157602e-06, -5.470127927051946e-06, -7.217243259386561e-06, -6.632260664178672e-06, -6.806387620877292e-06, -9.781369344017184e-06, -3.661755380596164e-06, -7.327547302019482e-07, 9.549231400237417e-07, 2.072609562196933e-06, 2.1095232693634325e-06, 9.275828699670971e-07, -3.075485470631888e-07, 1.7442225282060642e-06, 3.8375415450695816e-06, 7.372671136213938e-06, 1.0638038658761793e-05, 7.307789006162932e-05, 0.0004064545637558814, 7.79448694558239e-05, -9.076895364798207e-05, -9.895470953432016e-05, -4.8246408333279534e-05, -1.689735393141349e-05, -3.86117162651945e-06, 1.3571690768250937e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 5
+           },
+           "expected": 0.00013109570497264083,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 15
+           },
+           "expected": -0.0001383008160506367,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 52
+           },
+           "expected": 0.0004064545637558814,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "thetam_conv_step300",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist, use_theta_m = 1, hybrid_opt = 0; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, around the call of conv_t_tendf_to_moist (dyn_em/module_big_step_utilities_em.F:6674-6707) in dyn_em/module_first_rk_step_part2.F (`theta_m_conv` hook, column its). Regime: step 300 (xtime 299, dusk just after sunset). Inputs are the step's theta_m = t_1 + t0, moist_old(P_qv) (equal to moist(P_qv) at this point in every dumped step), and the physics tendencies t_tendf and moist_tend(P_qv) as update_phy_ten left them; the expected value is t_tendf after the call. All tendencies are decoupled by the column mass c1h mut + c2h (c1h = 1, c2h = 0 under hybrid_opt = 0). The Fortran loop runs k = kts..kte-1 with k_end = kde = 60, so all 59 layers are converted. A float64 replay of the dumped inputs reproduces the dumped output to at most 7e-11 K/s (relative 1.5e-7) in every dumped step, while the conversion itself changes the tendency by up to 5.8e-4 K/s (almost all of it the vapour term). Single-precision reference: the whole profile is bounded at abs 1e-9 K/s (Linf) and the three layers of largest tendency are checked at rel 1e-5.",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/thetam_conv_step300_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [-0.0001930489907816898, -0.00010442072722810809, -5.259441250071026e-05, -2.9844651878000518e-05, -2.1100812639835494e-05, -1.7219388376561626e-05, -1.5026713531702471e-05, -1.3433680061277088e-05, -1.1845060617426852e-05, -1.0249441896002259e-05, -8.330552501203034e-06, -5.75168416938233e-06, -7.099678349827523e-07, 1.179588369920513e-05, 3.2712596088565824e-05, -2.9446333729284678e-05, -1.5583383191883534e-05, -1.1993135041804762e-05, -1.0784443723855748e-05, -1.051320818250388e-05, -1.1030016250053162e-05, -1.1993200462641566e-05, -1.3220522431770454e-05, -1.4838284978507644e-05, -1.710917757742024e-05, -1.9975226839609167e-05, -2.076620837045735e-05, -2.15495048328902e-05, -2.24142179027071e-05, -2.363672880845817e-05, -2.4639882896442725e-05, -2.6033215878688365e-05, -2.7637400969916036e-05, -2.9585416924402106e-05, -3.215196809177632e-05, -3.5760331797940587e-05, -3.6920488374617655e-05, -3.8380597232148856e-05, -4.0001493963343494e-05, -3.788062563053102e-05, -3.716592329146869e-05, -3.6903193210864946e-05, -3.685976580664554e-05, -3.675697538471771e-05, -3.4648541522679784e-05, -3.071733576241649e-05, -1.7337681280921014e-05, -1.216759361446925e-05, -1.0348008538156223e-05, -1.1946598267928074e-05, -1.6933054157253645e-05, -2.5719986927781282e-05, -2.695670543457338e-05, -2.7111459551978043e-05, -2.3297794732432716e-05, -1.6817123922655603e-05, -9.765053236925609e-06, -2.5097226431191987e-06, 4.351159030888309e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": -0.0001930489907816898,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": -0.00010442072722810809,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": -5.259441250071026e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "thetam_conv_step900",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist, use_theta_m = 1, hybrid_opt = 0; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, around the call of conv_t_tendf_to_moist (dyn_em/module_big_step_utilities_em.F:6674-6707) in dyn_em/module_first_rk_step_part2.F (`theta_m_conv` hook, column its). Regime: step 900 (xtime 899, stable night). Inputs are the step's theta_m = t_1 + t0, moist_old(P_qv) (equal to moist(P_qv) at this point in every dumped step), and the physics tendencies t_tendf and moist_tend(P_qv) as update_phy_ten left them; the expected value is t_tendf after the call. All tendencies are decoupled by the column mass c1h mut + c2h (c1h = 1, c2h = 0 under hybrid_opt = 0). The Fortran loop runs k = kts..kte-1 with k_end = kde = 60, so all 59 layers are converted. A float64 replay of the dumped inputs reproduces the dumped output to at most 7e-11 K/s (relative 1.5e-7) in every dumped step, while the conversion itself changes the tendency by up to 5.8e-4 K/s (almost all of it the vapour term). Single-precision reference: the whole profile is bounded at abs 1e-9 K/s (Linf) and the three layers of largest tendency are checked at rel 1e-5.",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/thetam_conv_step900_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [-7.821227975813185e-05, -8.662816058158161e-05, -9.057412287634418e-05, -8.409161276350014e-05, -5.28919795528938e-05, -3.303913178807151e-05, -2.6386936567758742e-05, -2.0798598452347963e-05, -1.6986082633246728e-05, -1.430480286917347e-05, -1.1591905289869337e-05, -8.387267854930011e-06, -3.973342042910381e-06, 2.7181635806850117e-06, 7.330039309527155e-06, -1.4130984969531474e-05, -1.4152468570766903e-05, -1.2333682831804709e-05, -1.1488047831534327e-05, -1.1524329325269302e-05, -1.2170096149467903e-05, -1.3182221915658262e-05, -1.4538838017220545e-05, -1.6167182196319825e-05, -1.8239327796950004e-05, -2.060992927078788e-05, -2.1689555053250495e-05, -2.2684420997979294e-05, -2.368984451223366e-05, -2.475158107966684e-05, -2.588218247738146e-05, -2.7258492506712583e-05, -2.890818042180999e-05, -3.077311341748262e-05, -3.321754268163532e-05, -3.6200714792757575e-05, -3.767431387801589e-05, -3.908354487556848e-05, -4.014491749259921e-05, -3.6376162949574175e-05, -3.6204212927617474e-05, -3.601932010746461e-05, -3.592656388836792e-05, -3.666889337161609e-05, -3.839247524982876e-05, -3.272321682303727e-05, -1.896085044624003e-05, -1.3512308387478745e-05, -1.3985627389790021e-05, -1.32689609216963e-05, -2.03897543165795e-05, -2.781669015701302e-05, -2.8796971014952798e-05, -2.6977949911370838e-05, -2.3235735173106152e-05, -1.7356851841995428e-05, -9.915003810588867e-06, -2.4487457234453724e-06, 4.396353549665059e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": -8.662816058158161e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": -9.057412287634418e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": -8.409161276350014e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "thetam_conv_step1410",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist, use_theta_m = 1, hybrid_opt = 0; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, around the call of conv_t_tendf_to_moist (dyn_em/module_big_step_utilities_em.F:6674-6707) in dyn_em/module_first_rk_step_part2.F (`theta_m_conv` hook, column its). Regime: step 1410 (xtime 1409, late morning of the second day, surface moistening). Inputs are the step's theta_m = t_1 + t0, moist_old(P_qv) (equal to moist(P_qv) at this point in every dumped step), and the physics tendencies t_tendf and moist_tend(P_qv) as update_phy_ten left them; the expected value is t_tendf after the call. All tendencies are decoupled by the column mass c1h mut + c2h (c1h = 1, c2h = 0 under hybrid_opt = 0). The Fortran loop runs k = kts..kte-1 with k_end = kde = 60, so all 59 layers are converted. A float64 replay of the dumped inputs reproduces the dumped output to at most 7e-11 K/s (relative 1.5e-7) in every dumped step, while the conversion itself changes the tendency by up to 5.8e-4 K/s (almost all of it the vapour term). Single-precision reference: the whole profile is bounded at abs 1e-9 K/s (Linf) and the three layers of largest tendency are checked at rel 1e-5.",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/thetam_conv_step1410_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [0.00023439719748543804, 0.00023436266731502393, 0.00023277500136107104, 0.00023184056923027604, 0.0002305942827381105, 0.00022994203549125012, 0.00022875234479059254, 0.0002286654779507355, 0.0002285662668757408, 0.00022963658184439533, 0.00023171900378014918, 0.00023765501679695331, 0.0002514186224098316, 0.00028844581743302163, 1.778295354333453e-05, -0.00022580719797688973, -1.0386417337032781e-05, -7.638873032950126e-06, -5.90680110924398e-06, -4.847982912703157e-06, -4.227262117491221e-06, -3.93229761147064e-06, -3.83136980348261e-06, -3.895075787202068e-06, -4.110632180724837e-06, -4.444831141700257e-06, -5.170987014966906e-06, -5.895068972510512e-06, -6.61949532940189e-06, -7.3248056425828574e-06, -8.056540710087036e-06, -8.837606096395788e-06, -9.819102879543745e-06, -1.0963841945680736e-05, -1.2370532810052597e-05, -1.396957747782751e-05, -1.4904964602447105e-05, -1.5948175793610212e-05, -1.6940160213665082e-05, -1.4937372731465114e-05, -1.347614194418091e-05, -1.2190572871387467e-05, -1.1635874107910568e-05, -1.1625803058861003e-05, -1.1877037871278325e-05, -1.4741920837859406e-05, -1.086922988031701e-05, -6.763536972770855e-06, -3.7592613780339025e-06, -1.1089400510734456e-06, 2.0682543767767268e-07, -1.423087901550346e-06, -3.4962895411194435e-06, -4.855505932953764e-06, -5.933778556843638e-06, -5.604909138176797e-06, -2.9800121719100963e-06, 1.157135750738566e-06, 6.226490179794519e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 12
+           },
+           "expected": 0.00023765501679695331,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 13
+           },
+           "expected": 0.0002514186224098316,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 14
+           },
+           "expected": 0.00028844581743302163,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "thetam_conv_step2160",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist, use_theta_m = 1, hybrid_opt = 0; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, around the call of conv_t_tendf_to_moist (dyn_em/module_big_step_utilities_em.F:6674-6707) in dyn_em/module_first_rk_step_part2.F (`theta_m_conv` hook, column its). Regime: step 2160 (xtime 2159, second night). Inputs are the step's theta_m = t_1 + t0, moist_old(P_qv) (equal to moist(P_qv) at this point in every dumped step), and the physics tendencies t_tendf and moist_tend(P_qv) as update_phy_ten left them; the expected value is t_tendf after the call. All tendencies are decoupled by the column mass c1h mut + c2h (c1h = 1, c2h = 0 under hybrid_opt = 0). The Fortran loop runs k = kts..kte-1 with k_end = kde = 60, so all 59 layers are converted. A float64 replay of the dumped inputs reproduces the dumped output to at most 7e-11 K/s (relative 1.5e-7) in every dumped step, while the conversion itself changes the tendency by up to 5.8e-4 K/s (almost all of it the vapour term). Single-precision reference: the whole profile is bounded at abs 1e-9 K/s (Linf) and the three layers of largest tendency are checked at rel 1e-5.",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/thetam_conv_step2160_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [-0.00010120958981945231, -0.00010580165732205211, -0.0001029738890249207, -9.131929478215693e-05, -6.838661148403485e-05, -4.144407304446587e-05, -3.075003715725465e-05, -2.7375443907935676e-05, -2.4200093952902457e-05, -2.1810458775372902e-05, -1.9919444672761192e-05, -1.8365379462161584e-05, -1.650046451361635e-05, -1.4214325099910283e-05, -1.0381749146746832e-05, -4.8016066830639126e-06, -2.306314974187245e-06, -1.1768464096984316e-05, -1.4625217584637981e-05, -1.2709178132039746e-05, -1.236224842661505e-05, -1.2993969321955529e-05, -1.405116854077637e-05, -1.554373214907135e-05, -1.725138142164957e-05, -1.9134029176786814e-05, -2.033392101620391e-05, -2.1477352417568467e-05, -2.2635984011980733e-05, -2.372819766580075e-05, -2.5074229127146378e-05, -2.6378081443917356e-05, -2.790796350380883e-05, -2.9725348334507056e-05, -3.1762556200429475e-05, -3.410382808439733e-05, -3.5585205481562516e-05, -3.677126570175929e-05, -3.723533555128108e-05, -3.424264658831298e-05, -3.215958397953664e-05, -3.235628563671439e-05, -3.338725185194058e-05, -3.535328786312969e-05, -3.750486639105784e-05, -3.067823365306254e-05, -1.9378794845996984e-05, -1.428297486859027e-05, -1.4119822821238206e-05, -1.3506503228166968e-05, -2.2085552642168904e-05, -2.8716083789972306e-05, -2.924893124199312e-05, -2.724386530995964e-05, -2.3344610484820372e-05, -1.7442933631810863e-05, -9.972106425591176e-06, -2.4086859883940735e-06, 4.491649149978837e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": -0.00010120958981945231,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": -0.00010580165732205211,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": -0.0001029738890249207,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "thetam_conv_step3000",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist, use_theta_m = 1, hybrid_opt = 0; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, around the call of conv_t_tendf_to_moist (dyn_em/module_big_step_utilities_em.F:6674-6707) in dyn_em/module_first_rk_step_part2.F (`theta_m_conv` hook, column its). Regime: step 3000 (xtime 2999, third day). Inputs are the step's theta_m = t_1 + t0, moist_old(P_qv) (equal to moist(P_qv) at this point in every dumped step), and the physics tendencies t_tendf and moist_tend(P_qv) as update_phy_ten left them; the expected value is t_tendf after the call. All tendencies are decoupled by the column mass c1h mut + c2h (c1h = 1, c2h = 0 under hybrid_opt = 0). The Fortran loop runs k = kts..kte-1 with k_end = kde = 60, so all 59 layers are converted. A float64 replay of the dumped inputs reproduces the dumped output to at most 7e-11 K/s (relative 1.5e-7) in every dumped step, while the conversion itself changes the tendency by up to 5.8e-4 K/s (almost all of it the vapour term). Single-precision reference: the whole profile is bounded at abs 1e-9 K/s (Linf) and the three layers of largest tendency are checked at rel 1e-5.",
+       "parameter_overrides": {},
+       "expression_template_imports": [
+         {
+           "ref": "./tests/thetam_conv_step3000_inputs.esm"
+         }
+       ],
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "reduce": "Linf_error",
+           "expected": 0.0,
+           "reference": {
+             "op": "aggregate",
+             "output_idx": [
+               "k"
+             ],
+             "args": [],
+             "ranges": {
+               "k": {
+                 "from": "lev"
+               }
+             },
+             "expr": {
+               "op": "index",
+               "args": [
+                 {
+                   "op": "const",
+                   "args": [],
+                   "value": [5.306952117648812e-05, 7.130661263356853e-05, 7.597041746756e-05, 7.823605985632819e-05, 7.929097460960639e-05, 7.915597608098917e-05, 7.918101346239396e-05, 7.898719332989014e-05, 7.801092194208641e-05, 7.806747562363048e-05, 7.734485059564214e-05, 7.66765835153649e-05, 7.626677536220813e-05, 7.608769973278532e-05, 7.61307782258751e-05, 7.659365696498888e-05, 7.825581544511562e-05, 9.077838627990008e-05, -5.4643645769186306e-05, -2.6423103011056578e-05, -9.864724513668822e-06, -7.977021306970294e-06, -7.481487042800485e-06, -7.461917189032475e-06, -7.727114462343723e-06, -8.068329996057252e-06, -8.837462471340276e-06, -9.721751410634319e-06, -1.0487315066475152e-05, -1.1286350879886608e-05, -1.2202144087901669e-05, -1.3036011609147437e-05, -1.4007267399462866e-05, -1.5162435449342742e-05, -1.6365687062309708e-05, -1.757348655138e-05, -1.8578843892833916e-05, -1.9330448095635392e-05, -1.9740077281445502e-05, -1.9133105765435148e-05, -1.6883244085645848e-05, -1.6446766789982402e-05, -1.573878850980167e-05, -1.4933005326635735e-05, -1.4825685075731976e-05, -1.671074813808547e-05, -1.3240300579467138e-05, -9.402072115611116e-06, -6.703739320077688e-06, -3.990602992317404e-06, -7.766909882175062e-06, -9.202464118959269e-06, -9.801097110149893e-06, -9.337439336703608e-06, -8.50489903128495e-06, -6.742295503827964e-06, -3.387985345790884e-06, 1.0420432036370688e-06, 6.193049604696838e-06]
+                 },
+                 "k"
+               ]
+             }
+           },
+           "tolerance": {
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 5
+           },
+           "expected": 7.929097460960639e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 7
+           },
+           "expected": 7.918101346239396e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "dtheta_m_dt_phys",
+           "time": 0.0,
+           "coords": {
+             "lev": 18
+           },
+           "expected": 9.077838627990008e-05,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}

@@ -1,0 +1,1472 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "WRFSolarGeometry",
+  "description": "WRF's solar geometry for the radiation schemes: the declination and eccentricity-corrected solar constant of SUBROUTINE radconst and the cosine of the solar zenith angle of SUBROUTINE calc_coszen (with the equation-of-time correction), phys/module_radiation_driver.F (WRF 4.8), as called by radiation_driver at xtime + radt/2. Algebraic in the model time: the only time dependence is through the parameters xtime and julian, which a consumer advances with the clock. It supplies DudhiaSW's csza (WRF coszen) and solcon in place of prescribed values. The EarthSciModels standard-library lib/solar.esm is NOT reused: it evaluates the Spencer declination series and a NOAA fractional-year angle, whereas radconst uses a single-sine declination with a 23.5 degree obliquity and day 80 as the equinox, and calc_coszen phases its equation of time on julian - 0.5; at the reference column's start (1999-10-22 19 UTC, 37.6 N 96.7 W) the two declinations differ by 0.022 rad and the cosines by 0.017, so WRF-derived tests could not be added to lib/solar.esm either. Not transcribed: the solar-eclipse obscuration (sw_eclipse, off by default) and the slope-radiation hour-angle use (slope_rad).",
+  "license": "MIT",
+  "tags": [
+   "wrf",
+   "radiation",
+   "solar-geometry",
+   "zenith-angle",
+   "declination"
+  ],
+  "references": [
+   {
+    "citation": "wrf-model/WRF v4.8.0 phys/module_radiation_driver.F:3469-3511 (radconst), :3514-3541 (calc_coszen, equation of time added by J. A. Ruiz-Arias 2013-08-10), :1186-1208 (the call at xtime + radt*0.5); share/module_model_constants.F:74 (DPD)."
+   },
+   {
+    "citation": "Paltridge, G. W. and Platt, C. M. R. (1976). Radiative Processes in Meteorology and Climatology. Elsevier."
+   },
+   {
+    "citation": "Spencer, J. W. (1971). Fourier series representation of the position of the sun. Search 2(5), 172."
+   }
+  ]
+ },
+ "models": {
+  "WRFSolarGeometry": {
+   "subsystems": {
+    "wrf": {
+     "ref": "../../../lib/wrf_constants.esm"
+    },
+    "par": {
+     "ref": "./wrf_solar_parameters.esm"
+    }
+   },
+   "variables": {
+    "xtime": {
+     "type": "parameter",
+     "units": "min",
+     "default": 0.0,
+     "description": "Model time since the start of the run, minutes (WRF grid%xtime)."
+    },
+    "radt": {
+     "type": "parameter",
+     "units": "min",
+     "default": 0.0,
+     "description": "Radiation call interval (namelist radt); the shortwave cosine is evaluated at the middle of the interval, xtime + radt/2. 0 in the em_scm_xy reference column (radiation every step)."
+    },
+    "gmt": {
+     "type": "parameter",
+     "units": "h",
+     "default": 0.0,
+     "description": "UTC hour of the run start (WRF grid%gmt)."
+    },
+    "julian": {
+     "type": "parameter",
+     "units": "day",
+     "default": 0.0,
+     "description": "Day of year at the current time, 0.0 at 00 UTC on 1 January (WRF grid%julian, domain_clock_get currentDayOfYearReal). It already advances with the model time; calc_coszen nevertheless takes the time of day from xtime and gmt, and julian only for the declination, eccentricity and equation of time."
+    },
+    "xlat": {
+     "type": "parameter",
+     "units": "deg",
+     "default": 0.0,
+     "description": "Latitude, degrees north (WRF xlat)."
+    },
+    "xlong": {
+     "type": "parameter",
+     "units": "deg",
+     "default": 0.0,
+     "description": "Longitude, degrees east (WRF xlong)."
+    },
+    "sun_longitude": {
+     "type": "unknown",
+     "units": "deg",
+     "description": "Ecliptic longitude of the sun from the vernal equinox (radconst SXLONG before the degree-to-radian conversion), with radconst's two branches on either side of day 80."
+    },
+    "declin": {
+     "type": "unknown",
+     "units": "rad",
+     "description": "Solar declination, asin(sin(obliquity) sin(sun longitude)) (radconst DECLIN)."
+    },
+    "orbit_angle": {
+     "type": "unknown",
+     "units": "rad",
+     "description": "Orbital day angle of the eccentricity factor, DJUL = JULIAN 360/365 in radians (radconst RJUL)."
+    },
+    "eccentricity_factor": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Earth-sun distance factor (radconst ECCFAC), a two-harmonic Fourier series in the orbit angle."
+    },
+    "solcon": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Top-of-atmosphere solar constant corrected for orbital eccentricity (radconst SOLCON)."
+    },
+    "day_angle": {
+     "type": "unknown",
+     "units": "rad",
+     "description": "Day angle of the equation of time, da = 2 pi (julian - 0.5)/365 (calc_coszen)."
+    },
+    "equation_of_time": {
+     "type": "unknown",
+     "units": "min",
+     "description": "Equation of time, apparent minus mean solar time (calc_coszen eot)."
+    },
+    "elapsed_minutes": {
+     "type": "unknown",
+     "units": "min",
+     "description": "Time at which the cosine is evaluated, xtime + radt/2 (the radiation_driver call of calc_coszen)."
+    },
+    "minutes_of_day": {
+     "type": "unknown",
+     "units": "min",
+     "description": "Elapsed minutes modulo one day, MOD(xtime, 1440.) for the non-negative model time."
+    },
+    "local_solar_time": {
+     "type": "unknown",
+     "units": "h",
+     "description": "Apparent local solar time, gmt + (minutes of day + equation of time)/60 + longitude/15 (calc_coszen tloctm)."
+    },
+    "hour_angle": {
+     "type": "unknown",
+     "units": "rad",
+     "description": "Solar hour angle, 15 degrees per hour from local solar noon (calc_coszen hrang)."
+    },
+    "lat_rad": {
+     "type": "unknown",
+     "units": "rad",
+     "description": "Latitude in radians (calc_coszen xxlat)."
+    },
+    "coszen": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Cosine of the solar zenith angle, sin(lat) sin(declin) + cos(lat) cos(declin) cos(hour angle), clamped to [-1, 1] (calc_coszen coszen); negative with the sun below the horizon. This is the csza that DudhiaSW takes as a parameter."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "sun_longitude",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">=",
+        "args": [
+         "julian",
+         "WRFSolarGeometry.par.equinox_day"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "WRFSolarGeometry.par.dpd",
+         {
+          "op": "-",
+          "args": [
+           "julian",
+           "WRFSolarGeometry.par.equinox_day"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "WRFSolarGeometry.par.dpd",
+         {
+          "op": "+",
+          "args": [
+           "julian",
+           "WRFSolarGeometry.par.equinox_complement"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "declin",
+     "rhs": {
+      "op": "asin",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "sin",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "WRFSolarGeometry.par.obliquity",
+             "WRFSolarGeometry.wrf.degrad"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "sin",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "sun_longitude",
+             "WRFSolarGeometry.wrf.degrad"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "orbit_angle",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "WRFSolarGeometry.par.dpd",
+       "julian",
+       "WRFSolarGeometry.wrf.degrad"
+      ]
+     }
+    },
+    {
+     "lhs": "eccentricity_factor",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "WRFSolarGeometry.par.ecc_a0",
+       {
+        "op": "*",
+        "args": [
+         "WRFSolarGeometry.par.ecc_a1",
+         {
+          "op": "cos",
+          "args": [
+           "orbit_angle"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "WRFSolarGeometry.par.ecc_b1",
+         {
+          "op": "sin",
+          "args": [
+           "orbit_angle"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "WRFSolarGeometry.par.ecc_a2",
+         {
+          "op": "cos",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             2,
+             "orbit_angle"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "WRFSolarGeometry.par.ecc_b2",
+         {
+          "op": "sin",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             2,
+             "orbit_angle"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "solcon",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "WRFSolarGeometry.par.solar_constant",
+       "eccentricity_factor"
+      ]
+     }
+    },
+    {
+     "lhs": "day_angle",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         "WRFSolarGeometry.par.two_pi",
+         {
+          "op": "-",
+          "args": [
+           "julian",
+           "WRFSolarGeometry.par.eot_day_shift"
+          ]
+         }
+        ]
+       },
+       "WRFSolarGeometry.par.days_per_year"
+      ]
+     }
+    },
+    {
+     "lhs": "equation_of_time",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "WRFSolarGeometry.par.eot_scale",
+       {
+        "op": "+",
+        "args": [
+         "WRFSolarGeometry.par.eot_c0",
+         {
+          "op": "*",
+          "args": [
+           "WRFSolarGeometry.par.eot_a1",
+           {
+            "op": "cos",
+            "args": [
+             "day_angle"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "WRFSolarGeometry.par.eot_b1",
+           {
+            "op": "sin",
+            "args": [
+             "day_angle"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "WRFSolarGeometry.par.eot_a2",
+           {
+            "op": "cos",
+            "args": [
+             {
+              "op": "*",
+              "args": [
+               2,
+               "day_angle"
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "WRFSolarGeometry.par.eot_b2",
+           {
+            "op": "sin",
+            "args": [
+             {
+              "op": "*",
+              "args": [
+               2,
+               "day_angle"
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "elapsed_minutes",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "xtime",
+       {
+        "op": "/",
+        "args": [
+         "radt",
+         2
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "minutes_of_day",
+     "rhs": {
+      "op": "-",
+      "args": [
+       "elapsed_minutes",
+       {
+        "op": "*",
+        "args": [
+         "WRFSolarGeometry.par.minutes_per_day",
+         {
+          "op": "floor",
+          "args": [
+           {
+            "op": "/",
+            "args": [
+             "elapsed_minutes",
+             "WRFSolarGeometry.par.minutes_per_day"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "local_solar_time",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "gmt",
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           "minutes_of_day",
+           "equation_of_time"
+          ]
+         },
+         "WRFSolarGeometry.par.minutes_per_hour"
+        ]
+       },
+       {
+        "op": "/",
+        "args": [
+         "xlong",
+         "WRFSolarGeometry.par.degrees_per_hour"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "hour_angle",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "WRFSolarGeometry.par.degrees_per_hour",
+       {
+        "op": "-",
+        "args": [
+         "local_solar_time",
+         "WRFSolarGeometry.par.solar_noon"
+        ]
+       },
+       "WRFSolarGeometry.wrf.degrad"
+      ]
+     }
+    },
+    {
+     "lhs": "lat_rad",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "xlat",
+       "WRFSolarGeometry.wrf.degrad"
+      ]
+     }
+    },
+    {
+     "lhs": "coszen",
+     "rhs": {
+      "op": "min",
+      "args": [
+       {
+        "op": "max",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             {
+              "op": "sin",
+              "args": [
+               "lat_rad"
+              ]
+             },
+             {
+              "op": "sin",
+              "args": [
+               "declin"
+              ]
+             }
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             {
+              "op": "cos",
+              "args": [
+               "lat_rad"
+              ]
+             },
+             {
+              "op": "cos",
+              "args": [
+               "declin"
+              ]
+             },
+             {
+              "op": "cos",
+              "args": [
+               "hour_angle"
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         -1
+        ]
+       },
+       1
+      ]
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "solar_scm_step1",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 1), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 1 (xtime 0, 19:00 UTC, about 12:49 local solar time): midday. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 0.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 294.7916564941406,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.2119991034269333,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1384.3160400390625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.6286112070083618,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step273",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 545), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 273 (xtime 272): the last minute before sunset, coszen +2.4e-3. Single-precision reference, rel 1e-5, with coszen bounded at abs 2e-6 because it passes through zero at this step: near sunrise and sunset the cosine moves 0.75 per radian of hour angle, and calc_coszen forms the local solar time tloctm = gmt + xt24/60 + xlon/15 (about 30 h) in REAL*4, whose 3.8e-6 h granularity is 1e-6 rad of hour angle; a float64 replay of the dumped inputs differs from the dumped coszen by up to 7.7e-7 at these crossings against 1e-8 to 1.4e-7 elsewhere.",
+       "parameter_overrides": {
+         "xtime": 272.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 294.9805603027344,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.21312475204467773,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1384.46435546875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.002364113926887512,
+           "tolerance": {
+             "abs": 2e-06
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step274",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 547), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 274 (xtime 273): the first minute after sunset, coszen -9.7e-4. Single-precision reference, rel 1e-5, with coszen bounded at abs 2e-6 because it passes through zero at this step: near sunrise and sunset the cosine moves 0.75 per radian of hour angle, and calc_coszen forms the local solar time tloctm = gmt + xt24/60 + xlon/15 (about 30 h) in REAL*4, whose 3.8e-6 h granularity is 1e-6 rad of hour angle; a float64 replay of the dumped inputs differs from the dumped coszen by up to 7.7e-7 at these crossings against 1e-8 to 1.4e-7 elsewhere.",
+       "parameter_overrides": {
+         "xtime": 273.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 294.98126220703125,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.2131289392709732,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1384.4649658203125,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -0.0009698867797851562,
+           "tolerance": {
+             "abs": 2e-06
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step300",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 599), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 300 (xtime 299): evening twilight, sun 5 degrees below the horizon. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 299.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 294.9992980957031,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.21323637664318085,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1384.47900390625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -0.08831901103258133,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step720",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 1439), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 720 (xtime 719): night, near local solar midnight. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 719.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 295.2909851074219,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.21497021615505219,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1384.707763671875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -0.8873246312141418,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step1071",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 2141), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 1071 (xtime 1070): the last minute before sunrise, coszen -1.8e-5. Single-precision reference, rel 1e-5, with coszen bounded at abs 2e-6 because it passes through zero at this step: near sunrise and sunset the cosine moves 0.75 per radian of hour angle, and calc_coszen forms the local solar time tloctm = gmt + xt24/60 + xlon/15 (about 30 h) in REAL*4, whose 3.8e-6 h granularity is 1e-6 rad of hour angle; a float64 replay of the dumped inputs differs from the dumped coszen by up to 7.7e-7 at these crossings against 1e-8 to 1.4e-7 elsewhere.",
+       "parameter_overrides": {
+         "xtime": 1070.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 295.53472900390625,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.21641531586647034,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1384.8985595703125,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -1.8730759620666504e-05,
+           "tolerance": {
+             "abs": 2e-06
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step1072",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 2143), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 1072 (xtime 1071): the first minute after sunrise, coszen +3.3e-3. Single-precision reference, rel 1e-5, with coszen bounded at abs 2e-6 because it passes through zero at this step: near sunrise and sunset the cosine moves 0.75 per radian of hour angle, and calc_coszen forms the local solar time tloctm = gmt + xt24/60 + xlon/15 (about 30 h) in REAL*4, whose 3.8e-6 h granularity is 1e-6 rad of hour angle; a float64 replay of the dumped inputs differs from the dumped coszen by up to 7.7e-7 at these crossings against 1e-8 to 1.4e-7 elsewhere.",
+       "parameter_overrides": {
+         "xtime": 1071.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 295.5354309082031,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.2164195030927658,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1384.899169921875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.0033059120178222656,
+           "tolerance": {
+             "abs": 2e-06
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step1410",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 2819), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 1410 (xtime 1409): late morning of the second day. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 1409.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 295.7701416015625,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.21780790388584137,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1385.0826416015625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.6393358707427979,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step1501",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 3001), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 1501 (xtime 1500): the first afternoon after MOD(xtime, 1440) wraps. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 1500.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 295.8333435058594,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.21818119287490845,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1385.1319580078125,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.5555570125579834,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step2161",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 4321), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 2161 (xtime 2160): second night, after the wrap. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 2160.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 296.2916564941406,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.22088123857975006,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1385.489990234375,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -0.8890611529350281,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step2511",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 5021), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 2511 (xtime 2510): the last minute before the second sunrise. Single-precision reference, rel 1e-5, with coszen bounded at abs 2e-6 because it passes through zero at this step: near sunrise and sunset the cosine moves 0.75 per radian of hour angle, and calc_coszen forms the local solar time tloctm = gmt + xt24/60 + xlon/15 (about 30 h) in REAL*4, whose 3.8e-6 h granularity is 1e-6 rad of hour angle; a float64 replay of the dumped inputs differs from the dumped coszen by up to 7.7e-7 at these crossings against 1e-8 to 1.4e-7 elsewhere.",
+       "parameter_overrides": {
+         "xtime": 2510.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 296.53472900390625,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.22230833768844604,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1385.67919921875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -0.0033090412616729736,
+           "tolerance": {
+             "abs": 2e-06
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step2512",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 5023), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 2512 (xtime 2511): the first minute after the second sunrise. Single-precision reference, rel 1e-5, with coszen bounded at abs 2e-6 because it passes through zero at this step: near sunrise and sunset the cosine moves 0.75 per radian of hour angle, and calc_coszen forms the local solar time tloctm = gmt + xt24/60 + xlon/15 (about 30 h) in REAL*4, whose 3.8e-6 h granularity is 1e-6 rad of hour angle; a float64 replay of the dumped inputs differs from the dumped coszen by up to 7.7e-7 at these crossings against 1e-8 to 1.4e-7 elsewhere.",
+       "parameter_overrides": {
+         "xtime": 2511.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 296.5354309082031,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.22231239080429077,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1385.6796875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 1.1026859283447266e-05,
+           "tolerance": {
+             "abs": 2e-06
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_scm_step3481",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run (the scm_ref namelist: 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, radt = 0 so radiation runs every step; GNU gfortran 13.3 REAL*4 build; data/eqwefic/scm_solthm) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 1b4b556, at the entry of SWRAD (phys/module_ra_sw.F `sw` hook, j-row 1 = call 6961), which records radiation_driver's inputs xtime, gmt, julian, xlat, xlong and the outputs of radconst (declin, solcon) and calc_coszen (coszen, evaluated at xtime + radt/2 = xtime). Regime: step 3481 (xtime 3480, 05:00 UTC on the fourth day): third night, near the end of the 59 h run. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 3480.0,
+         "radt": 0.0,
+         "gmt": 19.0,
+         "julian": 297.2083435058594,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.22624459862709045,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1386.20263671875,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -0.8723917007446289,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_kernel_winter_branch",
+       "description": "Reference: WRF v4.8.0 SUBROUTINE radconst and SUBROUTINE calc_coszen (phys/module_radiation_driver.F:3469-3541), extracted verbatim at build time into kernels/build32/solar_kernels.F90 and driven by kernels/solar_driver.F90 of the ctessum-claude/WRF fork (branch earthsciml-instrumented, commit 1b4b556), GNU gfortran 13.3 REAL*4 build (WRF's default kinds; DEGRAD = piconst/180., DPD = 360./365. as share/module_model_constants.F:72-74). Synthetic regime, outside what the em_scm_xy reference run reaches: julian 35.25 (4 Feb 06 UTC, radconst's JULIAN < 80 branch), xtime 0, radt 0, gmt 6, 37.6 N 96.7 W: pre-dawn night. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 0.0,
+         "radt": 0.0,
+         "gmt": 6.0,
+         "julian": 35.25,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.2813777029514313,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1410.1070556640625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "hour_angle",
+           "time": 0.0,
+           "expected": -3.318338394165039,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -0.9186990261077881,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_kernel_equinox_edge",
+       "description": "Reference: WRF v4.8.0 SUBROUTINE radconst and SUBROUTINE calc_coszen (phys/module_radiation_driver.F:3469-3541), extracted verbatim at build time into kernels/build32/solar_kernels.F90 and driven by kernels/solar_driver.F90 of the ctessum-claude/WRF fork (branch earthsciml-instrumented, commit 1b4b556), GNU gfortran 13.3 REAL*4 build (WRF's default kinds; DEGRAD = piconst/180., DPD = 360./365. as share/module_model_constants.F:72-74). Synthetic regime, outside what the em_scm_xy reference run reaches: julian 79.9 (just below the day-80 branch point), xtime 30, radt 0, gmt 12, 51.5 N 0 E: declination within 1e-3 rad of zero, midday. Single-precision reference, rel 1e-5, except declin, bounded at abs 5e-7 rad: for JULIAN < 80 radconst forms the sun longitude as DPD (JULIAN + 285) = 359.90 degrees rather than the equivalent -0.099 degrees, and REAL*4 keeps only ~3e-5 degrees of that near-360 angle, so the Fortran declination differs from the exact value by 1.16e-7 rad (1.7e-4 relative) -- reproduced bit for bit by a NumPy float32 emulation, i.e. rounding, not a transcription difference.",
+       "parameter_overrides": {
+         "xtime": 30.0,
+         "radt": 0.0,
+         "gmt": 12.0,
+         "julian": 79.9000015258789,
+         "xlat": 51.5,
+         "xlong": 0.0
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.000686519721057266,
+           "tolerance": {
+             "abs": 5e-07
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1380.1021728515625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "hour_angle",
+           "time": 0.0,
+           "expected": 0.09715011715888977,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.6190418601036072,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_kernel_southern_hemisphere",
+       "description": "Reference: WRF v4.8.0 SUBROUTINE radconst and SUBROUTINE calc_coszen (phys/module_radiation_driver.F:3469-3541), extracted verbatim at build time into kernels/build32/solar_kernels.F90 and driven by kernels/solar_driver.F90 of the ctessum-claude/WRF fork (branch earthsciml-instrumented, commit 1b4b556), GNU gfortran 13.3 REAL*4 build (WRF's default kinds; DEGRAD = piconst/180., DPD = 360./365. as share/module_model_constants.F:72-74). Synthetic regime, outside what the em_scm_xy reference run reaches: julian 172.5 (21 Jun 12 UTC), xtime 120, radt 0, gmt 0, 33.9 S 151.2 E: southern-winter midday, eastern longitude. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 120.0,
+         "radt": 0.0,
+         "gmt": 0.0,
+         "julian": 172.5,
+         "xlat": -33.900001525878906,
+         "xlong": 151.1999969482422
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": 0.41005173325538635,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1325.15283203125,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "hour_angle",
+           "time": 0.0,
+           "expected": 0.014192068949341774,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.5387789011001587,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_kernel_radt_offset",
+       "description": "Reference: WRF v4.8.0 SUBROUTINE radconst and SUBROUTINE calc_coszen (phys/module_radiation_driver.F:3469-3541), extracted verbatim at build time into kernels/build32/solar_kernels.F90 and driven by kernels/solar_driver.F90 of the ctessum-claude/WRF fork (branch earthsciml-instrumented, commit 1b4b556), GNU gfortran 13.3 REAL*4 build (WRF's default kinds; DEGRAD = piconst/180., DPD = 360./365. as share/module_model_constants.F:72-74). Synthetic regime, outside what the em_scm_xy reference run reaches: julian 295.5, xtime 700, radt 30 (the cosine evaluated at xtime + radt/2 = 715), gmt 19, 37.6 N 96.7 W: night. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 700.0,
+         "radt": 30.0,
+         "gmt": 19.0,
+         "julian": 295.5,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.21620965003967285,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1384.871337890625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "hour_angle",
+           "time": 0.0,
+           "expected": 3.3334999084472656,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": -0.890531063079834,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_kernel_multi_day_wrap",
+       "description": "Reference: WRF v4.8.0 SUBROUTINE radconst and SUBROUTINE calc_coszen (phys/module_radiation_driver.F:3469-3541), extracted verbatim at build time into kernels/build32/solar_kernels.F90 and driven by kernels/solar_driver.F90 of the ctessum-claude/WRF fork (branch earthsciml-instrumented, commit 1b4b556), GNU gfortran 13.3 REAL*4 build (WRF's default kinds; DEGRAD = piconst/180., DPD = 360./365. as share/module_model_constants.F:72-74). Synthetic regime, outside what the em_scm_xy reference run reaches: julian 297.2, xtime 4000 (MOD(4005, 1440) = 1125 after the radt/2 = 5 offset), radt 10, gmt 19, 37.6 N 96.7 W: morning of the third day. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 4000.0,
+         "radt": 10.0,
+         "gmt": 19.0,
+         "julian": 297.20001220703125,
+         "xlat": 37.599998474121094,
+         "xlong": -96.69999694824219
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": -0.22619611024856567,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1386.1962890625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "hour_angle",
+           "time": 0.0,
+           "expected": 5.123307228088379,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.1715807318687439,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     },
+     {
+       "id": "solar_kernel_polar_day",
+       "description": "Reference: WRF v4.8.0 SUBROUTINE radconst and SUBROUTINE calc_coszen (phys/module_radiation_driver.F:3469-3541), extracted verbatim at build time into kernels/build32/solar_kernels.F90 and driven by kernels/solar_driver.F90 of the ctessum-claude/WRF fork (branch earthsciml-instrumented, commit 1b4b556), GNU gfortran 13.3 REAL*4 build (WRF's default kinds; DEGRAD = piconst/180., DPD = 360./365. as share/module_model_constants.F:72-74). Synthetic regime, outside what the em_scm_xy reference run reaches: julian 172.25, xtime 0, radt 0, gmt 6, 89.9 N 0 E: polar day, sun above the horizon at 06 UTC. Single-precision reference, rel 1e-5.",
+       "parameter_overrides": {
+         "xtime": 0.0,
+         "radt": 0.0,
+         "gmt": 6.0,
+         "julian": 172.25,
+         "xlat": 89.9000015258789,
+         "xlong": 0.0
+       },
+       "time_span": {
+         "start": 0,
+         "end": 1
+       },
+       "tolerance": {
+         "rel": 1e-05
+       },
+       "assertions": [
+         {
+           "variable": "declin",
+           "time": 0.0,
+           "expected": 0.4100879430770874,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "solcon",
+           "time": 0.0,
+           "expected": 1325.191650390625,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "hour_angle",
+           "time": 0.0,
+           "expected": -1.577309250831604,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         },
+         {
+           "variable": "coszen",
+           "time": 0.0,
+           "expected": 0.3986789286136627,
+           "tolerance": {
+             "rel": 1e-05
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}
