@@ -472,6 +472,15 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   work (`fire_wind_wrffire`, `fire_flux_to_atmosphere_wrffire`, the WENO5/ENO1
   and driver regimes) will follow as a separate PR once ESD #34 and #37 merge,
   since it adds those dependencies.
+- **Geometry refresh 2026-09-15.** #15–#21 each gained one commit syncing the
+  geometry changes from EqWeFiC 9fca477: `lib/wrf_thermo.esm`'s three new 0D
+  templates (all seven PRs carry it), YSU's `p_in`/`p_int_in`/`exner_in`/`ze_in`
+  (#18), Dudhia's `p_in`/`exner_in`/`ze_in` (#20), and the RRTM column and
+  heating coupling targets (#21). Every branch was drift-free beforehand and
+  verifies at its unchanged count (12, 622, 96, 169, 802, 234, 1463); new heads
+  24c8bb8, 75ecef3, 2cf75ee, db3c15c, 8ea2241, c294fcd, 9a819d3. The PR bodies
+  note that the column-geometry component that fills those targets lives in
+  EqWeFiC and is not part of the PRs.
 - **EarthSciModels RADM2 PR opened 2026-09-06:** #24
   (`components/gaschem/radm2/`, 540 assertions), base `main`. RADM2 is
   self-contained — its only refs are `./radm2_ratelaws.esm` and the four
