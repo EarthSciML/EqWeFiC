@@ -576,6 +576,22 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   `R060x` being a shadow reaction of rate `0.9 k_R060` standing in for
   radm2.eqn's negative product `-0.9 OH`.
 
+- **B8 fixed in the fork, 2026-09-15 (55d1c08).** The missing CO2 copy was a
+  generator bug in the KPP coupler, not in the Registry: a 2018 fixed-species
+  override clobbered CO2's match to the transported `chem(P_co2)` in all 16
+  mechanisms where CO2 is `#DEFVAR`. With the fix, the idealized `em_scm_xy`
+  `chem_opt = 101` column runs 59 h with vertical mixing on and no Rosenbrock
+  aborts (`data/eqwefic/chem_scm_b8`; the buggy run logged 529,584 and every
+  species went NaN, worse than the "decays to ~0" first recorded), and call-1
+  rate constants are bit-identical to the buggy build. New dumps
+  `data/eqwefic/dumps/radm2_wrf_b8` (13 calls × 59 levels) give 767 day and
+  night WRF-Chem box states. Each is one 60 s chemistry-only window integrated by
+  WRF at RTOL 1e-3, so direct `var_out` assertions need about rel 1e-3; tight
+  trajectory and tendency references come from replaying the dumped `var_in` +
+  RCONST through the real64 box driver (`chem_build/wrf_dump_to_box.py`).
+  Operator splitting with vertical mixing means there is still no multi-step WRF
+  species trajectory.
+
 - **Julia could not run any of it, and one bug was why (2026-09-12).** The
   refreshed EarthSciModels PR #24 came back with `radm2.esm` at 0 pass / 115
   errors in `julia-inline-tests` while the Rust CLI ran the same file at
