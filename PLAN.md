@@ -509,7 +509,10 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   precedent; Julia and Python have the same inversion by inspection.
   **Verified independently in this session**: a CLI built from the PR branch
   runs `./esm test couplings` at **505/0/0 over 52 files**, the microphysics
-  pair included. Rebuild `./esm` once #313 merges. The alternative to the upstream fix is for
+  pair included. #313 merged 2026-09-14 (with #312 and #315); **the tracked
+  `./esm`, rebuilt from main @ 58d21a1a1 on 2026-09-15, reproduces 505/0/0.**
+  EarthSciAST #198, #236 and #239 are also closed upstream; #274
+  (`table_lookup` on the `esm_problem` carrier) is the one filed gap still open. The alternative to the upstream fix is for
   `hydrometeor_slopes.esm` to import the `input_<x>()` -> `<x>_in` library
   itself (it already declares those parameters), which is a WSM6 component
   decision that collides with the const-array library its own standalone tests
