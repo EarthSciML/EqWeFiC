@@ -1334,6 +1334,28 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     written that way even though CLAUDE.md's Constants bullet prescribes the
     qualified form.
 
+    **Composition method decided 2026-09-15: pairwise coupling libraries.**
+    Assemblies are NOT mounted as units. What crosses a slot boundary depends on
+    the specific pair of schemes (MYNN exchanges TKE, boundary-layer clouds and
+    species mixing that YSU does not; Noah takes `chs`/`chs2`/`cqs2` where slab
+    takes `flhc`/`flqc`; RRTMG reads effective radii, aerosol optics and PBL
+    clouds that RRTM LW does not; Thompson with fire requires an active PBL and a
+    fire-emissions aerosol source), so a unit drawn around "physics" or
+    "dynamics" has an interface that changes with its contents. Instead, the
+    edges between each pair of components live in a hand-authored coupling
+    library (`coupling_roles` + `coupling_import`, esm-spec §10.9–§10.10),
+    imported by every document that uses that pair: today's subassembly
+    documents become the per-pair tests, `scm_physics_column.esm`'s ~167 edges
+    are split into pair libraries, and EqWeather-SCM becomes ~14 mounts plus
+    ~15 imports and a few inline edges; swapping a scheme swaps one mount and
+    its pair imports. INVENTORY records which pair libraries exist. Full
+    analysis: `data/eqwefic/design/assembly_composition.md`. Prerequisite
+    upstream fixes, both PRs requested 2026-09-15: `coupling_import` refs
+    resolve against the working directory rather than the importing document
+    (`flatten.rs:633` uses `CouplingImportOptions::default()`, base path "."),
+    and validation gaps (a bind to a missing variable passes `validate`; an
+    omitted import silently leaves the target at its default).
+
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
     wind, pressure, and temperature plus the numerics that step them. Per the
