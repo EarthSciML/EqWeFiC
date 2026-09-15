@@ -1359,11 +1359,17 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     ~15 imports and a few inline edges; swapping a scheme swaps one mount and
     its pair imports. INVENTORY records which pair libraries exist. Full
     analysis: `data/eqwefic/design/assembly_composition.md`. Prerequisite
-    upstream fixes, both PRs requested 2026-09-15: `coupling_import` refs
-    resolve against the working directory rather than the importing document
-    (`flatten.rs:633` uses `CouplingImportOptions::default()`, base path "."),
-    and validation gaps (a bind to a missing variable passes `validate`; an
-    omitted import silently leaves the target at its default).
+    upstream fixes, both approved 2026-09-15: (i) `coupling_import` refs
+    resolved against the working directory rather than the importing document
+    (`flatten.rs:633` used `CouplingImportOptions::default()`, base path ".") —
+    **fixed by EarthSciAST PR #369** (all five bindings record the document's
+    base at load time and prefer it, the authored `ref` still round-trips
+    verbatim per §10.10.3; 18/18 Rust coupling tests including a new
+    working-directory regression test, and a CLI built from the branch runs the
+    probe document from any directory where it previously failed); and (ii) the
+    validation gaps — a bind to a missing variable passes `validate` and only
+    fails at flatten, and an omitted import silently leaves the target at its
+    default — **not yet started** (the branch exists but is empty).
 
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
