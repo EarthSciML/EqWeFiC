@@ -1367,9 +1367,16 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     verbatim per §10.10.3; 18/18 Rust coupling tests including a new
     working-directory regression test, and a CLI built from the branch runs the
     probe document from any directory where it previously failed); and (ii) the
-    validation gaps — a bind to a missing variable passes `validate` and only
-    fails at flatten, and an omitted import silently leaves the target at its
-    default — **not yet started** (the branch exists but is empty).
+    validation gaps — **fixed by EarthSciAST PR #370** (stacked on #369):
+    `validate` now expands each import and checks the role-bound edges,
+    reporting each finding at the import's own pointer, and the spec states the
+    idiom for a REQUIRED import — declare the coupling-target parameter without
+    a `default`, so an omitted or mis-bound import fails loudly when the problem
+    is built instead of running with a placeholder (measured: dropping the
+    import left the run green with a silently wrong 0.0; dropping the default
+    too gave `Invalid parameter`). Rust and TypeScript; the other three
+    bindings iterate the un-expanded coupling the same way and are a follow-up.
+    20 coupling tests and 733 library tests pass.
 
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
