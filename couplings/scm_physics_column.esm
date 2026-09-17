@@ -1,5 +1,5 @@
 {
- "esm": "1.0.0",
+ "esm": "1.1.0",
  "metadata": {
   "name": "ScmPhysicsColumn",
   "description": "Single-column PHYSICS-DRIVER SUITE of the EqWeather reference case (WRF 4.8 em_scm_xy: mp_physics = 6 WSM6, ra_lw_physics = 1 RRTM, ra_sw_physics = 1 Dudhia, sf_sfclay_physics = 1 revised MM5, sf_surface_physics = 1 five-layer slab, bl_pbl_physics = 1 YSU, cu = shcu = fdda = 0), i.e. what WRF's radiation_driver, surface_driver and pbl_driver together do to one column in one time step. Nine components are mounted by reference as top-level systems and coupled in the WRF call order with variable_map/param_to_var edges (esm-spec 10.4): the RRTM longwave chain (RRTMColumn -> RRTMSetcoef -> RRTMGasOptics -> RTRNSweep -> RRTMLWHeating) and the Dudhia shortwave scheme (DudhiaSW) give rthraten = dthdt_lw + dthdt_sw; the revised MM5 surface layer (SfclayRev) gives u*, z0, Ri_b, wind speed, 10 m wind and the profile functions fm/fh -- YSU's psim/psih arguments are those FULL profile functions, not the stability corrections psim/psih, which are exposed separately; the YSU boundary layer receives them together with rthraten and the land scheme's surface fluxes and returns the tendency vector WRF hands to the dynamics: rthblten, rublten, rvblten, rqvblten, rqcblten, rqiblten, plus rthraten and rth_phys_sum = rthraten + rthblten. Every mounted stage keeps its `input_<x>` rewrite targets for standalone testing; the mount-edge libraries injected here (esm-spec 9.7.10) lower them either to the dumped column state of the step or to the additive `<x>_in` coupling-target parameters that the document's coupling fills from the upstream stage. One document holds one regime; the companion is couplings/scm_physics_column_night.esm. Regime: WRF step 1410 (kernel call 2820), 18:29 UTC = 12:02 local solar time -- the strongest daytime forcing of the 24 h reference run: gsw = 549.7 W/m^2 (cos zenith 0.639), glw = 268.9, olr = 256.0, slab hfx = 173.6 W/m^2 (SfclayRev's own 173.5), Ri_b = -0.118 (regime 4, free convection), u* = 0.454 m/s, h = 926 m over 16 layers, tsk = 288.5 K, and only a trace of cirrus aloft (qi <= 2.1e-9, three cloudy layers), so YSU's cloud-top entrainment branch is inactive and no liquid cloud is present. THE LAND SURFACE IS LIVE (2026-09-12). The 5-layer SLAB scheme is mounted as Lsm with `index_set_rename` {lev: soil, lev_nodes: soil_nodes} and NSOIL = 4 bound at the edge, so its soil column and the atmospheric column coexist under distinct axis names -- the conflict that kept it out of this document until EarthSciAST #213/#298. It is wired the way WRF wires it: SfclayRev's flhc and flqc set the exchange, this step's Sw.gsw (549.7 W/m^2) and Heat.glw (268.9) close the surface energy balance -- the dumped pbl_gsw/pbl_glw are bit-identical to sw_gsw/rrtm_glw, confirming radiation_driver's own output is what surface_driver saw -- and the slab's hfx/qfx drive YSU, which is WRF's order (surface layer -> land surface -> PBL) and replaces the hfx_lsm/qfx_lsm values this document used to prescribe from the dump. Fifteen slab outputs are exposed and eight of them asserted. The esm slab is an INSTANTANEOUS flux calculator while WRF's SLAB sub-steps the soil and reports the flux at the end of its internal step (FORTRAN_BUGS N12), so the coupled fluxes sit 7.5e-4 (hfx), 3.1e-4 (qfx, lh) and 1.8e-4 (qsfc) from the driver-level values they are checked against, and YSU seeing the instantaneous flux moves K_h and K_m by Linf 0.042 and 0.025 m^2/s (2.4e-4 of their column maxima 176.8 and 102.6); the component's own instantaneous values are pinned to 2e-5 against a dt = 0.01 s real64 slab_driver replay in couplings/surface_soil_column.esm. Cutting the Sfc.flhc -> Lsm.flhc edge fails 6 assertions including pbl_hpbl, K_h and K_m, and cutting Sw.gsw -> Lsm.gsw fails both soil-temperature tendencies, so the chain is load-bearing rather than decorative. WHAT IS NOT MOUNTED, and why. The WSM6 MICROPHYSICS is the one namelist scheme of the six that is not here, and as of 2026-09-12 the reason is no longer an EarthSciAST limitation. The index-set half of the old reason is fixed: EarthSciAST #213 added a mount-edge `index_set_rename` and #298 made a top-level `models.<k>` `{ref}` mount run the same section 4.7 edge pipeline as a `subsystems.<k>` mount, which is exactly what lets the slab's 4-cell soil column sit beside the 59-layer atmosphere in this document. What remains are three reasons of substance. (1) THE REFERENCE COLUMN IS CLOUD-FREE. At both dumped steps qc = qr = qs = qg = 0 in every layer and qi is a 2.1e-9 (step 1410) / 5.2e-8 (step 900) kg/kg trace, so every WSM6 process rate would evaluate to zero or to numerical dust: the mount would add seven components and about a hundred coupling edges that assert nothing. (2) THERE IS NO MICROPHYSICS REFERENCE IN THIS RUN. The merged suite dump (tools/merge_dumps.py over subassembly_all/_pbl/_rad plus the sfclayrev, sw, ysu and rrtm kernel dumps) carries no mp_ variables at all; the WSM6 kernel dumps that exist are from the idealized supercell (qss_ref, columns 24 and 30), a different case on a different grid, and they are where the chain is actually exercised -- couplings/microphysics_column.esm and microphysics_column_mixed.esm, 7 mounts and 106 edges, hydrometeors present. (3) MICROPHYSICS IS NOT PART OF THIS DRIVER CALL. WRF runs it at the END of the time step on the state the RK dynamics leaves behind, not inside radiation_driver / surface_driver / pbl_driver, so chaining it here would misrepresent the call order this document exists to pin. Two WSM6 stages are also genuinely not rate-shaped -- sedimentation is an in-place PLM update and saturation adjustment relaxes to a target state -- but that is a property of those stages, not the reason the scheme is absent from this document. KNOWN BINDING BEHAVIOUR (Rust CLI, current EarthSciAST main). A mounted component's own inline tests no longer run under the coupling (EarthSciAST #214, esm-spec 6.6: tests do not cross a mount edge), so this file can be run whole -- `./esm test couplings/scm_physics_column.esm` -- and the leaves are listed as un-asserted in the runner summary; they are exercised when their own files are the test target. The document no longer redeclares the leaves' index sets: since #298 they merge into the importing registry, and the 44-entry index_sets block that used to be needed now collides with the leaf's own folded declaration (rlay arrives as the literal 103, not as NLEV + NBUF). What has NOT changed is that a parent test cannot set a mounted component's parameter: a scoped override `Lsm.thc` in parameter_overrides is rejected with `Invalid parameter 'Lsm.thc'` (probed 2026-09-12), which is why every shared surface, soil and radiation scalar is declared in this model as an <x>0 parameter with an <x> = <x>0 observed and coupled into the mounts. Residuals of the whole assembly against the step-1410 references, measured with zero tolerances: surface-layer outputs <= 1.9e-6 relative (rmol; hfx 5.4e-7, u* 4.0e-8, qsfc / z0 / regime exact), PBL height 6.4e-7 relative and kpbl exact, K_h / K_m Linf 2.3e-4 / 1.6e-4 m^2/s, longwave fluxes Linf 2.3e-4 (F_up) and 1.3e-4 W/m^2 (F_dn), dthdt_lw and rthraten 5.2e-9 K/s, dthdt_sw 1.6e-10 K/s, gsw 1.4e-6, glw 2.4e-7 and olr 3.2e-7 relative, and the PBL tendencies 1.1e-4 K/s (rthblten, column max 3.7e-4), 6.1e-5 and 3.0e-5 m/s^2 (rublten / rvblten, max 2.8e-4 / 3.2e-4), 1.4e-8 1/s (rqvblten, max 3.3e-7), rqcblten exactly zero (no cloud water) and rqiblten 1.5e-18 (max 1.3e-16).",
@@ -1735,7 +1735,7 @@
     {
      "lhs": "F_up_model",
      "rhs": {
-      "op": "aggregate",
+      "op": "faq",
       "output_idx": [
        "kn"
       ],
@@ -1757,7 +1757,7 @@
     {
      "lhs": "F_dn_model",
      "rhs": {
-      "op": "aggregate",
+      "op": "faq",
       "output_idx": [
        "kn"
       ],
@@ -2181,7 +2181,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -2274,7 +2274,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -2367,7 +2367,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -2459,7 +2459,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -2551,7 +2551,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -2643,7 +2643,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -2735,7 +2735,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -2827,7 +2827,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -2919,7 +2919,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -3056,7 +3056,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -3193,7 +3193,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -3285,7 +3285,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -3377,7 +3377,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -3469,7 +3469,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
@@ -3641,7 +3641,7 @@
        "reduce": "Linf_error",
        "expected": 0.0,
        "reference": {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "k"
         ],
