@@ -169,6 +169,24 @@
     }
    ]
   },
+  "Thm": {
+   "ref": "../components/atmospheric_dynamics/wrf_arw/moist_theta_tendency.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "../components/atmospheric_dynamics/wrf_arw/tests/thetam_conv_step1410_inputs.esm",
+     "only": [
+      "input_theta_m",
+      "input_qv"
+     ]
+    },
+    {
+     "ref": "./tests/physics_couple_thetam_inputs.esm"
+    }
+   ]
+  },
   "ScmPhysicsColumn": {
    "variables": {
     "psfc0": {
@@ -1143,6 +1161,23 @@
      ],
      "description": "Sum of the physics potential-temperature tendencies of the step, rthraten + dtheta/dt|PBL (WRF's RTHRATEN + RTHBLTEN with cu = shcu = fdda = 0). The PBL part is the instantaneous derivative, WRF's is the implicit step's increment (see the test description)."
     },
+    "thm_dtheta_m_dt_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Coupling target: receives Thm.dtheta_m_dt_phys."
+    },
+    "dtheta_m_dt_phys": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "The physics tendency of the MOIST potential temperature: what WRF's conv_t_tendf_to_moist makes of rth_phys_sum and rqvblten before the dynamics adds them to theta_m. This is the quantity the EqWeather-SCM state document adds to its D(theta_m) equation -- the physics suite's own output is a DRY theta tendency and cannot be used directly."
+    },
     "pbl_dqcdt_in": {
      "type": "parameter",
      "units": "1/s",
@@ -1429,6 +1464,14 @@
      "type": "unknown",
      "units": "K/s",
      "description": "The coupled slab's instantaneous skin tendency, named for comparison with WRF's finite-step (tsk_out - tsk)/dt, which sub-steps the soil and re-evaluates the fluxes at the updated TSLB(1) (FORTRAN_BUGS N12: the two are 0.5-11 % apart)."
+    },
+    "dtheta_m_conv_delta": {
+     "type": "unknown",
+     "units": "K/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "What conv_t_tendf_to_moist ADDS to the physics theta tendency: dtheta_m_dt_phys - rth_phys_sum = (R_v/R_d) q_v dtheta/dt + (R_v/R_d) theta dq_v/dt. Isolated as its own observed because it is the part of the conversion that this assembly can pin TIGHTLY: both terms of the difference carry the same PBL-tendency gap, and it cancels to first order."
     }
    },
    "equations": [
@@ -1817,6 +1860,10 @@
      }
     },
     {
+     "lhs": "dtheta_m_dt_phys",
+     "rhs": "thm_dtheta_m_dt_in"
+    },
+    {
      "lhs": "pbl_dqcdt",
      "rhs": "pbl_dqcdt_in"
     },
@@ -1915,12 +1962,22 @@
     {
      "lhs": "dTsk_dt_wrf_step",
      "rhs": "lsm_dTsk_dt"
+    },
+    {
+     "lhs": "dtheta_m_conv_delta",
+     "rhs": {
+      "op": "-",
+      "args": [
+       "dtheta_m_dt_phys",
+       "rth_phys_sum"
+      ]
+     }
     }
    ],
    "tests": [
     {
      "id": "scm_step1410_physics_column",
-     "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, p_top = 177.6 hPa, data/eqwefic/scm_ref) dumped by the instrumented ctessum-claude/WRF fork (module_esm_dump, commit 592f693) at TWO levels for the same step: the PHYSICS-DRIVER level (hooks around radiation_driver, surface_driver + pbl_driver and the physics-tendency sum in dyn_em/module_first_rk_step_part1.F -- dumps subassembly_all, _pbl and _rad) and the KERNEL level (sfclayrev, sw, ysu and rrtm scm_ref dumps of the same call). The seven dumps are merged into one column namespace by tools/merge_dumps.py (esm_dump_scm_suite_<step>.json, variables tagged all_/pbl_/rad_/sfc_/sw_/ysu_/rrtm_) because tools/fill_tests.py admits two dumps per test; the numbers are transcribed by fill_tests.py from the sidecar couplings/scm_physics_column.esm.fill.json. All references are real32 model values. The DRIVER-level tendency vector (rthblten, rublten, rvblten, rqvblten, rqcblten, rqiblten, rthraten, rth_phys_sum, hfx, qfx, gsw, glw, olr, pblh) is the contract this document exists to pin: it is what WRF hands to the dynamics, and rqcblten/rqiblten are asserted here for the first time. Regime: WRF step 1410 (kernel call 2820), 18:29 UTC = 12:02 local solar time -- the strongest daytime forcing of the 24 h reference run: gsw = 549.7 W/m^2 (cos zenith 0.639), glw = 268.9, olr = 256.0, slab hfx = 173.6 W/m^2 (SfclayRev's own 173.5), Ri_b = -0.118 (regime 4, free convection), u* = 0.454 m/s, h = 926 m over 16 layers, tsk = 288.5 K, and only a trace of cirrus aloft (qi <= 2.1e-9, three cloudy layers), so YSU's cloud-top entrainment branch is inactive and no liquid cloud is present. Residuals of the whole assembly against the step-1410 references, measured with zero tolerances: surface-layer outputs <= 1.9e-6 relative (rmol; hfx 5.4e-7, u* 4.0e-8, qsfc / z0 / regime exact), PBL height 6.4e-7 relative and kpbl exact, K_h / K_m Linf 2.3e-4 / 1.6e-4 m^2/s, longwave fluxes Linf 2.3e-4 (F_up) and 1.3e-4 W/m^2 (F_dn), dthdt_lw and rthraten 5.2e-9 K/s, dthdt_sw 1.6e-10 K/s, gsw 1.4e-6, glw 2.4e-7 and olr 3.2e-7 relative, and the PBL tendencies 1.1e-4 K/s (rthblten, column max 3.7e-4), 6.1e-5 and 3.0e-5 m/s^2 (rublten / rvblten, max 2.8e-4 / 3.2e-4), 1.4e-8 1/s (rqvblten, max 3.3e-7), rqcblten exactly zero (no cloud water) and rqiblten 1.5e-18 (max 1.3e-16). The PBL TENDENCIES are asserted only LOOSELY and document a known gap rather than test the physics: WRF's rthblten/rublten/rvblten/rqvblten/rqcblten/rqiblten are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s while the assembly evaluates the instantaneous right-hand side (PLAN.md 0.3), which at this regime is the dominant term of their residual; the physics itself is pinned by ysu.esm's own small-dt tests, and a stage-3 comparison at the WRF step must apply the same implicit step to the assembled tendencies. The driver-level th2/t2/q2 are overwritten by the land-surface branch of surface_driver, so those three are referenced to the kernel-level sfclayrev dump, and the slab's driver-level hfx/qfx are prescribed (hfx_lsm/qfx_lsm) because the land scheme is not co-mounted -- see the model description. TOLERANCES: each is the smallest of {1, 2, 5} x 10^k that is at least 5x the residual measured in a zero-tolerance run (relative for the scalars, absolute for the Linf_error column assertions), with a 1e-6 relative floor; an assertion that is exact at zero tolerance keeps abs 0. SLAB COUPLING (2026-09-12): the slab land surface is co-mounted (EarthSciAST #213 index_set_rename gives its 4-cell soil column the axis name soil/soil_nodes, so it no longer collides with the 59-layer atmospheric lev), fed by Sfc.flhc/flqc and by this step's Sw.gsw and Heat.glw -- the dumped pbl_gsw/pbl_glw are bit-identical to sw_gsw/rrtm_glw, so radiation_driver's own output is what surface_driver saw -- and its hfx/qfx now drive YSU instead of the values prescribed from the dump. The slab's esm form is an INSTANTANEOUS flux calculator, while WRF's SLAB sub-steps the soil and reports the flux at the END of its internal step (FORTRAN_BUGS N12), so the coupled fluxes sit a measured 7.5e-4 (hfx), 3.1e-4 (qfx, lh) and 1.8e-4 (qsfc) below the driver-level hfx_out/qfx_out/lh_out/qsfc_out they are asserted against; the tolerances above are that gap, not a solver floor, and the component's instantaneous values themselves are pinned to 2e-5 against a dt = 0.01 s real64 slab_driver replay in couplings/surface_soil_column.esm. Because YSU now sees the instantaneous flux, its exchange coefficients move by Linf 0.042 m^2/s (K_h, 2.4e-4 of the 176.8 column maximum) and 0.025 (K_m, 2.4e-4 of 102.6), which is why those two tolerances are 0.06 and 0.04 rather than 0.002 and 0.001. lsm_capg and lsm_land still match exactly. WSM6 remains un-mounted: its stages are in-place state increments, not rates (see the document description).",
+     "description": "Reference: WRF 4.8 em_scm_xy single-column run (GNU real32 build, dt = 60 s, 59 layers, p_top = 177.6 hPa, data/eqwefic/scm_ref) dumped by the instrumented ctessum-claude/WRF fork (module_esm_dump, commit 592f693) at TWO levels for the same step: the PHYSICS-DRIVER level (hooks around radiation_driver, surface_driver + pbl_driver and the physics-tendency sum in dyn_em/module_first_rk_step_part1.F -- dumps subassembly_all, _pbl and _rad) and the KERNEL level (sfclayrev, sw, ysu and rrtm scm_ref dumps of the same call). The seven dumps are merged into one column namespace by tools/merge_dumps.py (esm_dump_scm_suite_<step>.json, variables tagged all_/pbl_/rad_/sfc_/sw_/ysu_/rrtm_) because tools/fill_tests.py admits two dumps per test; the numbers are transcribed by fill_tests.py from the sidecar couplings/scm_physics_column.esm.fill.json. All references are real32 model values. The DRIVER-level tendency vector (rthblten, rublten, rvblten, rqvblten, rqcblten, rqiblten, rthraten, rth_phys_sum, hfx, qfx, gsw, glw, olr, pblh) is the contract this document exists to pin: it is what WRF hands to the dynamics, and rqcblten/rqiblten are asserted here for the first time. Regime: WRF step 1410 (kernel call 2820), 18:29 UTC = 12:02 local solar time -- the strongest daytime forcing of the 24 h reference run: gsw = 549.7 W/m^2 (cos zenith 0.639), glw = 268.9, olr = 256.0, slab hfx = 173.6 W/m^2 (SfclayRev's own 173.5), Ri_b = -0.118 (regime 4, free convection), u* = 0.454 m/s, h = 926 m over 16 layers, tsk = 288.5 K, and only a trace of cirrus aloft (qi <= 2.1e-9, three cloudy layers), so YSU's cloud-top entrainment branch is inactive and no liquid cloud is present. Residuals of the whole assembly against the step-1410 references, measured with zero tolerances: surface-layer outputs <= 1.9e-6 relative (rmol; hfx 5.4e-7, u* 4.0e-8, qsfc / z0 / regime exact), PBL height 6.4e-7 relative and kpbl exact, K_h / K_m Linf 2.3e-4 / 1.6e-4 m^2/s, longwave fluxes Linf 2.3e-4 (F_up) and 1.3e-4 W/m^2 (F_dn), dthdt_lw and rthraten 5.2e-9 K/s, dthdt_sw 1.6e-10 K/s, gsw 1.4e-6, glw 2.4e-7 and olr 3.2e-7 relative, and the PBL tendencies 1.1e-4 K/s (rthblten, column max 3.7e-4), 6.1e-5 and 3.0e-5 m/s^2 (rublten / rvblten, max 2.8e-4 / 3.2e-4), 1.4e-8 1/s (rqvblten, max 3.3e-7), rqcblten exactly zero (no cloud water) and rqiblten 1.5e-18 (max 1.3e-16). The PBL TENDENCIES are asserted only LOOSELY and document a known gap rather than test the physics: WRF's rthblten/rublten/rvblten/rqvblten/rqcblten/rqiblten are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s while the assembly evaluates the instantaneous right-hand side (PLAN.md 0.3), which at this regime is the dominant term of their residual; the physics itself is pinned by ysu.esm's own small-dt tests, and a stage-3 comparison at the WRF step must apply the same implicit step to the assembled tendencies. The driver-level th2/t2/q2 are overwritten by the land-surface branch of surface_driver, so those three are referenced to the kernel-level sfclayrev dump, and the slab's driver-level hfx/qfx are prescribed (hfx_lsm/qfx_lsm) because the land scheme is not co-mounted -- see the model description. TOLERANCES: each is the smallest of {1, 2, 5} x 10^k that is at least 5x the residual measured in a zero-tolerance run (relative for the scalars, absolute for the Linf_error column assertions), with a 1e-6 relative floor; an assertion that is exact at zero tolerance keeps abs 0. SLAB COUPLING (2026-09-12): the slab land surface is co-mounted (EarthSciAST #213 index_set_rename gives its 4-cell soil column the axis name soil/soil_nodes, so it no longer collides with the 59-layer atmospheric lev), fed by Sfc.flhc/flqc and by this step's Sw.gsw and Heat.glw -- the dumped pbl_gsw/pbl_glw are bit-identical to sw_gsw/rrtm_glw, so radiation_driver's own output is what surface_driver saw -- and its hfx/qfx now drive YSU instead of the values prescribed from the dump. The slab's esm form is an INSTANTANEOUS flux calculator, while WRF's SLAB sub-steps the soil and reports the flux at the END of its internal step (FORTRAN_BUGS N12), so the coupled fluxes sit a measured 7.5e-4 (hfx), 3.1e-4 (qfx, lh) and 1.8e-4 (qsfc) below the driver-level hfx_out/qfx_out/lh_out/qsfc_out they are asserted against; the tolerances above are that gap, not a solver floor, and the component's instantaneous values themselves are pinned to 2e-5 against a dt = 0.01 s real64 slab_driver replay in couplings/surface_soil_column.esm. Because YSU now sees the instantaneous flux, its exchange coefficients move by Linf 0.042 m^2/s (K_h, 2.4e-4 of the 176.8 column maximum) and 0.025 (K_m, 2.4e-4 of 102.6), which is why those two tolerances are 0.06 and 0.04 rather than 0.002 and 0.001. lsm_capg and lsm_land still match exactly. WSM6 remains un-mounted: its stages are in-place state increments, not rates (see the document description). USE_THETA_M CONVERSION (added 2026-09-17, PLAN.md 3.1 item (1)). WRFMoistThetaTendency (components/atmospheric_dynamics/wrf_arw/moist_theta_tendency.esm, conv_t_tendf_to_moist) is mounted here and driven by the assembly's OWN outputs: rth_phys_sum, the summed radiative-plus-PBL dry-theta tendency, goes into its dtheta_dt_phys_in and YSU's rqvblten into its dqv_dt_phys_in, through the mount-edge library couplings/tests/physics_couple_thetam_inputs.esm. Its other two inputs, theta_m and moist_old(P_qv), keep coming from the conv_t_tendf_to_moist dump (data/eqwefic/scm_solthm, fork 1b4b556): they are the DYNAMICAL state at the point of the RK step where the conversion runs, which this physics-only assembly does not carry. Reconstructing theta_m as theta(1 + R_v/R_d q_v) from YSU's own inputs instead was measured and REJECTED -- it differs from the dumped theta_m by up to 0.0178 K, which moves the converted tendency by up to 9.4e-9 K/s through the vapour term, ten times the 1e-9 bound below. TWO assertions, and their tolerances are set by the assembly's KNOWN PBL gap, not by the conversion. dtheta_m_dt_phys is bounded at Linf abs 1e-3 K/s -- the same bound rth_phys_sum itself carries in this document -- because it inherits that quantity's residual: measured 1.13e-4 K/s, against WRF's implicit rthblten increment (the loose-PBL-tendency caveat above). The component's own test pins the conversion arithmetic at abs 1e-9 on dumped inputs, so nothing is lost. What CAN be pinned tightly here is what the conversion ADDS, dtheta_m_conv_delta = dtheta_m_dt_phys - rth_phys_sum: the PBL theta gap largely cancels in the difference, and the residual falls to 6.58e-6 K/s (bound abs 2e-5, 3x). That 6.58e-6 is not the conversion's: it is 1.6084 x 289 K x 1.4e-8 1/s, i.e. the assembly's own rqvblten residual carried through the (R_v/R_d) theta dq_v/dt term, plus 8.7e-7 from the theta term. The conversion is not cosmetic: at this step dtheta_m_conv_delta reaches 1.54e-4 K/s (RMS 2.51e-5), 40 % of rth_phys_sum's own 3.80e-4 maximum, almost all of it the vapour term.",
      "parameter_overrides": {
       "psfc0": 97142.90625,
       "tsk0": 288.5369873046875,
@@ -3671,6 +3728,190 @@
        "tolerance": {
         "abs": 1e-05
        }
+      },
+      {
+       "variable": "dtheta_m_dt_phys",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.00023439719748543804,
+            0.00023436266731502393,
+            0.00023277500136107104,
+            0.00023184056923027604,
+            0.0002305942827381105,
+            0.00022994203549125012,
+            0.00022875234479059254,
+            0.0002286654779507355,
+            0.0002285662668757408,
+            0.00022963658184439533,
+            0.00023171900378014918,
+            0.00023765501679695331,
+            0.0002514186224098316,
+            0.00028844581743302163,
+            1.778295354333453e-05,
+            -0.00022580719797688973,
+            -1.0386417337032781e-05,
+            -7.638873032950126e-06,
+            -5.90680110924398e-06,
+            -4.847982912703157e-06,
+            -4.227262117491221e-06,
+            -3.93229761147064e-06,
+            -3.83136980348261e-06,
+            -3.895075787202068e-06,
+            -4.110632180724837e-06,
+            -4.444831141700257e-06,
+            -5.170987014966906e-06,
+            -5.895068972510512e-06,
+            -6.61949532940189e-06,
+            -7.3248056425828574e-06,
+            -8.056540710087036e-06,
+            -8.837606096395788e-06,
+            -9.819102879543745e-06,
+            -1.0963841945680736e-05,
+            -1.2370532810052597e-05,
+            -1.396957747782751e-05,
+            -1.4904964602447105e-05,
+            -1.5948175793610212e-05,
+            -1.6940160213665082e-05,
+            -1.4937372731465114e-05,
+            -1.347614194418091e-05,
+            -1.2190572871387467e-05,
+            -1.1635874107910568e-05,
+            -1.1625803058861003e-05,
+            -1.1877037871278325e-05,
+            -1.4741920837859406e-05,
+            -1.086922988031701e-05,
+            -6.763536972770855e-06,
+            -3.7592613780339025e-06,
+            -1.1089400510734456e-06,
+            2.0682543767767268e-07,
+            -1.423087901550346e-06,
+            -3.4962895411194435e-06,
+            -4.855505932953764e-06,
+            -5.933778556843638e-06,
+            -5.604909138176797e-06,
+            -2.9800121719100963e-06,
+            1.157135750738566e-06,
+            6.226490179794519e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 0.001
+       }
+      },
+      {
+       "variable": "dtheta_m_conv_delta",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            1.1622710984367468e-05,
+            1.0163468388951178e-05,
+            9.705408232851646e-06,
+            9.598569238678396e-06,
+            9.699103769681978e-06,
+            9.995678229858833e-06,
+            1.0498735890261061e-05,
+            1.1285157513587688e-05,
+            1.2465535896509863e-05,
+            1.4264401366647137e-05,
+            1.7131319898805534e-05,
+            2.2124286289338556e-05,
+            3.215406155855405e-05,
+            5.7860750761300396e-05,
+            8.451484797943814e-05,
+            0.00015374364671044748,
+            2.719017811381658e-07,
+            -4.053084027266153e-09,
+            -1.4061720094592881e-08,
+            -1.4347466278333371e-08,
+            -1.366317936463913e-08,
+            -1.4450485297208071e-08,
+            -1.709927722411691e-08,
+            -1.804449552138501e-08,
+            -2.714099969166793e-08,
+            -1.3153723997575614e-07,
+            -3.24900930549238e-08,
+            -2.666538268846763e-08,
+            -2.8040724188628636e-08,
+            -3.002891605654961e-08,
+            -3.188175446901247e-08,
+            -3.461439034194165e-08,
+            -3.5926566896222654e-08,
+            -3.935552110110684e-08,
+            -4.230321857548099e-08,
+            -5.390827345354831e-08,
+            -4.5732924744008163e-08,
+            -4.441548444423469e-08,
+            -4.826403436103234e-08,
+            -1.8513344851811092e-09,
+            -1.229861350345971e-06,
+            -5.161388199084152e-07,
+            8.140006418394082e-08,
+            5.539949255085258e-07,
+            8.853010823553965e-07,
+            1.9475858312824378e-09,
+            6.876707500804192e-09,
+            1.942322085793355e-09,
+            -1.8340393214283017e-09,
+            1.567562205999449e-09,
+            -2.485662814448256e-09,
+            -1.696805956868847e-09,
+            -7.74522550663496e-11,
+            -1.7031976478183936e-10,
+            -1.387372918422615e-10,
+            -5.263745490014345e-11,
+            3.722220025057977e-11,
+            5.91231413069698e-11,
+            5.113352761670139e-11
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 2e-05
+       }
       }
      ]
     }
@@ -3678,6 +3919,27 @@
   }
  },
  "coupling": [
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.rth_phys_sum",
+   "to": "Thm.dtheta_dt_phys_in",
+   "transform": "param_to_var",
+   "description": "the step's summed physics theta tendency into the use_theta_m conversion"
+  },
+  {
+   "type": "variable_map",
+   "from": "ScmPhysicsColumn.pbl_dqvdt",
+   "to": "Thm.dqv_dt_phys_in",
+   "transform": "param_to_var",
+   "description": "the step's physics q_v tendency (YSU's RQVBLTEN) into the use_theta_m conversion"
+  },
+  {
+   "type": "variable_map",
+   "from": "Thm.dtheta_m_dt_phys",
+   "to": "ScmPhysicsColumn.thm_dtheta_m_dt_in",
+   "transform": "param_to_var",
+   "description": "the converted moist-theta tendency back into the assembly"
+  },
   {
    "type": "variable_map",
    "from": "ScmPhysicsColumn.u1",
