@@ -389,9 +389,12 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   component PR carries the lib files and is self-contained. EarthSciModels'
   own CLAUDE.md (upstream b7912bc) forbids `Co-Authored-By: Claude ...`
   trailers, so branches there must drop them (keep `Claude-Session:`);
-  branches opened before 2026-09-07 still carry one. ESD rules are referenced by
-  relative sibling path because the Rust CLI does not expand `${ESD_ROOT}` in
-  template imports. Merge conditions (not ours to address): ESD #34/#35/#36
+  branches opened before 2026-09-07 still carry one. ESD rules were referenced by
+  relative sibling path because the Rust CLI did not expand `${ESD_ROOT}` in
+  template imports; **EarthSciAST #400 fixed that (merged 2026-09-17,
+  `b136a9b92`) and the refs have since moved to `${ESD_ROOT}`**, which is how
+  they resolve in CI (EarthSciModels `.github/workflows/test-esm.yml:62-67`
+  clones ESD and exports the variable). Merge conditions (not ours to address): ESD #34/#35/#36
   merged and reachable from CI, EarthSciAST #177 + EarthSciModels #2 for the
   Python gate.
 - **Physics-column assembly done 2026-09-06.** `couplings/physics_column{,_night}.esm`
@@ -484,9 +487,16 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   refactor is now unblocked. Verified after the merges: the CLI rebuilt from
   main (699d03d16) runs `components/` + `lib/` at **5152/0/0** — the dozen
   other PRs that merged alongside, several tightening validation, break
-  nothing here. Still open: EarthSciAST **#400** (`${VAR}` expansion in a Rust
-  ref, the last piece before this repo's EarthSciDiscretizations refs can move
-  from relative sibling paths to `${ESD_ROOT}` and resolve in CI).
+  nothing here. **Both of the EarthSciAST PRs opened from here have since merged
+  (2026-09-17): #400** (`${VAR}` expansion in every §4.7 ref, in all five
+  bindings, `b136a9b92`), which let this repo's EarthSciDiscretizations refs
+  move from relative sibling paths to `${ESD_ROOT}`, **and #401** (a coupling
+  library's refs name roles, not systems, `8ac536bf0`), which cleared the six
+  structural errors the `couplings/lib/` libraries reported. #401 picked up
+  three review commits (`cb2e955f2` pinning the full §10.10.2 occurrence
+  surface against false positives, plus a docs and a Go style commit) that were
+  not in the version opened from here. Nothing in EarthSciAST now blocks this
+  repo; the only open PR there is #361, which is not ours.
 - **EarthSciModels CI repairs, 2026-09-16.** Three failures that hit every
   EqWeFiC PR were that repo's own, failing on its `main` too. **PR #26**
   renames `era5.esm`'s temperature parameter, which was named `t` while the
@@ -1405,6 +1415,119 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     bindings iterate the un-expanded coupling the same way and are a follow-up.
     20 coupling tests and 733 library tests pass.
 
+    **EqWeather-SCM state document, 2026-09-17: the dynamics half runs, and the
+    binding constraint is cost, not `maxiters`.** Of the five prerequisites
+    listed above, (3) is done, (2) is confirmed already done, (4) is built and
+    measured and turns out not to be the lever, (1) is half built, and (5) is
+    deliberately not built because the reason given for it was wrong.
+
+    - **(1) State document — dynamics half only.**
+      `couplings/eqweather_scm_dynamics.esm` (45 edges, 31 equations, 15
+      assertions) closes D(u), D(v), D(w), D(φ′), D(θm), D(qv) over the five
+      WRF-ARW column-dynamics components and feeds the ODE state BACK into
+      geometry, vertical momentum, Coriolis, curvature and the sponge, so
+      heights, eta weights, the equation of state and the sponge reference
+      profiles are recomputed at every RHS evaluation. Mechanism: 14 additive
+      coupling-target parameters on the five components, lowered from the
+      `input_<x>` rewrite targets by five mount-edge libraries
+      `couplings/tests/scmstate_couple_*_inputs.esm`. Base-state fields (eta,
+      phb, alb, pb, u/v/t/z_base) stay on the dumped library — they are
+      genuinely time-invariant in this run. Closing the loop changes no bit of
+      the RHS: the derivative test reproduces `scm_dynamics_column.esm`'s
+      references at its tolerances, plus dφ/dt = g w to 1e-12.
+      `WRFMoistThetaTendency` is now mounted in `couplings/scm_physics_column.esm`
+      and driven by that assembly's own `rth_phys_sum` and YSU `rqvblten`; the
+      assembly exposes `dtheta_m_dt_phys`, which is what D(θm) must take,
+      because the physics suite's own output is a DRY θ tendency.
+      **Not done:** the two halves are not mounted in one document.
+    - **(2) Geometry → physics: verified complete.** Audited both geometry
+      couplings; nothing geometric still comes from a dumped profile library.
+      What is still dumped is *state* (θ, u, v, q, cloud, psfc), which is item
+      (1)'s remaining work.
+    - **(3) Solar geometry: done.** `couplings/solar_diurnal.esm` supplies the
+      clock (`xtime = xtime0 + t/60`, `julian = julian0 + t/86400`), mounts
+      `WRFSolarGeometry` behind it and reads coszen/solcon off ONE 58 h
+      integration at the 13 WRF steps the component's regime tests pin,
+      including the three sunrise/sunset crossings: 26/26 at the component's
+      own tolerances, not loosened. With every tolerance set to abs 0, 20 of 26
+      agree with WRF to better than 1e-6 relative; the six that do not are the
+      crossings, largest absolute residual 8.3e-7 (xtime 2510), i.e. WRF's
+      REAL*4 zenith cosine (N69, 7.7e-7), not the clock — the REAL*4 `julian`
+      differs from `julian0 + t/86400` by at most 2.0e-5 d over 58 h, worth
+      2.7e-7 in coszen.
+    - **(4) Float64-balanced initial state: built, and it is not the lever.**
+      Recipe and numbers in **N70**. It annihilates the vertical
+      pressure-gradient term (4.23e-4 → 3.3e-11 m/s²) but cuts the acoustic
+      ringing only 27 %, and by t = 600 s the balanced and unbalanced columns
+      have the same max|dw/dt| to 2 %. The mode is permanent and equation-level.
+    - **(5) Checkpointed ≤6 h windows: not built, and the stated reason was
+      wrong.** The pinned `maxiters` never triggered in any run: gap (s) is not
+      what stops a 24 h span. The dynamics half alone is stable and expensive —
+      18.0 s wall for a 60 s span, 164.9 s for 600 s, ≈0.27 s of wall per
+      simulated second, so 24 h of the *dynamics half alone* is ≈6.6 h — with
+      max|w| going 7.41e-4 → 9.60e-4 → 9.35e-4 m/s over 0/60/600 s and
+      max|dw/dt| FALLING 4.23e-4 → 3.13e-4. Window length is therefore a cost
+      decision, not a solver-failure one.
+
+    **The unmeasured number that decides 3.1's feasibility.** One single-step
+    evaluation of the nine-component physics column costs 86.35 s end to end
+    against 0.15 s for the five-component dynamics column (`./esm validate` of
+    the physics column is 3.18 s, so ≈83 s is interpreter build + solve +
+    assertions). **One-time interpreter build has not been separated from
+    per-RHS-evaluation cost**, and until it is, nothing about a 24 h full-column
+    integration is decidable: if per-evaluation cost is near 86 s the run is out
+    of reach by orders of magnitude and the acceptance test needs a different
+    execution path, not smaller windows. This is the next measurement to make.
+
+    **Acceptance criteria not yet measured** — no 24 h run exists. For scale,
+    the reference signal from `scm_ref_traj`: θ changes by 2.811 K (Linf) over
+    24 h, so the 0.5 K criterion is 18 % of the signal; q_v's relative L2 change
+    over the column is 0.377, so 5 % is 13 % of it; the lowest level goes
+    u 3.00 → 4.23 and v −9.00 → −4.29 m/s. At step 1410 the physics D(θm) is
+    3.80e-4 K/s against the dynamics' 1.02e-5, i.e. **the dynamics half alone
+    reproduces ~2 % of the θm tendency**; D(u) runs the other way, dynamics
+    4.25e-4 against PBL 2.76e-4.
+
+    **Still missing for the full state document:** ~19 state coupling-target
+    parameters that do not exist yet (YSU `theta/u/v/qv/qc/qi_in`; Dudhia
+    `qv/qc/qr/qi/qs/qg_in`; RRTM column `qv/qc/qr/qi/qs_in`, `cldfra_in`; slab
+    `T_s_in`) plus their mount-edge libraries; and **a component that does not
+    exist anywhere: `cal_cldfra`**. RRTM's `cldfra` comes from a dump today and
+    nothing in this repo or `../EarthSciModels/components` computes it; with
+    `icloud = 1` WRF diagnoses it from RH in `phys/module_radiation_driver.F`.
+    Until it exists, cloud fraction in a running column is prescribed.
+    Easy win not taken: the same θm wiring for
+    `couplings/scm_physics_column_night.esm` (conversion dumps exist at steps
+    1, 60, 300, 900, 1410, 2160, 3000).
+
+    **New EarthSciAST gaps found, repros under `data/eqwefic/phase3_probes/`:**
+    (v) array `initial_conditions` **do** work in the Rust CLI for a shaped
+    unknown (row-major nested array, esm-spec §11.4 run-time overrides) — the
+    earlier claim that the schema restricts them to scalars is **stale**, and
+    the state document's three tests rely on it (`repro_wrt_default_shaped_ok.esm`);
+    (w) the inline runner cannot integrate an **algebraic-only** model —
+    `Exceeded maximum number of nonlinear solver failures` at t = 0 even for
+    `y ~ a·t` (`repro_algebraic_only_no_integration.esm`), which is why
+    `solar_diurnal.esm` carries a TOA-insolation integral as its ODE state;
+    (x) `D` with `wrt` omitted (spec §4.2: absent means `t`) works for a
+    **shaped** state but fails for a **scalar** one with `State variable 'X' has
+    no D(X, t) = ... equation in flat.equations` — always write `"wrt": "t"`
+    (`repro_wrt_default_scalar.esm` / `_fixed.esm`);
+    (y) a bare subsystem mount name (`wrf.g`) does not resolve inside an
+    assertion `reference` expression, only the model-qualified form does, which
+    is why `eqweather_scm_dynamics.esm` writes `EqWeatherScmDynamics.wrf.g`
+    against CLAUDE.md's bare-name rule — the drawback that rule prevents does
+    not apply to a top-level coupling document, which is never re-mounted, but
+    it is a deviation and the gap should be filed;
+    (z) an `Assertion` admits no `description` field (schema
+    `additionalProperties: false`), so per-assertion provenance has to go in the
+    test description.
+
+    **Stale caveat dropped:** `wrf_solar_geometry.esm` mounts fine under a key
+    that is not its own model name — the file carries no model-qualified
+    constant reference, so the note above requiring `WRFSolarGeometry` as the
+    mount key no longer applies.
+
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
     wind, pressure, and temperature plus the numerics that step them. Per the
@@ -1545,6 +1668,36 @@ never `couplings/`. Fixed in Rust, Python, Julia and TypeScript with a role-base
 check (not a skip, so role typos are still caught, and unlike the system path it
 also checks `to`). **Go was not affected** — `isLibraryDocument` already
 short-circuits — so the Go patch was reverted rather than left as dead code.
+
+## 6.10 The `faq` node tag (2026-09-17)
+
+The unified query node was renamed `aggregate` → `faq` (Functional Aggregate
+Query) at esm 1.1.0; `aggregate` is a deprecated alias, normalized on load with
+a warning, and **removed at 2.0.0**
+(`../EarthSciAST/docs/content/rfcs/faq-node-rename.md`). This repo migrated ahead
+of the removal: **193 files, 2771 occurrences**, plus **183 version bumps**
+(`"esm": "1.0.0"` → `"1.1.0"`), because a document that spells `faq` while
+declaring a version below 1.1.0 is a hard structural error
+(`faq_version_too_old`), the gate reading the document as authored. Zero
+transitive bumps were needed: no document lowers to `faq` only through an
+imported template. `arrayop` — removed outright at 0.8.0, and rejected by name
+rather than falling through to the open operator tier — was already absent.
+Assertion counts did not move.
+
+`"op"` is the only key in this repo that ever took `"aggregate"` as a value, so
+the rename was textually unambiguous. Seven prose uses of the word survive in
+`description` fields ("ice aggregates to snow", "written as an aggregate minimum
+over the level index", …); several now describe a node the file spells `faq`,
+which is stale wording to fix when those files are next edited for other reasons
+— rewriting them is authoring, not a wire-tag rename.
+
+**The deprecation warnings do not go to zero from here, and the reason matters.**
+267 remain (70 components+lib, 197 couplings) with **zero originating in
+EqWeFiC**. They come from `{ref}`-loaded siblings — `../EarthSciDiscretizations`
+carries **2022 files / 5753 occurrences** still on the alias, `../EarthSciModels`
+2 files / 3 — and the alias check fires at each binding's single wire boundary,
+which every document a load touches passes through. So ESD, not this repo, is the
+real exposure at esm 2.0.0, and clearing it needs a migration PR there.
 
 ## 7. Risks and mitigations
 
