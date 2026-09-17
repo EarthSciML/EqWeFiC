@@ -472,6 +472,33 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   work (`fire_wind_wrffire`, `fire_flux_to_atmosphere_wrffire`, the WENO5/ENO1
   and driver regimes) will follow as a separate PR once ESD #34 and #37 merge,
   since it adds those dependencies.
+- **Upstream unblocking, 2026-09-16.** All four PRs opened from here merged:
+  EarthSciAST **#362** (Rust `maxiters` uncapped by default — the 24 h
+  single-column test is no longer capped, retiring the ≤6 h window workaround),
+  **#369** (a `coupling_import` ref resolves against the importing document),
+  **#370** (a coupling library's role-bound edges are validated, merged as "in
+  all five bindings" after review extended the Rust+TS change), and **#371**
+  (the `Cargo.lock` for the crate that ships `esm`, which unbreaks
+  EarthSciModels' `rust-cli-inline-tests` job). #369 + #370 were the two
+  prerequisites for the pairwise-coupling-library composition method, so that
+  refactor is now unblocked. Verified after the merges: the CLI rebuilt from
+  main (699d03d16) runs `components/` + `lib/` at **5152/0/0** — the dozen
+  other PRs that merged alongside, several tightening validation, break
+  nothing here. Still open: EarthSciAST **#400** (`${VAR}` expansion in a Rust
+  ref, the last piece before this repo's EarthSciDiscretizations refs can move
+  from relative sibling paths to `${ESD_ROOT}` and resolve in CI).
+- **EarthSciModels CI repairs, 2026-09-16.** Three failures that hit every
+  EqWeFiC PR were that repo's own, failing on its `main` too. **PR #26**
+  renames `era5.esm`'s temperature parameter, which was named `t` while the
+  same model's equations use `t` as time, so the file failed to load in every
+  Python gate run. **PR #27** makes its Julia gate call EarthSciAST's runner
+  instead of its own 565-line copy, which compiled each container alone and so
+  never received upstream #315 — `radm2.esm` goes **0 pass / 115 errors ->
+  825/0/0**, matching the Rust CLI; the same PR loads `OrdinaryDiffEqRosenbrock`
+  in `runtests.jl`, without which a document declaring `solver.stiffness =
+  "high"` silently stayed on the non-stiff solver and overflowed to -1.7e35
+  instead of failing loudly. The third, the `--locked` Rust job, is
+  EarthSciAST #371 above.
 - **Geometry refresh 2026-09-15.** #15–#21 each gained one commit syncing the
   geometry changes from EqWeFiC 9fca477: `lib/wrf_thermo.esm`'s three new 0D
   templates (all seven PRs carry it), YSU's `p_in`/`p_int_in`/`exner_in`/`ze_in`
