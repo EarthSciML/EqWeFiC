@@ -1472,6 +1472,35 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     `wrf.nc` came from WRF 4.3.3 with SFIRE, MYNN and RRTMG (N52) and is not a
     reference. Setup, builds and runs live under `data/eqwefic/lastchance/`.
 
+    **The run is one continuous job, not a restart chain (decided 2026-09-16).**
+    The chain was built (19 x 45 simulated minutes on `secondary`, whose wall
+    limit is 4 h) and held pending a burned-area check. That check passed --- a
+    5-minute run from the 16 Z `real.exe` output (job 10593079) put 7,011 fire
+    subgrid cells at non-zero `FIRE_AREA`, drew `FUEL_FRAC` down to 1.9e-16,
+    raised `GRNHFX` to 620 kW/m2 over 478 atmospheric cells and drove `RQVFRTEN`
+    in 10,415 of them, so fire, fire-to-atmosphere coupling and CFBM's own
+    `fire_output_*.nc` all work --- but reading the restart path for the chain
+    turned up **FORTRAN_BUGS.md B12: CFBM ignores `config_flags%restart`**. The
+    registry flags the whole fire state for restart and WRF does restore it into
+    `grid%*`, but the only copy runs `fire_state -> grid`, and `start_em.F:2290`
+    re-initializes `fire_state` unconditionally, so every segment boundary would
+    have reset the fire to unburned and re-fired the ignition (which is anchored
+    to the *segment* start). The chain would have produced 19 disjoint fires.
+
+    So the case runs as a single 14 h job on the `ctessum` partition (3 d wall
+    limit): `runs/templates/run_wrf_exe_ctessum.sbatch` with
+    `namelists/namelist.input.cont16` (`run_hours = 14`, no restarts), submitted
+    2026-09-16 as job 10593449 in `data/eqwefic/lastchance/runs/full`. Cost from
+    the 10593079 timings: the nest integrates at 164 s wall per simulated minute
+    (d01's recursive "Timing for main" covers all five domains), so 840 simulated
+    minutes is **~38.5 h wall on 40 cores, ~1,600 core-hours**, plus ~32 GB of
+    `wrfout` and `fire_output` files. Because CFBM writes `fire_output_*.nc`
+    every 600 s, a job that dies early still leaves every completed hour usable,
+    so the no-restart exposure degrades gracefully. Fixing B12 properly (export
+    `lfn_hist`, `fmc_g` and the `fire_*_old` fields, then seed `fire_state` from
+    the restored arrays when `config_flags%restart`) is worth doing in the
+    `ctessum-claude/WRF` fork, but is not on the critical path for this run.
+
 ## 6. Test and authoring conventions (normative; summarized in CLAUDE.md)
 
 - Tendencies are observeds; assert at `time: 0.0`. Trajectory assertions only
