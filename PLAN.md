@@ -1513,6 +1513,39 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   and which Fortran routine produced the values.
 - Metadata `references` cite the scheme paper and the Fortran file:line.
 
+## 6.9 Pairwise coupling libraries (2026-09-17)
+
+Strategy (e) of `data/eqwefic/design/assembly_composition.md` is implemented.
+`couplings/lib/` holds six libraries — `sfclayrev_ysu` (8 edges), `sfclayrev_slab`
+(2), `slab_ysu` (2), `dudhia_slab` (1), `rrtm_lw_slab` (1) and `rrtm_lw_chain`
+(35, four roles) — and the 15 assemblies import them instead of repeating the
+edges: **393 inline edges replaced by 25 imports, a net -2913 lines**. The
+duplication was larger than the design doc estimated (the RRTM longwave chain's
+35 edges were copy-pasted into nine assemblies). `INVENTORY.md` carries the
+catalogue. Still inline: the 118 column-state edges, a second family
+(`column_state_<scheme>`) that pins a naming convention for the state carrier
+rather than wiring two schemes.
+
+Two verification notes worth keeping. First, neither `esm diff` nor
+`esm coupling-analysis` can show that an import and the edges it expands to are
+equivalent — both compare the DOCUMENT, so an import always reads as different.
+The usable proof is a negative control: delete one edge from inside a library and
+confirm the importing assembly's Fortran-dump tests fail. Second, the refactor
+and the CLI fix below landed together, so the refactor was re-measured with the
+UNCHANGED binary (631/0/0, identical to baseline) before the new binary was
+installed, keeping the two claims separable.
+
+**EarthSciAST PR #401** came out of this. A coupling library's `coupling[].from`
+/`.to` prefixes name `coupling_roles`, but four of the five bindings resolved them
+against a symbol table of models — which a library has none of — so every
+well-formed library was rejected, including EarthSciModels' own
+`fastjx_superfast.esm`, `fastjx_geoschem.esm` and `wildlandfire_behavior.esm`.
+That is why EarthSciModels CI sweeps `components lib registered_functions` and
+never `couplings/`. Fixed in Rust, Python, Julia and TypeScript with a role-based
+check (not a skip, so role typos are still caught, and unlike the system path it
+also checks `to`). **Go was not affected** — `isLibraryDocument` already
+short-circuits — so the Go patch was reverted rather than left as dead code.
+
 ## 7. Risks and mitigations
 
 | Risk | Mitigation |
