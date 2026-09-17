@@ -66,3 +66,30 @@ Status values: `not started` · `instrumented` · `stub` (tests written, on this
 | Subassembly: geometry-driven physics | WRFColumnGeometry → YSU, Dudhia SW, RRTM column and heating (via `<x>_in`), and → sfclayrev and slab (lowest-layer indexing); WRFSolarGeometry → Dudhia | geometry dumps (fork 83347b2) + suite dumps, steps 1410 and 900 | `couplings/` | stub with tests (2026-09-15): `geometry_radiation_column{,_night}.esm` 2 × 14/14, `geometry_surface_pbl_column{,_night}.esm` 2 × 41/41 |
 | use_theta_m tendency conversion | physics dθ/dt, dqv/dt → dθm/dt | `dyn_em/module_big_step_utilities_em.F:6674-6707` | — | physics (2026-09-15): `components/atmospheric_dynamics/wrf_arw/moist_theta_tendency.esm`, 28/28 `./esm test`, 7 em_scm_xy steps from the `theta_m_conv` hook (fork 1b4b556); all 59 layers converted (k_end = kde); float64 replay ≤ 7e-11 K/s; conversion effect up to 5.8e-4 K/s; not yet wired |
 | `grids/wrf_arw_c/*` | C-grid mass-coordinate grid, 5th/3rd-order upwind advection with PD limiter, divergence damping, metric terms | `dyn_em/module_advect_em.F`, Ch. 3 | EarthSciDiscretizations | not started |
+
+## Pairwise coupling libraries (`couplings/lib/`)
+
+Adopted 2026-09-15 (strategy (e) in `data/eqwefic/design/assembly_composition.md`): each
+interacting pair of schemes has its wiring authored once as an importable coupling library
+(esm-spec §10.9, `coupling_roles` + `coupling_import`), and the assemblies that contain the
+pair import it instead of repeating the edges. This is the compatibility matrix WRF keeps in
+`module_check_a_mundo.F`: a row exists only for a pair that has actually been wired and tested.
+Swapping a scheme changes one mount and the imports naming it.
+
+| Library | Roles | Edges | Wires | Tested by |
+|---|---|---|---|---|
+| `sfclayrev_ysu.esm` | Sfc, Pbl | 8 | sfclayrev → YSU: `ust`, `br`, `wspd`, `u10`, `v10`, `znt`, and `fm`/`fh` → YSU's `psim`/`psih` (the profile functions, WRF passes FM as PSIM) | `surface_pbl_column`, `physics_column{,_night}`, `geometry_surface_pbl_column{,_night}`, `scm_physics_column{,_night}` |
+| `sfclayrev_slab.esm` | Sfc, Lsm | 2 | sfclayrev → slab: `flhc`, `flqc`. Scheme-specific — Noah/Noah-MP take a different set and get their own library | `surface_soil_column`, `geometry_surface_pbl_column{,_night}`, `scm_physics_column{,_night}` |
+| `slab_ysu.esm` | Lsm, Pbl | 2 | slab → YSU: `hfx`, `qfx`. WRF's sfclayrev → slab → YSU order makes these the values YSU sees | `geometry_surface_pbl_column{,_night}`, `scm_physics_column{,_night}` |
+| `dudhia_slab.esm` | Sw, Lsm | 1 | Dudhia → slab: `gsw` (net surface shortwave) | `scm_physics_column{,_night}` |
+| `rrtm_lw_slab.esm` | Heat, Lsm | 1 | RRTM → slab: `glw` (downward surface longwave) | `scm_physics_column{,_night}` |
+| `rrtm_lw_chain.esm` | Col, Setcoef, GasOpt, Rtrn | 35 | the RRTM longwave internal chain: MM5ATM column → SETCOEF → gas optics → RTRN. An internal chain, not a scheme pair: its external surface is the same however the stages are split, which is what makes bundling it safe | `rrtm_lw_column{,_call1,_call240,_call1440,_call2400}`, `radiation_column{,_night}`, `physics_column{,_night}`, `scm_physics_column{,_night}` |
+
+Not yet factored: the column-state ↔ scheme edges (`ScmPhysicsColumn` ↔ Sfc 52, ↔ Lsm 30,
+↔ Pbl 16, ↔ RRTM 12, ↔ Sw 8). These pin a naming convention for the state carrier rather than
+wiring two schemes, so they are a second family of libraries (`column_state_<scheme>`).
+
+Verification: a library's edges are proved load-bearing by deleting one and confirming the
+importing assembly's Fortran-dump tests fail — `esm diff` and `esm coupling-analysis` compare
+documents, not flattened forms, so neither can show that an import and the edges it expands to
+are equivalent.
