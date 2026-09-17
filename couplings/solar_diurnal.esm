@@ -1,0 +1,484 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "SolarDiurnal",
+  "description": "PLAN.md 3.1 item (3): time-dependent solar geometry. WRFSolarGeometry (components/atmospheric_radiation/wrf_solar/) is an algebraic function of grid%xtime and grid%julian, and every one of its 63 component assertions evaluates it at ONE regime with xtime supplied as a parameter override. That is not what EqWeather-SCM needs: over a 24 h run the zenith angle has to follow the integrator's clock, crossing sunset and sunrise while the state evolves. This document supplies the clock -- xtime = xtime0 + t/60 and julian = julian0 + t/86400 -- and mounts the component behind it, so csza and solcon become functions of simulation time and can be handed to Dudhia shortwave (its csza/solcon are plain parameters; couplings/geometry_radiation_column.esm already makes that edge at a fixed time). The test integrates ONE 58 h trajectory of the em_scm_xy reference column (1999-10-22 19:00 UTC, 37.6 N, 96.7 W, radt = 0) and reads the zenith cosine and the solar constant off it at the 13 WRF steps the component's own tests pin, including the four sunset/sunrise crossings (xtime 272/273, 1070/1071, 2510/2511) and the two days of the reference run. Reference values: WRF 4.8 em_scm_xy run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, data/eqwefic/scm_ref), dumped by fork commit 1b4b556; tolerances are the component's own (rel 1e-5 away from the crossings, abs 2e-6 at them, both set by the REAL*4 precision notes N68/N69) and are NOT loosened here -- the driving clock introduces no error of its own beyond the REAL*4 julian difference quantified in the julian description. The ODE state insolation_toa exists because the inline-test runner cannot integrate an algebraic-only system (measured: 'Exceeded maximum number of nonlinear solver failures' at t = 0); it is the time integral of the top-of-atmosphere flux, so it costs nothing and says something. MEASURED, with every tolerance set to abs 0: 20 of the 26 assertions agree with WRF to better than 1e-6 RELATIVE; the six that do not are the six coszen crossings, whose largest absolute residual is 8.3e-7 (xtime 2510, -0.00330821 against -0.00330904), so the abs 2e-6 bound carries 2.4x margin. That residual is WRF's REAL*4 zenith cosine (N68/N69), not the clock: the same component reproduces the same regimes to rel 1e-5 when xtime is a parameter override.",
+  "license": "MIT",
+  "tags": [
+   "assembly",
+   "wrf",
+   "radiation",
+   "solar",
+   "eqweather-scm"
+  ]
+ },
+ "models": {
+  "Solar": {
+   "ref": "../components/atmospheric_radiation/wrf_solar/wrf_solar_geometry.esm"
+  },
+  "SolarDiurnal": {
+   "variables": {
+    "xtime0": {
+     "type": "parameter",
+     "units": "min",
+     "default": 0.0,
+     "description": "WRF grid%xtime at the start of the run, minutes. 0 for the em_scm_xy reference run, whose first radiation call (kernel call 1, WRF step 1) is at xtime = 0."
+    },
+    "julian0": {
+     "type": "parameter",
+     "units": "d",
+     "default": 294.7916564941406,
+     "description": "WRF grid%julian at the start of the run: 1999-10-22 19:00 UTC = day 294 + 19/24, as the REAL*4 model carries it."
+    },
+    "gmt0": {
+     "type": "parameter",
+     "units": "h",
+     "default": 19.0,
+     "description": "UTC hour of the run start (WRF grid%gmt)."
+    },
+    "xlat0": {
+     "type": "parameter",
+     "units": "deg",
+     "default": 37.599998474121094,
+     "description": "Latitude of the reference column."
+    },
+    "xlong0": {
+     "type": "parameter",
+     "units": "deg",
+     "default": -96.69999694824219,
+     "description": "Longitude of the reference column."
+    },
+    "radt0": {
+     "type": "parameter",
+     "units": "min",
+     "default": 0.0,
+     "description": "Radiation call interval (namelist radt); 0 in the reference run, so radiation runs every step and calc_coszen is evaluated at xtime itself."
+    },
+    "xtime": {
+     "type": "unknown",
+     "units": "min",
+     "description": "Model time in minutes, xtime0 + t/60. THIS is the time dependence PLAN.md 3.1 item (3) asks for: the solar geometry is driven by the integrator's own clock, not by a per-regime parameter override."
+    },
+    "julian": {
+     "type": "unknown",
+     "units": "d",
+     "description": "Day of year, julian0 + t/86400. WRF recomputes it from the model clock in REAL*4 each step; the difference from this exact form is at most 2.0e-5 d over the 58 h span (measured against the dumped grid%julian at xtime = 3480), which moves the declination by 3.5e-7 rad and coszen by 2.7e-7 -- below the crossing tolerance of this document's assertions."
+    },
+    "gmt": {
+     "type": "unknown",
+     "units": "h",
+     "description": "gmt coupled into the solar geometry."
+    },
+    "xlat": {
+     "type": "unknown",
+     "units": "deg",
+     "description": "Latitude coupled into the solar geometry."
+    },
+    "xlong": {
+     "type": "unknown",
+     "units": "deg",
+     "description": "Longitude coupled into the solar geometry."
+    },
+    "radt": {
+     "type": "unknown",
+     "units": "min",
+     "description": "radt coupled into the solar geometry."
+    },
+    "coszen_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Coupling target: receives Solar.coszen."
+    },
+    "solcon_in": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Coupling target: receives Solar.solcon."
+    },
+    "coszen": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Cosine of the solar zenith angle at the current model time (WRF coszen / the csza Dudhia receives)."
+    },
+    "solcon": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Eccentricity-corrected solar constant at the current model time (WRF solcon)."
+    },
+    "insolation_toa": {
+     "type": "unknown",
+     "units": "J/m^2",
+     "description": "Time integral of the top-of-atmosphere downward shortwave, solcon max(coszen, 0). The ODE state of this document: it makes the diurnal cycle a trajectory rather than a table of independent evaluations, so the assertions below are read off ONE 58 h integration, and it is a physical diagnostic in its own right (the daily insolation of the reference column)."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "xtime",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "xtime0",
+       {
+        "op": "/",
+        "args": [
+         "t",
+         60.0
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "julian",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "julian0",
+       {
+        "op": "/",
+        "args": [
+         "t",
+         86400.0
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "gmt",
+     "rhs": "gmt0"
+    },
+    {
+     "lhs": "xlat",
+     "rhs": "xlat0"
+    },
+    {
+     "lhs": "xlong",
+     "rhs": "xlong0"
+    },
+    {
+     "lhs": "radt",
+     "rhs": "radt0"
+    },
+    {
+     "lhs": "coszen",
+     "rhs": "coszen_in"
+    },
+    {
+     "lhs": "solcon",
+     "rhs": "solcon_in"
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "insolation_toa"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "*",
+      "args": [
+       "solcon",
+       {
+        "op": "max",
+        "args": [
+         "coszen",
+         0.0
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "insolation_toa"
+      ]
+     },
+     "rhs": 0.0
+    }
+   ],
+   "tests": [
+    {
+     "id": "solar_diurnal_scm_58h",
+     "description": "One 58 h integration of the em_scm_xy reference column's solar geometry, sampled at the 13 WRF steps the component's own regime tests pin. Assertion pairs (coszen, then solcon) in order, as (test id, xtime in minutes, assertion time in seconds): solar_scm_step1 xtime=0 t=0; solar_scm_step273 xtime=272 t=16320; solar_scm_step274 xtime=273 t=16380; solar_scm_step300 xtime=299 t=17940; solar_scm_step720 xtime=719 t=43140; solar_scm_step1071 xtime=1070 t=64200; solar_scm_step1072 xtime=1071 t=64260; solar_scm_step1410 xtime=1409 t=84540; solar_scm_step1501 xtime=1500 t=90000; solar_scm_step2161 xtime=2160 t=129600; solar_scm_step2511 xtime=2510 t=150600; solar_scm_step2512 xtime=2511 t=150660; solar_scm_step3481 xtime=3480 t=208800. The four crossings are xtime 272/273 (first sunset), 1070/1071 (first sunrise) and 2510/2511 (second sunrise); they carry abs 2e-6 rather than rel 1e-5 because coszen passes through zero there.",
+     "time_span": {
+      "start": 0,
+      "end": 208800
+     },
+     "assertions": [
+      {
+       "variable": "coszen",
+       "time": 0.0,
+       "expected": 0.6286112070083618,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 0.0,
+       "expected": 1384.3160400390625,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 16320.0,
+       "expected": 0.002364113926887512,
+       "tolerance": {
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 16320.0,
+       "expected": 1384.46435546875,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 16380.0,
+       "expected": -0.0009698867797851562,
+       "tolerance": {
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 16380.0,
+       "expected": 1384.4649658203125,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 17940.0,
+       "expected": -0.08831901103258133,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 17940.0,
+       "expected": 1384.47900390625,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 43140.0,
+       "expected": -0.8873246312141418,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 43140.0,
+       "expected": 1384.707763671875,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 64200.0,
+       "expected": -1.8730759620666504e-05,
+       "tolerance": {
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 64200.0,
+       "expected": 1384.8985595703125,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 64260.0,
+       "expected": 0.0033059120178222656,
+       "tolerance": {
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 64260.0,
+       "expected": 1384.899169921875,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 84540.0,
+       "expected": 0.6393358707427979,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 84540.0,
+       "expected": 1385.0826416015625,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 90000.0,
+       "expected": 0.5555570125579834,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 90000.0,
+       "expected": 1385.1319580078125,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 129600.0,
+       "expected": -0.8890611529350281,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 129600.0,
+       "expected": 1385.489990234375,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 150600.0,
+       "expected": -0.0033090412616729736,
+       "tolerance": {
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 150600.0,
+       "expected": 1385.67919921875,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 150660.0,
+       "expected": 1.1026859283447266e-05,
+       "tolerance": {
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 150660.0,
+       "expected": 1385.6796875,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "coszen",
+       "time": 208800.0,
+       "expected": -0.8723917007446289,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "solcon",
+       "time": 208800.0,
+       "expected": 1386.20263671875,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "coupling": [
+  {
+   "type": "variable_map",
+   "from": "SolarDiurnal.xtime",
+   "to": "Solar.xtime",
+   "transform": "param_to_var",
+   "description": "model clock / column location: xtime into the solar geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "SolarDiurnal.julian",
+   "to": "Solar.julian",
+   "transform": "param_to_var",
+   "description": "model clock / column location: julian into the solar geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "SolarDiurnal.gmt",
+   "to": "Solar.gmt",
+   "transform": "param_to_var",
+   "description": "model clock / column location: gmt into the solar geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "SolarDiurnal.xlat",
+   "to": "Solar.xlat",
+   "transform": "param_to_var",
+   "description": "model clock / column location: xlat into the solar geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "SolarDiurnal.xlong",
+   "to": "Solar.xlong",
+   "transform": "param_to_var",
+   "description": "model clock / column location: xlong into the solar geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "SolarDiurnal.radt",
+   "to": "Solar.radt",
+   "transform": "param_to_var",
+   "description": "model clock / column location: radt into the solar geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "Solar.coszen",
+   "to": "SolarDiurnal.coszen_in",
+   "transform": "param_to_var",
+   "description": "coszen back into the driving document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Solar.solcon",
+   "to": "SolarDiurnal.solcon_in",
+   "transform": "param_to_var",
+   "description": "solcon back into the driving document"
+  }
+ ]
+}
