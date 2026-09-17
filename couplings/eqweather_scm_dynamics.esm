@@ -1,0 +1,3131 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "EqWeatherScmDynamics",
+  "description": "EqWeather-SCM, dynamics half: the STATE document of PLAN.md 3.1 item (1) for the five WRF-ARW column-dynamics components. couplings/scm_dynamics_column.esm evaluates their tendencies on a frozen column read from a WRF dump; this document makes the column the solution of an ODE -- D(u), D(v), D(w), D(phi'), D(theta_m) and D(q_v) are the summed component tendencies, and the state goes back into WRFColumnGeometry, WRFVerticalMomentum, WRFPerturbationCoriolis, WRFCurvature and WRFRayleighDamping through variable_map param_to_var edges, so heights, eta weights, the equation of state and the sponge's reference profiles are all recomputed from the evolving state at every right-hand-side evaluation. The prognostic set is WRF's, less the column mass mu' (constant here: a horizontally uniform periodic column has no mass-flux divergence) and less the soil temperature and TSK, which belong to the physics half. Tendencies that the PHYSICS half supplies are absent by construction and are named in each D equation's variable description: D(q_v) is identically zero here and picks up YSU's RQVBLTEN and the microphysics sources when the physics components are mounted; D(theta_m) is the sponge alone and picks up conv_t_tendf_to_moist's conversion of the physics theta and q_v tendencies (components/atmospheric_dynamics/wrf_arw/moist_theta_tendency.esm); D(u) and D(v) pick up RUBLTEN/RVBLTEN. So a run of THIS document is not a run of EqWeather-SCM and is not expected to follow the em_scm_xy trajectory: what it pins is that the loop closes and that closing it changes no bit of the right-hand side, which the inline test measures against the same step-1410 references couplings/scm_dynamics_column.esm asserts. KNOWN LIMIT, measured: integrating this system is dominated by the vertical acoustic mode. WRF removes it with the forward-backward acoustic sub-step and the off-centring parameter epssm; nothing here does, so the initial state's departure from float64 hydrostatic balance (WRF's state is REAL*4) rings at the column's acoustic frequency. See PLAN.md 3.1 items (4) and (5).",
+  "license": "MIT",
+  "tags": [
+   "assembly",
+   "wrf",
+   "dynamics",
+   "column",
+   "state",
+   "eqweather-scm"
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {
+   "type": "integer",
+   "default": 59,
+   "description": "Number of model layers, bound into every mount edge; 59 is the em_scm_xy reference column."
+  }
+ },
+ "models": {
+  "Geo": {
+   "ref": "../components/atmospheric_dynamics/wrf_arw/column_geometry.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/scmdyn_step1410_state_inputs.esm",
+     "only": [
+      "input_eta_w",
+      "input_phi_b",
+      "input_q_t",
+      "input_alpha_b",
+      "input_p_b"
+     ]
+    },
+    {
+     "ref": "./tests/scmstate_couple_geo_inputs.esm"
+    }
+   ]
+  },
+  "Vm": {
+   "ref": "../components/atmospheric_dynamics/wrf_arw/vertical_momentum.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/scmdyn_step1410_state_inputs.esm",
+     "only": [
+      "input_eta_w",
+      "input_q_t"
+     ]
+    },
+    {
+     "ref": "./tests/scmdyn_couple_vm_inputs.esm"
+    },
+    {
+     "ref": "./tests/scmstate_couple_vm_inputs.esm"
+    }
+   ]
+  },
+  "Cor": {
+   "ref": "../components/atmospheric_dynamics/wrf_arw/perturbation_coriolis.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/scmdyn_step1410_state_inputs.esm",
+     "only": [
+      "input_u_base",
+      "input_v_base",
+      "input_z_base"
+     ]
+    },
+    {
+     "ref": "./tests/scmdyn_couple_cor_inputs.esm"
+    },
+    {
+     "ref": "./tests/scmstate_couple_cor_inputs.esm"
+    }
+   ]
+  },
+  "Cur": {
+   "ref": "../components/atmospheric_dynamics/wrf_arw/earth_curvature.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/scmdyn_couple_cur_inputs.esm"
+    },
+    {
+     "ref": "./tests/scmstate_couple_cur_inputs.esm"
+    }
+   ]
+  },
+  "Ray": {
+   "ref": "../components/atmospheric_dynamics/wrf_arw/rayleigh_damping.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/scmdyn_step1410_state_inputs.esm",
+     "only": [
+      "input_u_base",
+      "input_v_base",
+      "input_theta_base",
+      "input_z_base"
+     ]
+    },
+    {
+     "ref": "./tests/scmdyn_couple_ray_inputs.esm"
+    },
+    {
+     "ref": "./tests/scmstate_couple_ray_inputs.esm"
+    }
+   ]
+  },
+  "EqWeatherScmDynamics": {
+   "subsystems": {
+    "wrf": {
+     "ref": "../lib/wrf_constants.esm"
+    }
+   },
+   "variables": {
+    "mu_p0": {
+     "type": "parameter",
+     "units": "Pa",
+     "description": "Prescribed: Perturbation dry column mass mu' (WRF mu). Constant for the whole em_scm_xy run: the column is horizontally uniform and periodic, so the mass-continuity equation has no flux divergence to drive it.",
+     "default": -97.75
+    },
+    "mu_p": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Perturbation dry column mass mu' (WRF mu). Constant for the whole em_scm_xy run: the column is horizontally uniform and periodic, so the mass-continuity equation has no flux divergence to drive it. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "mu_b0": {
+     "type": "parameter",
+     "units": "Pa",
+     "description": "Prescribed: Base-state dry column mass (WRF mub).",
+     "default": 79363.078125
+    },
+    "mu_b": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Base-state dry column mass (WRF mub). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "p_top0": {
+     "type": "parameter",
+     "units": "Pa",
+     "description": "Prescribed: Lid pressure (WRF p_top).",
+     "default": 17761.310546875
+    },
+    "p_top": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Lid pressure (WRF p_top). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "f0": {
+     "type": "parameter",
+     "units": "1/s",
+     "description": "Prescribed: Coriolis parameter (WRF f).",
+     "default": 8.898477972252294e-05
+    },
+    "f": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Coriolis parameter (WRF f). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "e0": {
+     "type": "parameter",
+     "units": "1/s",
+     "description": "Prescribed: Horizontal Coriolis parameter (WRF e).",
+     "default": 0.00011554911179700866
+    },
+    "e": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Horizontal Coriolis parameter (WRF e). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "sina0": {
+     "type": "parameter",
+     "units": "1",
+     "description": "Prescribed: Sine of the grid rotation.",
+     "default": 0.0
+    },
+    "sina": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Sine of the grid rotation. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "cosa0": {
+     "type": "parameter",
+     "units": "1",
+     "description": "Prescribed: Cosine of the grid rotation.",
+     "default": 1.0
+    },
+    "cosa": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Cosine of the grid rotation. Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "dampcoef0": {
+     "type": "parameter",
+     "units": "1/s",
+     "description": "Prescribed: Rayleigh damping coefficient (namelist dampcoef).",
+     "default": 0.003000000026077032
+    },
+    "dampcoef": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Rayleigh damping coefficient (namelist dampcoef). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "zdamp0": {
+     "type": "parameter",
+     "units": "m",
+     "description": "Prescribed: Rayleigh damping depth (namelist zdamp).",
+     "default": 5000.0
+    },
+    "zdamp": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Rayleigh damping depth (namelist zdamp). Coupling source (variable_map param_to_var) for the mounted components."
+    },
+    "u": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Zonal wind on the layers (WRF u). ODE state of this document.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "v": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Meridional wind on the layers (WRF v). ODE state.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "w": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Vertical velocity on the interfaces (WRF w). ODE state.",
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "phi_p": {
+     "type": "unknown",
+     "units": "m^2/s^2",
+     "description": "Perturbation geopotential on the interfaces (WRF ph). ODE state.",
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "theta_m": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Moist potential temperature theta (1 + (R_v/R_d) q_v) on the layers (WRF t + t0 with use_theta_m = 1). ODE state.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "qv": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Water-vapour mixing ratio on the layers. ODE state; the dynamics half of EqWeather-SCM contributes no tendency to it (see the dqv_dt equation), so it is constant over a run of THIS document and becomes a genuine prognostic only once the physics half supplies YSU's RQVBLTEN and the microphysics' source terms.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "cor_du_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Cor.du_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev"
+     ]
+    },
+    "cur_du_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Cur.du_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev"
+     ]
+    },
+    "ray_du_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Ray.du_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev"
+     ]
+    },
+    "cor_dv_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Cor.dv_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev"
+     ]
+    },
+    "cur_dv_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Cur.dv_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev"
+     ]
+    },
+    "ray_dv_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Ray.dv_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev"
+     ]
+    },
+    "vm_dw_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Vm.dw_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "cor_dw_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Cor.dw_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "cur_dw_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Cur.dw_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "ray_dw_in": {
+     "type": "parameter",
+     "units": "m/s^2",
+     "description": "Coupling target: Receives Ray.dw_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "ray_dth_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "description": "Coupling target: Receives Ray.dtheta_m_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev"
+     ]
+    },
+    "vm_dphi_in": {
+     "type": "parameter",
+     "units": "m^2/s^3",
+     "description": "Coupling target: Receives Vm.dphi_dt.",
+     "default": 0.0,
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "geo_p_p_in": {
+     "type": "parameter",
+     "units": "Pa",
+     "description": "Coupling target: Receives Geo.p_p.",
+     "default": 0.0,
+     "shape": [
+      "lev"
+     ]
+    },
+    "du_dt": {
+     "type": "unknown",
+     "units": "m/s^2",
+     "description": "Total tendency of u from the dynamics half: perturbation Coriolis + Earth curvature + Rayleigh sponge.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "dv_dt": {
+     "type": "unknown",
+     "units": "m/s^2",
+     "description": "Total tendency of v from the dynamics half.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "dw_dt_nonpg": {
+     "type": "unknown",
+     "units": "m/s^2",
+     "description": "Non-pressure part of the w tendency: Coriolis + curvature + sponge.",
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "dw_dt": {
+     "type": "unknown",
+     "units": "m/s^2",
+     "description": "Total tendency of w: vertical pressure gradient and buoyancy + dw_dt_nonpg.",
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "dtheta_m_dt": {
+     "type": "unknown",
+     "units": "K/s",
+     "description": "Total tendency of theta_m from the dynamics half (the Rayleigh sponge alone).",
+     "shape": [
+      "lev"
+     ]
+    },
+    "dphi_dt": {
+     "type": "unknown",
+     "units": "m^2/s^3",
+     "description": "Tendency of the perturbation geopotential, g w.",
+     "shape": [
+      "lev_nodes"
+     ]
+    },
+    "dqv_dt": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Total tendency of q_v from the dynamics half: identically zero (see the equation).",
+     "shape": [
+      "lev"
+     ]
+    },
+    "p_p": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Perturbation pressure diagnosed by the coupled equation of state, exposed so that the state document's own thermodynamics can be asserted.",
+     "shape": [
+      "lev"
+     ]
+    },
+    "w_absmax": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Largest |w| anywhere in the column. The amplitude of the vertical acoustic mode this document does not damp (WRF damps it with the forward-backward acoustic sub-step and epssm), and the quantity the integration test bounds."
+    },
+    "dw_absmax": {
+     "type": "unknown",
+     "units": "m/s^2",
+     "description": "Largest |dw/dt| anywhere in the column: the column's departure from hydrostatic balance."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "mu_p",
+     "rhs": "mu_p0"
+    },
+    {
+     "lhs": "mu_b",
+     "rhs": "mu_b0"
+    },
+    {
+     "lhs": "p_top",
+     "rhs": "p_top0"
+    },
+    {
+     "lhs": "f",
+     "rhs": "f0"
+    },
+    {
+     "lhs": "e",
+     "rhs": "e0"
+    },
+    {
+     "lhs": "sina",
+     "rhs": "sina0"
+    },
+    {
+     "lhs": "cosa",
+     "rhs": "cosa0"
+    },
+    {
+     "lhs": "dampcoef",
+     "rhs": "dampcoef0"
+    },
+    {
+     "lhs": "zdamp",
+     "rhs": "zdamp0"
+    },
+    {
+     "lhs": "du_dt",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "cor_du_in",
+       "cur_du_in",
+       "ray_du_in"
+      ]
+     }
+    },
+    {
+     "lhs": "dv_dt",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "cor_dv_in",
+       "cur_dv_in",
+       "ray_dv_in"
+      ]
+     }
+    },
+    {
+     "lhs": "dw_dt_nonpg",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "cor_dw_in",
+       "cur_dw_in",
+       "ray_dw_in"
+      ]
+     }
+    },
+    {
+     "lhs": "dw_dt",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "vm_dw_in",
+       "dw_dt_nonpg"
+      ]
+     }
+    },
+    {
+     "lhs": "dtheta_m_dt",
+     "rhs": "ray_dth_in"
+    },
+    {
+     "lhs": "dphi_dt",
+     "rhs": "vm_dphi_in"
+    },
+    {
+     "lhs": "dqv_dt",
+     "rhs": 0.0
+    },
+    {
+     "lhs": "p_p",
+     "rhs": "geo_p_p_in"
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "u"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "du_dt"
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "v"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dv_dt"
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "w"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dw_dt"
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "phi_p"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dphi_dt"
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "theta_m"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dtheta_m_dt"
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "qv"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dqv_dt"
+    },
+    {
+     "lhs": "w_absmax",
+     "rhs": {
+      "op": "faq",
+      "output_idx": [],
+      "args": [
+       "w"
+      ],
+      "ranges": {
+       "k": {
+        "from": "lev_nodes"
+       }
+      },
+      "reduce": "max",
+      "expr": {
+       "op": "abs",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "w",
+          "k"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "dw_absmax",
+     "rhs": {
+      "op": "faq",
+      "output_idx": [],
+      "args": [
+       "dw_dt"
+      ],
+      "ranges": {
+       "k": {
+        "from": "lev_nodes"
+       }
+      },
+      "reduce": "max",
+      "expr": {
+       "op": "abs",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "dw_dt",
+          "k"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "u"
+      ]
+     },
+     "rhs": 0.0
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "v"
+      ]
+     },
+     "rhs": 0.0
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "w"
+      ]
+     },
+     "rhs": 0.0
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "phi_p"
+      ]
+     },
+     "rhs": 0.0
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "theta_m"
+      ]
+     },
+     "rhs": 0.0
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "qv"
+      ]
+     },
+     "rhs": 0.0
+    }
+   ],
+   "tests": [
+    {
+     "id": "eqweather_scm_dynamics_step1410_derivative",
+     "description": "The five dynamics components reading the ODE STATE instead of a frozen dumped column, at the state of WRF step 1410. Reference: WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s; data/eqwefic/scm_dyn) dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, commit 83347b2 (rk_tendency, rk_step 1), merged with the same step's radiation subassembly dump and the wrfout eta grid (tools/merge_dumps.py -> data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_1410.json); the expected profiles are the same dumped mass-coupled increments divided by the coupling mass of their grid point that couplings/scm_dynamics_column.esm asserts, and the tolerances are that document's. What this test adds is the PATH: there the six state profiles reach the components as `const` data through the dumped template library, here they are the initial values of six ODE states, handed to the components through variable_map param_to_var edges into the additive coupling-target parameters the mount-edge libraries couplings/tests/scmstate_couple_*_inputs.esm lower input_u / input_v / input_w / input_theta_m / input_phi_p / input_qv to. Passing at the same tolerances is the statement that closing the loop changes no bit of the right-hand side. Only the base state (eta_w, phb, alb, pb, u_base, v_base, t_base, z_base) and the condensate in q_t still come from the dumped library, and all of those are time-invariant in this run. The total w tendency keeps its loose abs 1e-3 m/s^2 bound for the reason given in couplings/scm_dynamics_column.esm: WRF's single-precision p' carries 1.2-1.6e-2 Pa of rounding that g/(mu_d deta) ~ 0.016 m/s^2/Pa amplifies into a spurious w tendency the size of the physical one. Last assertion: The geopotential equation of a column with no coordinate vertical velocity is dphi/dt = g w exactly (ww == 0 identically for a horizontally uniform periodic column, PLAN.md 3.1), so this asserts the state document's phi' tendency against g times its own initial w with g taken from lib/wrf_constants.esm. The reference names the constant MODEL-QUALIFIED (EqWeatherScmDynamics.wrf.g) rather than by the bare mount name CLAUDE.md prescribes, because the bare form does not resolve in an assertion reference expression: the runner reports E_TREEWALK_UNBOUND_NAME for `wrf.g` there while accepting it in every equation of the same model. The drawback the bare form exists to avoid -- a component that can only be mounted under its own name -- does not apply to a top-level coupling document, which is never re-mounted -- an exact identity, hence the 1e-12 bound.",
+     "parameter_overrides": {
+      "mu_p0": -97.75,
+      "mu_b0": 79363.078125,
+      "p_top0": 17761.310546875,
+      "f0": 8.898477972252294e-05,
+      "e0": 0.00011554911179700866,
+      "sina0": 0.0,
+      "cosa0": 1.0,
+      "dampcoef0": 0.003000000026077032,
+      "zdamp0": 5000.0
+     },
+     "initial_conditions": {
+      "u": [
+       3.9584646224975586,
+       4.292182445526123,
+       4.39240026473999,
+       4.434822082519531,
+       4.451920986175537,
+       4.454864501953125,
+       4.448676109313965,
+       4.435981750488281,
+       4.418257713317871,
+       4.396302700042725,
+       4.370326995849609,
+       4.3396100997924805,
+       4.300764560699463,
+       4.237583160400391,
+       3.964306592941284,
+       3.3692805767059326,
+       3.133967161178589,
+       3.0386035442352295,
+       3.0077154636383057,
+       3.0004098415374756,
+       2.9991040229797363,
+       2.9989144802093506,
+       2.9989445209503174,
+       2.9988303184509277,
+       2.998797655105591,
+       2.998727560043335,
+       2.9987123012542725,
+       2.9987614154815674,
+       2.998796224594116,
+       2.998704433441162,
+       2.9988138675689697,
+       2.998792886734009,
+       2.9987897872924805,
+       2.9987475872039795,
+       2.9987666606903076,
+       2.9987423419952393,
+       2.9988067150115967,
+       2.998788833618164,
+       2.998682737350464,
+       2.998776435852051,
+       2.9987924098968506,
+       2.998805046081543,
+       2.9987940788269043,
+       2.9988036155700684,
+       2.9987685680389404,
+       2.998854637145996,
+       2.9989640712738037,
+       2.9988434314727783,
+       2.9987738132476807,
+       2.998781204223633,
+       2.999293804168701,
+       2.999768018722534,
+       2.9998619556427,
+       2.9999260902404785,
+       2.9999544620513916,
+       2.9999659061431885,
+       2.9999752044677734,
+       2.9999802112579346,
+       2.9999823570251465
+      ],
+      "v": [
+       -4.2198567390441895,
+       -4.630627632141113,
+       -4.771632671356201,
+       -4.845717906951904,
+       -4.891427040100098,
+       -4.922670364379883,
+       -4.946388244628906,
+       -4.96709680557251,
+       -4.988683223724365,
+       -5.015606880187988,
+       -5.054479598999023,
+       -5.117566108703613,
+       -5.23363733291626,
+       -5.498218536376953,
+       -6.600339412689209,
+       -8.224531173706055,
+       -8.734874725341797,
+       -8.923505783081055,
+       -8.982702255249023,
+       -8.996427536010742,
+       -8.998834609985352,
+       -8.999154090881348,
+       -8.99907112121582,
+       -8.999127388000488,
+       -8.999174118041992,
+       -8.999080657958984,
+       -8.999136924743652,
+       -8.99917221069336,
+       -8.999133110046387,
+       -8.999092102050781,
+       -8.999005317687988,
+       -8.999003410339355,
+       -8.999024391174316,
+       -8.999056816101074,
+       -8.999052047729492,
+       -8.99908447265625,
+       -8.9990234375,
+       -8.999021530151367,
+       -8.999068260192871,
+       -8.999021530151367,
+       -8.999040603637695,
+       -8.999009132385254,
+       -8.999039649963379,
+       -8.999032974243164,
+       -8.999009132385254,
+       -8.998957633972168,
+       -8.998818397521973,
+       -8.998867988586426,
+       -8.99898624420166,
+       -8.999124526977539,
+       -8.99997329711914,
+       -8.999974250793457,
+       -8.999992370605469,
+       -8.999996185302734,
+       -8.999996185302734,
+       -8.999996185302734,
+       -8.999996185302734,
+       -9.0,
+       -9.000000953674316
+      ],
+      "w": [
+       0.0,
+       3.9273378206416965e-05,
+       8.32417281344533e-05,
+       0.0001242262515006587,
+       0.0001697720872471109,
+       0.00020935310749337077,
+       0.00025039800675585866,
+       0.0002975131501443684,
+       0.00034827759373001754,
+       0.00039977231062948704,
+       0.00045631203101947904,
+       0.00051416753558442,
+       0.000575279351323843,
+       0.0006478771683759987,
+       0.0007411270635202527,
+       0.0007341482560150325,
+       0.0006526897195726633,
+       0.0006460715085268021,
+       0.0006415887619368732,
+       0.0006335542420856655,
+       0.0006302425172179937,
+       0.0006238945643417537,
+       0.0006265566917136312,
+       0.0006372727220878005,
+       0.0006339836400002241,
+       0.0006302381516434252,
+       0.0006339728133752942,
+       0.000631516391877085,
+       0.000641286838799715,
+       0.0006457518320530653,
+       0.0006349722389131784,
+       0.0006224538083188236,
+       0.0006146511295810342,
+       0.0006121992482803762,
+       0.0006098427693359554,
+       0.0005994258099235594,
+       0.0005891429609619081,
+       0.0005757361650466919,
+       0.0005709938704967499,
+       0.0005555133684538305,
+       0.0005304240039549768,
+       0.0005336593603715301,
+       0.0005092894425615668,
+       0.0004858184256590903,
+       0.00047968854778446257,
+       0.0004647243185900152,
+       0.00046178835327737033,
+       0.000454232154879719,
+       0.00044736190466210246,
+       0.0004558922373689711,
+       0.00046873424435034394,
+       0.0004963948740623891,
+       0.0005166977061890066,
+       0.0005282156635075808,
+       0.0005384941468946636,
+       0.0005417115753516555,
+       0.0005514182266779244,
+       0.0005523458821699023,
+       0.000553386053070426,
+       0.0005543477018363774
+      ],
+      "phi_p": [
+       0.0,
+       5.365285873413086,
+       10.411595344543457,
+       15.462451934814453,
+       20.598600387573242,
+       25.857376098632812,
+       31.26076889038086,
+       36.82413101196289,
+       42.55833435058594,
+       48.47120666503906,
+       54.56758117675781,
+       60.84815216064453,
+       67.30720520019531,
+       73.92761993408203,
+       80.6793212890625,
+       80.44416809082031,
+       75.8182373046875,
+       72.68052673339844,
+       70.4180908203125,
+       68.72061157226562,
+       67.41503143310547,
+       66.38228607177734,
+       65.54441833496094,
+       64.8578872680664,
+       64.26393127441406,
+       63.647518157958984,
+       62.89540100097656,
+       61.71403121948242,
+       60.10498046875,
+       57.990272521972656,
+       55.26515579223633,
+       51.9188232421875,
+       47.78839111328125,
+       42.713871002197266,
+       36.525962829589844,
+       28.911304473876953,
+       19.368253707885742,
+       8.325666427612305,
+       -4.384080410003662,
+       -19.231569290161133,
+       -33.50587463378906,
+       -48.447265625,
+       -64.33560180664062,
+       -81.51864624023438,
+       -100.41082763671875,
+       -121.36321258544922,
+       -142.0635986328125,
+       -155.9580078125,
+       -166.6186981201172,
+       -176.887451171875,
+       -187.6819305419922,
+       -193.6128692626953,
+       -197.20156860351562,
+       -200.926025390625,
+       -205.031982421875,
+       -209.63754272460938,
+       -214.87460327148438,
+       -220.9291229248047,
+       -228.08352661132812,
+       -236.7656707763672
+      ],
+      "theta_m": [
+       289.4584045410156,
+       289.1878662109375,
+       289.10430908203125,
+       289.064697265625,
+       289.04327392578125,
+       289.0308532714844,
+       289.0232849121094,
+       289.0179443359375,
+       289.01318359375,
+       289.0074157714844,
+       288.9988708496094,
+       288.98504638671875,
+       288.96173095703125,
+       288.9248046875,
+       289.1180419921875,
+       290.6773986816406,
+       291.9588317871094,
+       293.0160217285156,
+       293.9694519042969,
+       294.87371826171875,
+       295.7516174316406,
+       296.6195068359375,
+       297.49041748046875,
+       298.3617248535156,
+       299.2208557128906,
+       300.07177734375,
+       300.83721923828125,
+       301.630126953125,
+       302.43463134765625,
+       303.2470397949219,
+       304.09039306640625,
+       304.933837890625,
+       305.78204345703125,
+       306.6370849609375,
+       307.4766845703125,
+       308.27459716796875,
+       308.93109130859375,
+       309.5003967285156,
+       309.9361267089844,
+       310.11663818359375,
+       310.11236572265625,
+       310.0771179199219,
+       310.0071716308594,
+       309.9008483886719,
+       309.7725830078125,
+       309.925048828125,
+       310.7650146484375,
+       311.1705627441406,
+       311.271728515625,
+       311.28662109375,
+       311.7546081542969,
+       311.97412109375,
+       311.9903259277344,
+       311.9931335449219,
+       311.9947204589844,
+       311.99652099609375,
+       311.99853515625,
+       312.0003662109375,
+       312.00201416015625
+      ],
+      "qv": [
+       0.0047745187766849995,
+       0.0046264370903372765,
+       0.004565875511616468,
+       0.004526149015873671,
+       0.004494483582675457,
+       0.0044661397114396095,
+       0.004438590724021196,
+       0.004409997723996639,
+       0.0043785590678453445,
+       0.004341986961662769,
+       0.004296679515391588,
+       0.004235778469592333,
+       0.004142966121435165,
+       0.003963074646890163,
+       0.0032511756289750338,
+       0.0009165441151708364,
+       0.0007540549268014729,
+       0.0009620863711461425,
+       0.001193832140415907,
+       0.001432167598977685,
+       0.0016765532782301307,
+       0.0019271309720352292,
+       0.0021840862464159727,
+       0.00244753691367805,
+       0.0027169897221028805,
+       0.002974375383928418,
+       0.0029136626981198788,
+       0.0028251642361283302,
+       0.0027336112689226866,
+       0.0026397379115223885,
+       0.002543485024943948,
+       0.002444799290969968,
+       0.002343610627576709,
+       0.0022398680448532104,
+       0.0021334937773644924,
+       0.002023083856329322,
+       0.0018532484536990523,
+       0.0016610337188467383,
+       0.0014390697469934821,
+       0.0011226615170016885,
+       0.0010274749947711825,
+       0.0009501262102276087,
+       0.0008329048869200051,
+       0.0007146886200644076,
+       0.0006354073993861675,
+       0.00031528095132671297,
+       0.00013003269850742072,
+       0.00010037994070444256,
+       0.0001327181962551549,
+       0.00014187929627951235,
+       0.00019990552391391248,
+       0.00018347511650063097,
+       0.00012194797454867512,
+       7.6306976552587e-05,
+       4.480602729017846e-05,
+       2.435706846881658e-05,
+       1.2046562005707528e-05,
+       5.222654635872459e-06,
+       1.9675696876220172e-06
+      ]
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "assertions": [
+      {
+       "variable": "du_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.00042535770249656956,
+            0.00038880050279639574,
+            0.00037624826849988447,
+            0.0003696507921698307,
+            0.000365578397716254,
+            0.0003627935093938111,
+            0.0003606778566808155,
+            0.0003588294458302722,
+            0.00035690263825832876,
+            0.00035450058966500665,
+            0.0003510347952574014,
+            0.00034541419790177363,
+            0.0003350778620952232,
+            0.0003115245320703079,
+            0.0002134475626239286,
+            6.892438580183427e-05,
+            2.35168387333244e-05,
+            6.7320906052502245e-06,
+            1.4652092389200586e-06,
+            2.44598803778364e-07,
+            3.094950754456012e-08,
+            2.676871600464628e-09,
+            9.338156204791952e-09,
+            3.8555441333047475e-09,
+            1.2396798057025732e-10,
+            8.474081687225085e-09,
+            3.3481394092771033e-09,
+            -1.6334803742252384e-10,
+            2.5190297323573754e-09,
+            6.46370542320418e-09,
+            1.553321307068468e-08,
+            1.6922533457445373e-08,
+            1.5622981667737414e-08,
+            1.302521311752082e-08,
+            1.4117002640348212e-08,
+            1.2511259186719715e-08,
+            1.928809211036126e-08,
+            2.0551411589456166e-08,
+            1.7514722449213103e-08,
+            2.4077997698690778e-08,
+            2.3521481450841995e-08,
+            2.7624209765230707e-08,
+            2.7733238618520962e-08,
+            3.00116943267458e-08,
+            3.3340276072290485e-08,
+            3.90094680207963e-08,
+            5.196691482117092e-08,
+            4.8383490835133505e-08,
+            3.776263593201117e-08,
+            2.425528322432407e-08,
+            -2.4264277598026265e-08,
+            -1.643932925859828e-08,
+            -4.296778994245224e-09,
+            -7.068058748683001e-09,
+            -9.226635003260501e-09,
+            -6.263134542984207e-09,
+            -9.384288880457399e-09,
+            -1.1540597494678737e-08,
+            -1.2147085545065384e-08
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 1e-09
+       }
+      },
+      {
+       "variable": "dv_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -8.528875692777149e-05,
+            -0.00011498451699691587,
+            -0.0001239023726531242,
+            -0.00012767721810164477,
+            -0.00012919871125515253,
+            -0.0001294605991364779,
+            -0.0001289099211225917,
+            -0.00012778027923048352,
+            -0.00012620306857900093,
+            -0.00012424934672440377,
+            -0.00012193785861634535,
+            -0.0001192044888269035,
+            -0.00011574773001441361,
+            -0.00011012544826022905,
+            -8.580784645300884e-05,
+            -3.2859466619153816e-05,
+            -1.1920150202731977e-05,
+            -3.4342250940292106e-06,
+            -6.856527616532764e-07,
+            -3.557514726289258e-08,
+            8.060935679083648e-08,
+            9.746361723688508e-08,
+            9.48068356962857e-08,
+            1.0498582677669131e-07,
+            1.0787511782510477e-07,
+            1.1411965889211163e-07,
+            1.1548876144393517e-07,
+            1.1110870247640245e-07,
+            1.0803154976138435e-07,
+            1.1618362284633676e-07,
+            1.0643194685460115e-07,
+            1.0829446679894845e-07,
+            1.0856788782862865e-07,
+            1.1230070584123921e-07,
+            1.106077536980326e-07,
+            1.1275067383460705e-07,
+            1.0701558813466365e-07,
+            1.0856390477121549e-07,
+            1.1800418556937909e-07,
+            1.0964358356711482e-07,
+            1.0820733301199866e-07,
+            1.0706978826400552e-07,
+            1.0801828465277239e-07,
+            1.0713786447241801e-07,
+            1.1024526022513957e-07,
+            1.025672179700805e-07,
+            9.282458316618978e-08,
+            1.0354944697782428e-07,
+            1.097425725308489e-07,
+            1.0910069666026682e-07,
+            6.241897206169647e-08,
+            1.6912045620798117e-08,
+            9.93910880407602e-09,
+            4.520519386996767e-09,
+            3.856534390111835e-10,
+            -2.5482748026890494e-09,
+            -5.363071515516155e-09,
+            2.535221918190732e-09,
+            5.181915837166844e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 2e-10
+       }
+      },
+      {
+       "variable": "dw_dt_nonpg",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            0.00013552868103155225,
+            0.00016145561737701658,
+            0.0001699979484064079,
+            0.00017358785892481168,
+            0.0001748293328496721,
+            0.00017468880588436317,
+            0.00017362395919530906,
+            0.00017188202639639111,
+            0.00016960310132186086,
+            0.00016685549836461416,
+            0.00016362544756644935,
+            0.00015970879982228397,
+            0.00015407660869123276,
+            0.0001357845652351645,
+            8.819388122862326e-05,
+            4.218576185469155e-05,
+            2.3769456406878297e-05,
+            1.671594721470226e-05,
+            1.457759422329944e-05,
+            1.4094626023541434e-05,
+            1.4010621157303609e-05,
+            1.4001502846187725e-05,
+            1.3996660200336966e-05,
+            1.3988194875648202e-05,
+            1.3982180388457743e-05,
+            1.3977100122096295e-05,
+            1.3979156742655586e-05,
+            1.3984057289706733e-05,
+            1.398072458684795e-05,
+            1.398142240910719e-05,
+            1.398653576186886e-05,
+            1.3985134101641249e-05,
+            1.3982613519515203e-05,
+            1.3981259984960642e-05,
+            1.3981025372304518e-05,
+            1.3983239153264866e-05,
+            1.3985946222373984e-05,
+            1.3978859717017224e-05,
+            1.3977976911702193e-05,
+            1.3984379130145261e-05,
+            1.3986030442301825e-05,
+            1.3986126693647926e-05,
+            1.3986072552265744e-05,
+            1.3984580656401162e-05,
+            1.3987359914019859e-05,
+            1.3998465665040022e-05,
+            1.399785131074498e-05,
+            1.3986968892926318e-05,
+            1.3983646717558517e-05,
+            1.4010204724391895e-05,
+            1.4026895480478e-05,
+            1.39658806483248e-05,
+            1.3823518245512019e-05,
+            1.3617613892798495e-05,
+            1.3363537926755244e-05,
+            1.3064956569614877e-05,
+            1.2783299752147452e-05,
+            1.2558686896518305e-05,
+            -1.6630431653508821e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-10
+       }
+      },
+      {
+       "variable": "dw_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            -0.00018379714295450742,
+            -9.062244706779653e-05,
+            0.00020496451640802704,
+            -0.00012519915500773854,
+            0.0004171025614211102,
+            -0.00021077812779113502,
+            5.818292206383128e-05,
+            -9.827228147474767e-05,
+            -0.00021322755610957592,
+            0.00014681525073285853,
+            -8.14389016020918e-05,
+            0.00013248110473846946,
+            -3.862140907653243e-06,
+            -0.00027659282510310507,
+            -1.368618343635749e-05,
+            -0.0004232613481784675,
+            0.0001241510380057788,
+            0.00029248084230147425,
+            4.2411480284864496e-05,
+            -5.2679131732407434e-05,
+            -1.189704386395836e-05,
+            -0.00015615175913857404,
+            0.00010331097327038826,
+            1.5404533527534964e-05,
+            -0.00010405358849982018,
+            -2.7419644330778466e-05,
+            2.546283040168776e-05,
+            -0.0001993920868354142,
+            0.0002764320372294416,
+            -1.0895148563109546e-05,
+            -0.00016349768593591717,
+            -1.1695919156641764e-05,
+            0.000198252049797927,
+            -6.228196610885998e-05,
+            -0.0001787826643881206,
+            0.00014719838673565405,
+            -0.00011144500608961476,
+            0.00013214399041445627,
+            -1.1042116848970926e-05,
+            5.453509831361974e-05,
+            -6.739300883822365e-05,
+            0.00014967042208901063,
+            -6.19046548164309e-05,
+            -6.492955790179753e-05,
+            -2.6478294134482393e-07,
+            2.0743541930413964e-05,
+            5.133147452566906e-05,
+            -4.5350421894598316e-05,
+            2.2983534087409603e-05,
+            -4.1301828439254266e-05,
+            1.3335014062989643e-05,
+            -2.7071349987586068e-05,
+            3.35106843572925e-05,
+            1.4916895915550093e-06,
+            1.295955683385131e-05,
+            5.6022535785771145e-06,
+            -6.044701277562539e-06,
+            3.442956294262491e-05,
+            -1.9948200138390994e-05
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 0.001
+       }
+      },
+      {
+       "variable": "dtheta_m_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            6.491702116396774e-09,
+            1.0218651992740592e-05,
+            4.471716849735662e-06,
+            3.90252774688856e-06,
+            5.059605784417647e-06,
+            6.1545614736561115e-06,
+            5.795830074861117e-06,
+            3.2075392626315737e-06,
+            -9.734720151576105e-07,
+            -5.957295843747292e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 2e-09
+       }
+      },
+      {
+       "variable": "p_p",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            17.1640625,
+            15.09375,
+            13.03125,
+            10.9296875,
+            8.8203125,
+            6.640625,
+            4.46875,
+            2.2421875,
+            -0.0078125,
+            -2.28125,
+            -4.609375,
+            -6.9375,
+            -9.28125,
+            -11.5625,
+            -13.5078125,
+            -14.2265625,
+            -13.8359375,
+            -13.5078125,
+            -13.390625,
+            -13.46875,
+            -13.7734375,
+            -14.3359375,
+            -15.15625,
+            -16.296875,
+            -17.7421875,
+            -19.5,
+            -21.421875,
+            -23.3125,
+            -25.1171875,
+            -26.9140625,
+            -28.6015625,
+            -30.1875,
+            -31.703125,
+            -33.1484375,
+            -34.44921875,
+            -35.61328125,
+            -36.65234375,
+            -37.41015625,
+            -37.91015625,
+            -37.98046875,
+            -37.734375,
+            -37.3203125,
+            -36.76953125,
+            -35.96484375,
+            -34.96484375,
+            -33.58984375,
+            -31.71484375,
+            -29.59375,
+            -27.40234375,
+            -25.2109375,
+            -23.01953125,
+            -20.828125,
+            -18.48828125,
+            -15.984375,
+            -13.322265625,
+            -10.53515625,
+            -7.63671875,
+            -4.638671875,
+            -1.5625
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 0.05
+       }
+      },
+      {
+       "variable": "du_dt",
+       "time": 0.0,
+       "coords": {
+        "lev": 1
+       },
+       "expected": 0.00042535770249656956,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "dtheta_m_dt",
+       "time": 0.0,
+       "coords": {
+        "lev": 59
+       },
+       "expected": -5.957295843747292e-06,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "dphi_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "*",
+         "args": [
+          "EqWeatherScmDynamics.wrf.g",
+          {
+           "op": "index",
+           "args": [
+            {
+             "op": "const",
+             "args": [],
+             "value": [
+              0.0,
+              3.9273378206416965e-05,
+              8.32417281344533e-05,
+              0.0001242262515006587,
+              0.0001697720872471109,
+              0.00020935310749337077,
+              0.00025039800675585866,
+              0.0002975131501443684,
+              0.00034827759373001754,
+              0.00039977231062948704,
+              0.00045631203101947904,
+              0.00051416753558442,
+              0.000575279351323843,
+              0.0006478771683759987,
+              0.0007411270635202527,
+              0.0007341482560150325,
+              0.0006526897195726633,
+              0.0006460715085268021,
+              0.0006415887619368732,
+              0.0006335542420856655,
+              0.0006302425172179937,
+              0.0006238945643417537,
+              0.0006265566917136312,
+              0.0006372727220878005,
+              0.0006339836400002241,
+              0.0006302381516434252,
+              0.0006339728133752942,
+              0.000631516391877085,
+              0.000641286838799715,
+              0.0006457518320530653,
+              0.0006349722389131784,
+              0.0006224538083188236,
+              0.0006146511295810342,
+              0.0006121992482803762,
+              0.0006098427693359554,
+              0.0005994258099235594,
+              0.0005891429609619081,
+              0.0005757361650466919,
+              0.0005709938704967499,
+              0.0005555133684538305,
+              0.0005304240039549768,
+              0.0005336593603715301,
+              0.0005092894425615668,
+              0.0004858184256590903,
+              0.00047968854778446257,
+              0.0004647243185900152,
+              0.00046178835327737033,
+              0.000454232154879719,
+              0.00044736190466210246,
+              0.0004558922373689711,
+              0.00046873424435034394,
+              0.0004963948740623891,
+              0.0005166977061890066,
+              0.0005282156635075808,
+              0.0005384941468946636,
+              0.0005417115753516555,
+              0.0005514182266779244,
+              0.0005523458821699023,
+              0.000553386053070426,
+              0.0005543477018363774
+             ]
+            },
+            "k"
+           ]
+          }
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 1e-12
+       }
+      }
+     ]
+    },
+    {
+     "id": "eqweather_scm_dynamics_step1410_acoustic_60s",
+     "description": "A 60 s integration of the same state, which is what distinguishes this document from couplings/scm_dynamics_column.esm: the right-hand side is evaluated at a state the integrator produced, not at a dumped one. Three things are asserted, none of them a fitted number. (1) The undamped vertical acoustic mode stays BOUNDED. WRF removes it with the forward-backward acoustic sub-step and the off-centring parameter epssm; nothing here does, so the column rings at whatever amplitude its departure from float64 hydrostatic balance excites. Measured: max |w| over the column is 5.54e-4 m/s at t = 0, 9.60e-4 at t = 60 s and 9.35e-4 at t = 600 s, and max |dw/dt| falls from 5.40e-4 to 3.13e-4 m/s^2 -- the response is the size of the column's own w and does NOT grow, so the bounds here are abs 2e-3 m/s and abs 1e-3 m/s^2, about 2x and 3x the measured values. (2) theta_m in the lowest layer is UNCHANGED to the last bit: the only theta_m tendency in the dynamics half is the Rayleigh sponge, which is identically zero below z_top - zdamp = 6979 m, and layer 1 is at 25.8 m. Tolerance abs 0, and it passes. (3) u in the lowest layer has moved by its own asserted tendency: the expected value is the test-1 reference du_dt[1] = 4.2536e-4 m/s^2 times 60 s added to the dumped u[1], which ties the trajectory to the derivative test. Measured residual 7.4e-5 m/s against a bound of 2e-4, the difference being the second-order change of the tendency itself over the window. COST, measured on this machine: 18.0 s of wall time for this 60 s span and 164.9 s for a 600 s span -- close to linear, about 0.27 s of wall time per simulated second, so a single 24 h span of the dynamics half alone would take about 6.6 h. That, not the iteration cap of PLAN.md 3.1 gap (s), is what makes the checkpointed windows of item (5) necessary. ITEM (4) MEASURED HERE TOO, and it is not the lever it was expected to be. Replacing the dumped REAL*4 phi' with the profile that puts the column in EXACT float64 hydrostatic balance -- integrate dp'/ds = -(1 + q_m) mu' - q_m mu_b down from the lid, invert the equation of state for alpha_d, integrate alpha' up for phi' -- moves phi' by at most 0.050 m^2/s^2 (5.1 mm of interface height) and annihilates the vertical pressure-gradient-plus-buoyancy term to 3.3e-11 m/s^2 (the third test). Re-running the 600 s span from that state gives max |w| 6.81e-4 instead of 9.35e-4 (-27 %) and 125.7 s of wall time instead of 164.9 s (-24 %) -- while u, v and theta_m in the lowest layer agree with the unbalanced run to EIGHT significant figures (4.212193608 vs 4.212193614 m/s). So the rebalancing is thermodynamically free and removes a quarter of the ringing, but max |dw/dt| at t = 600 s is 2.77e-4 against 2.82e-4: by then the column has forgotten its initial condition and settled at its own acoustic level. The mode is a PERMANENT feature of the continuous equations, not an initial transient -- what WRF has and this document does not is the off-centring of its split-explicit acoustic sub-step (epssm), a property of the time scheme with no equation-level counterpart to transcribe.",
+     "parameter_overrides": {
+      "mu_p0": -97.75,
+      "mu_b0": 79363.078125,
+      "p_top0": 17761.310546875,
+      "f0": 8.898477972252294e-05,
+      "e0": 0.00011554911179700866,
+      "sina0": 0.0,
+      "cosa0": 1.0,
+      "dampcoef0": 0.003000000026077032,
+      "zdamp0": 5000.0
+     },
+     "initial_conditions": {
+      "u": [
+       3.9584646224975586,
+       4.292182445526123,
+       4.39240026473999,
+       4.434822082519531,
+       4.451920986175537,
+       4.454864501953125,
+       4.448676109313965,
+       4.435981750488281,
+       4.418257713317871,
+       4.396302700042725,
+       4.370326995849609,
+       4.3396100997924805,
+       4.300764560699463,
+       4.237583160400391,
+       3.964306592941284,
+       3.3692805767059326,
+       3.133967161178589,
+       3.0386035442352295,
+       3.0077154636383057,
+       3.0004098415374756,
+       2.9991040229797363,
+       2.9989144802093506,
+       2.9989445209503174,
+       2.9988303184509277,
+       2.998797655105591,
+       2.998727560043335,
+       2.9987123012542725,
+       2.9987614154815674,
+       2.998796224594116,
+       2.998704433441162,
+       2.9988138675689697,
+       2.998792886734009,
+       2.9987897872924805,
+       2.9987475872039795,
+       2.9987666606903076,
+       2.9987423419952393,
+       2.9988067150115967,
+       2.998788833618164,
+       2.998682737350464,
+       2.998776435852051,
+       2.9987924098968506,
+       2.998805046081543,
+       2.9987940788269043,
+       2.9988036155700684,
+       2.9987685680389404,
+       2.998854637145996,
+       2.9989640712738037,
+       2.9988434314727783,
+       2.9987738132476807,
+       2.998781204223633,
+       2.999293804168701,
+       2.999768018722534,
+       2.9998619556427,
+       2.9999260902404785,
+       2.9999544620513916,
+       2.9999659061431885,
+       2.9999752044677734,
+       2.9999802112579346,
+       2.9999823570251465
+      ],
+      "v": [
+       -4.2198567390441895,
+       -4.630627632141113,
+       -4.771632671356201,
+       -4.845717906951904,
+       -4.891427040100098,
+       -4.922670364379883,
+       -4.946388244628906,
+       -4.96709680557251,
+       -4.988683223724365,
+       -5.015606880187988,
+       -5.054479598999023,
+       -5.117566108703613,
+       -5.23363733291626,
+       -5.498218536376953,
+       -6.600339412689209,
+       -8.224531173706055,
+       -8.734874725341797,
+       -8.923505783081055,
+       -8.982702255249023,
+       -8.996427536010742,
+       -8.998834609985352,
+       -8.999154090881348,
+       -8.99907112121582,
+       -8.999127388000488,
+       -8.999174118041992,
+       -8.999080657958984,
+       -8.999136924743652,
+       -8.99917221069336,
+       -8.999133110046387,
+       -8.999092102050781,
+       -8.999005317687988,
+       -8.999003410339355,
+       -8.999024391174316,
+       -8.999056816101074,
+       -8.999052047729492,
+       -8.99908447265625,
+       -8.9990234375,
+       -8.999021530151367,
+       -8.999068260192871,
+       -8.999021530151367,
+       -8.999040603637695,
+       -8.999009132385254,
+       -8.999039649963379,
+       -8.999032974243164,
+       -8.999009132385254,
+       -8.998957633972168,
+       -8.998818397521973,
+       -8.998867988586426,
+       -8.99898624420166,
+       -8.999124526977539,
+       -8.99997329711914,
+       -8.999974250793457,
+       -8.999992370605469,
+       -8.999996185302734,
+       -8.999996185302734,
+       -8.999996185302734,
+       -8.999996185302734,
+       -9.0,
+       -9.000000953674316
+      ],
+      "w": [
+       0.0,
+       3.9273378206416965e-05,
+       8.32417281344533e-05,
+       0.0001242262515006587,
+       0.0001697720872471109,
+       0.00020935310749337077,
+       0.00025039800675585866,
+       0.0002975131501443684,
+       0.00034827759373001754,
+       0.00039977231062948704,
+       0.00045631203101947904,
+       0.00051416753558442,
+       0.000575279351323843,
+       0.0006478771683759987,
+       0.0007411270635202527,
+       0.0007341482560150325,
+       0.0006526897195726633,
+       0.0006460715085268021,
+       0.0006415887619368732,
+       0.0006335542420856655,
+       0.0006302425172179937,
+       0.0006238945643417537,
+       0.0006265566917136312,
+       0.0006372727220878005,
+       0.0006339836400002241,
+       0.0006302381516434252,
+       0.0006339728133752942,
+       0.000631516391877085,
+       0.000641286838799715,
+       0.0006457518320530653,
+       0.0006349722389131784,
+       0.0006224538083188236,
+       0.0006146511295810342,
+       0.0006121992482803762,
+       0.0006098427693359554,
+       0.0005994258099235594,
+       0.0005891429609619081,
+       0.0005757361650466919,
+       0.0005709938704967499,
+       0.0005555133684538305,
+       0.0005304240039549768,
+       0.0005336593603715301,
+       0.0005092894425615668,
+       0.0004858184256590903,
+       0.00047968854778446257,
+       0.0004647243185900152,
+       0.00046178835327737033,
+       0.000454232154879719,
+       0.00044736190466210246,
+       0.0004558922373689711,
+       0.00046873424435034394,
+       0.0004963948740623891,
+       0.0005166977061890066,
+       0.0005282156635075808,
+       0.0005384941468946636,
+       0.0005417115753516555,
+       0.0005514182266779244,
+       0.0005523458821699023,
+       0.000553386053070426,
+       0.0005543477018363774
+      ],
+      "phi_p": [
+       0.0,
+       5.365285873413086,
+       10.411595344543457,
+       15.462451934814453,
+       20.598600387573242,
+       25.857376098632812,
+       31.26076889038086,
+       36.82413101196289,
+       42.55833435058594,
+       48.47120666503906,
+       54.56758117675781,
+       60.84815216064453,
+       67.30720520019531,
+       73.92761993408203,
+       80.6793212890625,
+       80.44416809082031,
+       75.8182373046875,
+       72.68052673339844,
+       70.4180908203125,
+       68.72061157226562,
+       67.41503143310547,
+       66.38228607177734,
+       65.54441833496094,
+       64.8578872680664,
+       64.26393127441406,
+       63.647518157958984,
+       62.89540100097656,
+       61.71403121948242,
+       60.10498046875,
+       57.990272521972656,
+       55.26515579223633,
+       51.9188232421875,
+       47.78839111328125,
+       42.713871002197266,
+       36.525962829589844,
+       28.911304473876953,
+       19.368253707885742,
+       8.325666427612305,
+       -4.384080410003662,
+       -19.231569290161133,
+       -33.50587463378906,
+       -48.447265625,
+       -64.33560180664062,
+       -81.51864624023438,
+       -100.41082763671875,
+       -121.36321258544922,
+       -142.0635986328125,
+       -155.9580078125,
+       -166.6186981201172,
+       -176.887451171875,
+       -187.6819305419922,
+       -193.6128692626953,
+       -197.20156860351562,
+       -200.926025390625,
+       -205.031982421875,
+       -209.63754272460938,
+       -214.87460327148438,
+       -220.9291229248047,
+       -228.08352661132812,
+       -236.7656707763672
+      ],
+      "theta_m": [
+       289.4584045410156,
+       289.1878662109375,
+       289.10430908203125,
+       289.064697265625,
+       289.04327392578125,
+       289.0308532714844,
+       289.0232849121094,
+       289.0179443359375,
+       289.01318359375,
+       289.0074157714844,
+       288.9988708496094,
+       288.98504638671875,
+       288.96173095703125,
+       288.9248046875,
+       289.1180419921875,
+       290.6773986816406,
+       291.9588317871094,
+       293.0160217285156,
+       293.9694519042969,
+       294.87371826171875,
+       295.7516174316406,
+       296.6195068359375,
+       297.49041748046875,
+       298.3617248535156,
+       299.2208557128906,
+       300.07177734375,
+       300.83721923828125,
+       301.630126953125,
+       302.43463134765625,
+       303.2470397949219,
+       304.09039306640625,
+       304.933837890625,
+       305.78204345703125,
+       306.6370849609375,
+       307.4766845703125,
+       308.27459716796875,
+       308.93109130859375,
+       309.5003967285156,
+       309.9361267089844,
+       310.11663818359375,
+       310.11236572265625,
+       310.0771179199219,
+       310.0071716308594,
+       309.9008483886719,
+       309.7725830078125,
+       309.925048828125,
+       310.7650146484375,
+       311.1705627441406,
+       311.271728515625,
+       311.28662109375,
+       311.7546081542969,
+       311.97412109375,
+       311.9903259277344,
+       311.9931335449219,
+       311.9947204589844,
+       311.99652099609375,
+       311.99853515625,
+       312.0003662109375,
+       312.00201416015625
+      ],
+      "qv": [
+       0.0047745187766849995,
+       0.0046264370903372765,
+       0.004565875511616468,
+       0.004526149015873671,
+       0.004494483582675457,
+       0.0044661397114396095,
+       0.004438590724021196,
+       0.004409997723996639,
+       0.0043785590678453445,
+       0.004341986961662769,
+       0.004296679515391588,
+       0.004235778469592333,
+       0.004142966121435165,
+       0.003963074646890163,
+       0.0032511756289750338,
+       0.0009165441151708364,
+       0.0007540549268014729,
+       0.0009620863711461425,
+       0.001193832140415907,
+       0.001432167598977685,
+       0.0016765532782301307,
+       0.0019271309720352292,
+       0.0021840862464159727,
+       0.00244753691367805,
+       0.0027169897221028805,
+       0.002974375383928418,
+       0.0029136626981198788,
+       0.0028251642361283302,
+       0.0027336112689226866,
+       0.0026397379115223885,
+       0.002543485024943948,
+       0.002444799290969968,
+       0.002343610627576709,
+       0.0022398680448532104,
+       0.0021334937773644924,
+       0.002023083856329322,
+       0.0018532484536990523,
+       0.0016610337188467383,
+       0.0014390697469934821,
+       0.0011226615170016885,
+       0.0010274749947711825,
+       0.0009501262102276087,
+       0.0008329048869200051,
+       0.0007146886200644076,
+       0.0006354073993861675,
+       0.00031528095132671297,
+       0.00013003269850742072,
+       0.00010037994070444256,
+       0.0001327181962551549,
+       0.00014187929627951235,
+       0.00019990552391391248,
+       0.00018347511650063097,
+       0.00012194797454867512,
+       7.6306976552587e-05,
+       4.480602729017846e-05,
+       2.435706846881658e-05,
+       1.2046562005707528e-05,
+       5.222654635872459e-06,
+       1.9675696876220172e-06
+      ]
+     },
+     "time_span": {
+      "start": 0,
+      "end": 60
+     },
+     "assertions": [
+      {
+       "variable": "w_absmax",
+       "time": 60.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.002
+       }
+      },
+      {
+       "variable": "dw_absmax",
+       "time": 60.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.001
+       }
+      },
+      {
+       "variable": "theta_m",
+       "time": 60.0,
+       "coords": {
+        "lev": 1
+       },
+       "expected": 289.4584045410156,
+       "tolerance": {
+        "abs": 0.0
+       }
+      },
+      {
+       "variable": "u",
+       "time": 60.0,
+       "coords": {
+        "lev": 1
+       },
+       "expected": 3.983986084647353,
+       "tolerance": {
+        "abs": 0.0002
+       }
+      }
+     ]
+    },
+    {
+     "id": "eqweather_scm_dynamics_step1410_hydrostatic_balance",
+     "description": "PLAN.md 3.1 item (4), the float64-balanced initial state, measured inside the model rather than argued. The same step-1410 state with ONE field replaced: phi' is the profile that puts the column in exact float64 hydrostatic balance, obtained from the state's own theta_m, q_t, mu' and mu_b by WRF's own relations -- integrate dp'/ds = -(1 + q_m) mu' - q_m mu_b down from the lid with q_m the interface total water (including pg_buoy_w's top extrapolation of cqw), invert the equation of state p = p0 (R_d theta_m/(p0 alpha_d))^(cp/cv) for alpha_d, then integrate dphi'/ds = mu_d alpha' + alpha_b mu' up from phi'(surface) = 0. The profile is data/eqwefic/phase3_probes/phi_p_hydrostatic_balanced_step1410.json; it differs from WRF's REAL*4 ph by at most 0.050 m^2/s^2, which is 5.1 mm of interface height out of a 11979 m column. FIRST ASSERTION: with that phi', the total w tendency of the coupled system equals the NON-PRESSURE part alone -- the dumped Coriolis + curvature + sponge profile that couplings/scm_dynamics_column.esm asserts as dw_dt_nonpg -- to Linf 3.28e-11 m/s^2 (bound 1e-10, 3x). So the vertical pressure-gradient-plus-buoyancy term, which is 4.23e-4 m/s^2 with WRF's own phi', is annihilated: essentially all of the w tendency the reference run carries at this step is the column's departure from float64 hydrostatic balance, of which a REAL*4 state cannot be free (compare N67, which bounds the p' rounding alone at 1.2-1.6e-2 Pa). SECOND ASSERTION: the rebalanced phi' is within 0.06 m^2/s^2 of the dumped one everywhere, so this is a millimetre-scale change of the state, not a different column. What it does NOT buy is the 24 h run: see the cost measurement in the previous test.",
+     "parameter_overrides": {
+      "mu_p0": -97.75,
+      "mu_b0": 79363.078125,
+      "p_top0": 17761.310546875,
+      "f0": 8.898477972252294e-05,
+      "e0": 0.00011554911179700866,
+      "sina0": 0.0,
+      "cosa0": 1.0,
+      "dampcoef0": 0.003000000026077032,
+      "zdamp0": 5000.0
+     },
+     "initial_conditions": {
+      "u": [
+       3.9584646224975586,
+       4.292182445526123,
+       4.39240026473999,
+       4.434822082519531,
+       4.451920986175537,
+       4.454864501953125,
+       4.448676109313965,
+       4.435981750488281,
+       4.418257713317871,
+       4.396302700042725,
+       4.370326995849609,
+       4.3396100997924805,
+       4.300764560699463,
+       4.237583160400391,
+       3.964306592941284,
+       3.3692805767059326,
+       3.133967161178589,
+       3.0386035442352295,
+       3.0077154636383057,
+       3.0004098415374756,
+       2.9991040229797363,
+       2.9989144802093506,
+       2.9989445209503174,
+       2.9988303184509277,
+       2.998797655105591,
+       2.998727560043335,
+       2.9987123012542725,
+       2.9987614154815674,
+       2.998796224594116,
+       2.998704433441162,
+       2.9988138675689697,
+       2.998792886734009,
+       2.9987897872924805,
+       2.9987475872039795,
+       2.9987666606903076,
+       2.9987423419952393,
+       2.9988067150115967,
+       2.998788833618164,
+       2.998682737350464,
+       2.998776435852051,
+       2.9987924098968506,
+       2.998805046081543,
+       2.9987940788269043,
+       2.9988036155700684,
+       2.9987685680389404,
+       2.998854637145996,
+       2.9989640712738037,
+       2.9988434314727783,
+       2.9987738132476807,
+       2.998781204223633,
+       2.999293804168701,
+       2.999768018722534,
+       2.9998619556427,
+       2.9999260902404785,
+       2.9999544620513916,
+       2.9999659061431885,
+       2.9999752044677734,
+       2.9999802112579346,
+       2.9999823570251465
+      ],
+      "v": [
+       -4.2198567390441895,
+       -4.630627632141113,
+       -4.771632671356201,
+       -4.845717906951904,
+       -4.891427040100098,
+       -4.922670364379883,
+       -4.946388244628906,
+       -4.96709680557251,
+       -4.988683223724365,
+       -5.015606880187988,
+       -5.054479598999023,
+       -5.117566108703613,
+       -5.23363733291626,
+       -5.498218536376953,
+       -6.600339412689209,
+       -8.224531173706055,
+       -8.734874725341797,
+       -8.923505783081055,
+       -8.982702255249023,
+       -8.996427536010742,
+       -8.998834609985352,
+       -8.999154090881348,
+       -8.99907112121582,
+       -8.999127388000488,
+       -8.999174118041992,
+       -8.999080657958984,
+       -8.999136924743652,
+       -8.99917221069336,
+       -8.999133110046387,
+       -8.999092102050781,
+       -8.999005317687988,
+       -8.999003410339355,
+       -8.999024391174316,
+       -8.999056816101074,
+       -8.999052047729492,
+       -8.99908447265625,
+       -8.9990234375,
+       -8.999021530151367,
+       -8.999068260192871,
+       -8.999021530151367,
+       -8.999040603637695,
+       -8.999009132385254,
+       -8.999039649963379,
+       -8.999032974243164,
+       -8.999009132385254,
+       -8.998957633972168,
+       -8.998818397521973,
+       -8.998867988586426,
+       -8.99898624420166,
+       -8.999124526977539,
+       -8.99997329711914,
+       -8.999974250793457,
+       -8.999992370605469,
+       -8.999996185302734,
+       -8.999996185302734,
+       -8.999996185302734,
+       -8.999996185302734,
+       -9.0,
+       -9.000000953674316
+      ],
+      "w": [
+       0.0,
+       3.9273378206416965e-05,
+       8.32417281344533e-05,
+       0.0001242262515006587,
+       0.0001697720872471109,
+       0.00020935310749337077,
+       0.00025039800675585866,
+       0.0002975131501443684,
+       0.00034827759373001754,
+       0.00039977231062948704,
+       0.00045631203101947904,
+       0.00051416753558442,
+       0.000575279351323843,
+       0.0006478771683759987,
+       0.0007411270635202527,
+       0.0007341482560150325,
+       0.0006526897195726633,
+       0.0006460715085268021,
+       0.0006415887619368732,
+       0.0006335542420856655,
+       0.0006302425172179937,
+       0.0006238945643417537,
+       0.0006265566917136312,
+       0.0006372727220878005,
+       0.0006339836400002241,
+       0.0006302381516434252,
+       0.0006339728133752942,
+       0.000631516391877085,
+       0.000641286838799715,
+       0.0006457518320530653,
+       0.0006349722389131784,
+       0.0006224538083188236,
+       0.0006146511295810342,
+       0.0006121992482803762,
+       0.0006098427693359554,
+       0.0005994258099235594,
+       0.0005891429609619081,
+       0.0005757361650466919,
+       0.0005709938704967499,
+       0.0005555133684538305,
+       0.0005304240039549768,
+       0.0005336593603715301,
+       0.0005092894425615668,
+       0.0004858184256590903,
+       0.00047968854778446257,
+       0.0004647243185900152,
+       0.00046178835327737033,
+       0.000454232154879719,
+       0.00044736190466210246,
+       0.0004558922373689711,
+       0.00046873424435034394,
+       0.0004963948740623891,
+       0.0005166977061890066,
+       0.0005282156635075808,
+       0.0005384941468946636,
+       0.0005417115753516555,
+       0.0005514182266779244,
+       0.0005523458821699023,
+       0.000553386053070426,
+       0.0005543477018363774
+      ],
+      "phi_p": [
+       0.0,
+       5.364154048218872,
+       10.409405441919203,
+       15.459176611863906,
+       20.59419809389524,
+       25.851852131291118,
+       31.254099666379958,
+       36.81640212099439,
+       42.54951895416844,
+       48.46137570970862,
+       54.55680557287473,
+       60.83641633083317,
+       67.29455932622932,
+       73.91409458559109,
+       80.66487345932882,
+       80.42905198998157,
+       75.80250249772136,
+       72.66430710969813,
+       70.40134549296343,
+       68.70314448304786,
+       67.39680892469198,
+       66.36342349969857,
+       65.52486468721901,
+       64.83768916977888,
+       64.24300509829467,
+       63.62588209050038,
+       62.87300739003065,
+       61.690943262619435,
+       60.08113373316866,
+       57.96581904122033,
+       55.23989018353771,
+       51.89271089172557,
+       47.76173026339025,
+       42.68664212868486,
+       36.49772029358659,
+       28.882145888091497,
+       19.33841808557278,
+       8.294916592784142,
+       -4.415595671433575,
+       -19.264096143887866,
+       -33.539588674809515,
+       -48.48209775610604,
+       -64.37144868124511,
+       -81.55614748497973,
+       -100.44976394343757,
+       -121.40334630237811,
+       -142.10492710046395,
+       -156.0006641278346,
+       -166.6628403480465,
+       -176.93263769769436,
+       -187.72850480215146,
+       -193.6600720472268,
+       -197.24947642760046,
+       -200.97411134706942,
+       -205.0805595827306,
+       -209.6868489931629,
+       -214.92444762120164,
+       -220.97931080793595,
+       -228.13296280625246,
+       -236.81539352682913
+      ],
+      "theta_m": [
+       289.4584045410156,
+       289.1878662109375,
+       289.10430908203125,
+       289.064697265625,
+       289.04327392578125,
+       289.0308532714844,
+       289.0232849121094,
+       289.0179443359375,
+       289.01318359375,
+       289.0074157714844,
+       288.9988708496094,
+       288.98504638671875,
+       288.96173095703125,
+       288.9248046875,
+       289.1180419921875,
+       290.6773986816406,
+       291.9588317871094,
+       293.0160217285156,
+       293.9694519042969,
+       294.87371826171875,
+       295.7516174316406,
+       296.6195068359375,
+       297.49041748046875,
+       298.3617248535156,
+       299.2208557128906,
+       300.07177734375,
+       300.83721923828125,
+       301.630126953125,
+       302.43463134765625,
+       303.2470397949219,
+       304.09039306640625,
+       304.933837890625,
+       305.78204345703125,
+       306.6370849609375,
+       307.4766845703125,
+       308.27459716796875,
+       308.93109130859375,
+       309.5003967285156,
+       309.9361267089844,
+       310.11663818359375,
+       310.11236572265625,
+       310.0771179199219,
+       310.0071716308594,
+       309.9008483886719,
+       309.7725830078125,
+       309.925048828125,
+       310.7650146484375,
+       311.1705627441406,
+       311.271728515625,
+       311.28662109375,
+       311.7546081542969,
+       311.97412109375,
+       311.9903259277344,
+       311.9931335449219,
+       311.9947204589844,
+       311.99652099609375,
+       311.99853515625,
+       312.0003662109375,
+       312.00201416015625
+      ],
+      "qv": [
+       0.0047745187766849995,
+       0.0046264370903372765,
+       0.004565875511616468,
+       0.004526149015873671,
+       0.004494483582675457,
+       0.0044661397114396095,
+       0.004438590724021196,
+       0.004409997723996639,
+       0.0043785590678453445,
+       0.004341986961662769,
+       0.004296679515391588,
+       0.004235778469592333,
+       0.004142966121435165,
+       0.003963074646890163,
+       0.0032511756289750338,
+       0.0009165441151708364,
+       0.0007540549268014729,
+       0.0009620863711461425,
+       0.001193832140415907,
+       0.001432167598977685,
+       0.0016765532782301307,
+       0.0019271309720352292,
+       0.0021840862464159727,
+       0.00244753691367805,
+       0.0027169897221028805,
+       0.002974375383928418,
+       0.0029136626981198788,
+       0.0028251642361283302,
+       0.0027336112689226866,
+       0.0026397379115223885,
+       0.002543485024943948,
+       0.002444799290969968,
+       0.002343610627576709,
+       0.0022398680448532104,
+       0.0021334937773644924,
+       0.002023083856329322,
+       0.0018532484536990523,
+       0.0016610337188467383,
+       0.0014390697469934821,
+       0.0011226615170016885,
+       0.0010274749947711825,
+       0.0009501262102276087,
+       0.0008329048869200051,
+       0.0007146886200644076,
+       0.0006354073993861675,
+       0.00031528095132671297,
+       0.00013003269850742072,
+       0.00010037994070444256,
+       0.0001327181962551549,
+       0.00014187929627951235,
+       0.00019990552391391248,
+       0.00018347511650063097,
+       0.00012194797454867512,
+       7.6306976552587e-05,
+       4.480602729017846e-05,
+       2.435706846881658e-05,
+       1.2046562005707528e-05,
+       5.222654635872459e-06,
+       1.9675696876220172e-06
+      ]
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "assertions": [
+      {
+       "variable": "dw_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            0.00013552868103155225,
+            0.00016145561737701658,
+            0.0001699979484064079,
+            0.00017358785892481168,
+            0.0001748293328496721,
+            0.00017468880588436317,
+            0.00017362395919530906,
+            0.00017188202639639111,
+            0.00016960310132186086,
+            0.00016685549836461416,
+            0.00016362544756644935,
+            0.00015970879982228397,
+            0.00015407660869123276,
+            0.0001357845652351645,
+            8.819388122862326e-05,
+            4.218576185469155e-05,
+            2.3769456406878297e-05,
+            1.671594721470226e-05,
+            1.457759422329944e-05,
+            1.4094626023541434e-05,
+            1.4010621157303609e-05,
+            1.4001502846187725e-05,
+            1.3996660200336966e-05,
+            1.3988194875648202e-05,
+            1.3982180388457743e-05,
+            1.3977100122096295e-05,
+            1.3979156742655586e-05,
+            1.3984057289706733e-05,
+            1.398072458684795e-05,
+            1.398142240910719e-05,
+            1.398653576186886e-05,
+            1.3985134101641249e-05,
+            1.3982613519515203e-05,
+            1.3981259984960642e-05,
+            1.3981025372304518e-05,
+            1.3983239153264866e-05,
+            1.3985946222373984e-05,
+            1.3978859717017224e-05,
+            1.3977976911702193e-05,
+            1.3984379130145261e-05,
+            1.3986030442301825e-05,
+            1.3986126693647926e-05,
+            1.3986072552265744e-05,
+            1.3984580656401162e-05,
+            1.3987359914019859e-05,
+            1.3998465665040022e-05,
+            1.399785131074498e-05,
+            1.3986968892926318e-05,
+            1.3983646717558517e-05,
+            1.4010204724391895e-05,
+            1.4026895480478e-05,
+            1.39658806483248e-05,
+            1.3823518245512019e-05,
+            1.3617613892798495e-05,
+            1.3363537926755244e-05,
+            1.3064956569614877e-05,
+            1.2783299752147452e-05,
+            1.2558686896518305e-05,
+            -1.6630431653508821e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 1e-10
+       }
+      },
+      {
+       "variable": "phi_p",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "lev_nodes"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            5.365285873413086,
+            10.411595344543457,
+            15.462451934814453,
+            20.598600387573242,
+            25.857376098632812,
+            31.26076889038086,
+            36.82413101196289,
+            42.55833435058594,
+            48.47120666503906,
+            54.56758117675781,
+            60.84815216064453,
+            67.30720520019531,
+            73.92761993408203,
+            80.6793212890625,
+            80.44416809082031,
+            75.8182373046875,
+            72.68052673339844,
+            70.4180908203125,
+            68.72061157226562,
+            67.41503143310547,
+            66.38228607177734,
+            65.54441833496094,
+            64.8578872680664,
+            64.26393127441406,
+            63.647518157958984,
+            62.89540100097656,
+            61.71403121948242,
+            60.10498046875,
+            57.990272521972656,
+            55.26515579223633,
+            51.9188232421875,
+            47.78839111328125,
+            42.713871002197266,
+            36.525962829589844,
+            28.911304473876953,
+            19.368253707885742,
+            8.325666427612305,
+            -4.384080410003662,
+            -19.231569290161133,
+            -33.50587463378906,
+            -48.447265625,
+            -64.33560180664062,
+            -81.51864624023438,
+            -100.41082763671875,
+            -121.36321258544922,
+            -142.0635986328125,
+            -155.9580078125,
+            -166.6186981201172,
+            -176.887451171875,
+            -187.6819305419922,
+            -193.6128692626953,
+            -197.20156860351562,
+            -200.926025390625,
+            -205.031982421875,
+            -209.63754272460938,
+            -214.87460327148438,
+            -220.9291229248047,
+            -228.08352661132812,
+            -236.7656707763672
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 0.06
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "coupling": [
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.phi_p",
+   "to": "Geo.phi_p_in",
+   "transform": "param_to_var",
+   "description": "ODE state phi' into the column geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.theta_m",
+   "to": "Geo.theta_m_in",
+   "transform": "param_to_var",
+   "description": "ODE state theta_m into the column geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.qv",
+   "to": "Geo.qv_in",
+   "transform": "param_to_var",
+   "description": "ODE state q_v into the column geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.w",
+   "to": "Vm.w_in",
+   "transform": "param_to_var",
+   "description": "ODE state w into the vertical-momentum component"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.u",
+   "to": "Cor.u_in",
+   "transform": "param_to_var",
+   "description": "ODE state u into the perturbation-Coriolis component"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.v",
+   "to": "Cor.v_in",
+   "transform": "param_to_var",
+   "description": "ODE state v into the perturbation-Coriolis component"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.w",
+   "to": "Cor.w_in",
+   "transform": "param_to_var",
+   "description": "ODE state w into the perturbation-Coriolis component"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.u",
+   "to": "Cur.u_in",
+   "transform": "param_to_var",
+   "description": "ODE state u into the curvature component"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.v",
+   "to": "Cur.v_in",
+   "transform": "param_to_var",
+   "description": "ODE state v into the curvature component"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.w",
+   "to": "Cur.w_in",
+   "transform": "param_to_var",
+   "description": "ODE state w into the curvature component"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.u",
+   "to": "Ray.u_in",
+   "transform": "param_to_var",
+   "description": "ODE state u into the Rayleigh sponge"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.v",
+   "to": "Ray.v_in",
+   "transform": "param_to_var",
+   "description": "ODE state v into the Rayleigh sponge"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.w",
+   "to": "Ray.w_in",
+   "transform": "param_to_var",
+   "description": "ODE state w into the Rayleigh sponge"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.theta_m",
+   "to": "Ray.theta_m_in",
+   "transform": "param_to_var",
+   "description": "ODE state theta_m into the Rayleigh sponge"
+  },
+  {
+   "type": "variable_map",
+   "from": "Geo.z_w",
+   "to": "Ray.ze_in",
+   "transform": "param_to_var",
+   "description": "interface heights into the sponge"
+  },
+  {
+   "type": "variable_map",
+   "from": "Geo.z_w",
+   "to": "Cor.ze_in",
+   "transform": "param_to_var",
+   "description": "interface heights into the Coriolis component"
+  },
+  {
+   "type": "variable_map",
+   "from": "Geo.w_above",
+   "to": "Cor.w_above_in",
+   "transform": "param_to_var",
+   "description": "eta interpolation weight (WRF fnm) into the Coriolis component"
+  },
+  {
+   "type": "variable_map",
+   "from": "Geo.w_below",
+   "to": "Cor.w_below_in",
+   "transform": "param_to_var",
+   "description": "eta interpolation weight (WRF fnp) into the Coriolis component"
+  },
+  {
+   "type": "variable_map",
+   "from": "Geo.w_above",
+   "to": "Cur.w_above_in",
+   "transform": "param_to_var",
+   "description": "eta interpolation weight into the curvature component"
+  },
+  {
+   "type": "variable_map",
+   "from": "Geo.w_below",
+   "to": "Cur.w_below_in",
+   "transform": "param_to_var",
+   "description": "eta interpolation weight into the curvature component"
+  },
+  {
+   "type": "variable_map",
+   "from": "Geo.p_p",
+   "to": "Vm.p_p_in",
+   "transform": "param_to_var",
+   "description": "perturbation pressure into the vertical-momentum component"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.mu_p",
+   "to": "Geo.mu_p",
+   "transform": "param_to_var",
+   "description": "column-constant mu_p"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.mu_p",
+   "to": "Vm.mu_p",
+   "transform": "param_to_var",
+   "description": "column-constant mu_p"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.mu_b",
+   "to": "Geo.mu_b",
+   "transform": "param_to_var",
+   "description": "column-constant mu_b"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.mu_b",
+   "to": "Vm.mu_b",
+   "transform": "param_to_var",
+   "description": "column-constant mu_b"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.p_top",
+   "to": "Geo.p_top",
+   "transform": "param_to_var",
+   "description": "column-constant p_top"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.f",
+   "to": "Cor.f",
+   "transform": "param_to_var",
+   "description": "column-constant f"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.e",
+   "to": "Cor.e",
+   "transform": "param_to_var",
+   "description": "column-constant e"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.sina",
+   "to": "Cor.sina",
+   "transform": "param_to_var",
+   "description": "column-constant sina"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.cosa",
+   "to": "Cor.cosa",
+   "transform": "param_to_var",
+   "description": "column-constant cosa"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.dampcoef",
+   "to": "Ray.dampcoef",
+   "transform": "param_to_var",
+   "description": "column-constant dampcoef"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScmDynamics.zdamp",
+   "to": "Ray.zdamp",
+   "transform": "param_to_var",
+   "description": "column-constant zdamp"
+  },
+  {
+   "type": "variable_map",
+   "from": "Cor.du_dt",
+   "to": "EqWeatherScmDynamics.cor_du_in",
+   "transform": "param_to_var",
+   "description": "Cor.du_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Cur.du_dt",
+   "to": "EqWeatherScmDynamics.cur_du_in",
+   "transform": "param_to_var",
+   "description": "Cur.du_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Ray.du_dt",
+   "to": "EqWeatherScmDynamics.ray_du_in",
+   "transform": "param_to_var",
+   "description": "Ray.du_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Cor.dv_dt",
+   "to": "EqWeatherScmDynamics.cor_dv_in",
+   "transform": "param_to_var",
+   "description": "Cor.dv_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Cur.dv_dt",
+   "to": "EqWeatherScmDynamics.cur_dv_in",
+   "transform": "param_to_var",
+   "description": "Cur.dv_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Ray.dv_dt",
+   "to": "EqWeatherScmDynamics.ray_dv_in",
+   "transform": "param_to_var",
+   "description": "Ray.dv_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Vm.dw_dt",
+   "to": "EqWeatherScmDynamics.vm_dw_in",
+   "transform": "param_to_var",
+   "description": "Vm.dw_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Cor.dw_dt",
+   "to": "EqWeatherScmDynamics.cor_dw_in",
+   "transform": "param_to_var",
+   "description": "Cor.dw_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Cur.dw_dt",
+   "to": "EqWeatherScmDynamics.cur_dw_in",
+   "transform": "param_to_var",
+   "description": "Cur.dw_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Ray.dw_dt",
+   "to": "EqWeatherScmDynamics.ray_dw_in",
+   "transform": "param_to_var",
+   "description": "Ray.dw_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Ray.dtheta_m_dt",
+   "to": "EqWeatherScmDynamics.ray_dth_in",
+   "transform": "param_to_var",
+   "description": "Ray.dtheta_m_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Vm.dphi_dt",
+   "to": "EqWeatherScmDynamics.vm_dphi_in",
+   "transform": "param_to_var",
+   "description": "Vm.dphi_dt into the state document"
+  },
+  {
+   "type": "variable_map",
+   "from": "Geo.p_p",
+   "to": "EqWeatherScmDynamics.geo_p_p_in",
+   "transform": "param_to_var",
+   "description": "Geo.p_p into the state document"
+  }
+ ]
+}
