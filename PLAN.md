@@ -1505,20 +1505,33 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     unknown (row-major nested array, esm-spec §11.4 run-time overrides) — the
     earlier claim that the schema restricts them to scalars is **stale**, and
     the state document's three tests rely on it (`repro_wrt_default_shaped_ok.esm`);
-    (w) the inline runner cannot integrate an **algebraic-only** model —
-    `Exceeded maximum number of nonlinear solver failures` at t = 0 even for
-    `y ~ a·t` (`repro_algebraic_only_no_integration.esm`), which is why
-    `solar_diurnal.esm` carries a TOA-insolation integral as its ODE state;
-    (x) `D` with `wrt` omitted (spec §4.2: absent means `t`) works for a
-    **shaped** state but fails for a **scalar** one with `State variable 'X' has
-    no D(X, t) = ... equation in flat.equations` — always write `"wrt": "t"`
-    (`repro_wrt_default_scalar.esm` / `_fixed.esm`);
-    (y) a bare subsystem mount name (`wrf.g`) does not resolve inside an
-    assertion `reference` expression, only the model-qualified form does, which
-    is why `eqweather_scm_dynamics.esm` writes `EqWeatherScmDynamics.wrf.g`
-    against CLAUDE.md's bare-name rule — the drawback that rule prevents does
-    not apply to a top-level coupling document, which is never re-mounted, but
-    it is a deviation and the gap should be filed;
+    (w) **FIXED upstream, EarthSciAST #406 → #412 (merged 2026-09-19).** The
+    inline runner integrated a document that has nothing to integrate instead of
+    evaluating it once the way `simulate` does, so an **algebraic-only** model
+    failed with `Exceeded maximum number of nonlinear solver failures` at t = 0
+    even for `y ~ a·t` (`repro_algebraic_only_no_integration.esm`). The fix adds
+    the conformance category `static_evaluation_assertions` and makes Julia
+    evaluate when `isempty(prob.u0)`; a §6.6 assertion is now evaluated at its
+    own `time`, not at t = 0. `solar_diurnal.esm` still carries a TOA-insolation
+    integral as its ODE state — that is now a modelling choice, not a
+    workaround, and could be dropped;
+    (x) **FIXED upstream, EarthSciAST #407 → #411 (merged 2026-09-19).** `D`
+    with `wrt` omitted (spec §4.2: absent means `t`) worked for a **shaped**
+    state but failed for a **scalar** one with `State variable 'X' has no
+    D(X, t) = ... equation in flat.equations`
+    (`repro_wrt_default_scalar.esm` / `_fixed.esm`). The root cause was the
+    §4.2 default being applied at one `D` consumer and not the rest; it now
+    lives in `op_registry` (`STRUCTURAL_DERIVATIVE_WRT`/`derivative_wrt`) and is
+    applied by every consumer in Rust, Julia, Python and Go. Writing `"wrt": "t"`
+    explicitly is still the clearer habit but is no longer required;
+    (y) **FIXED upstream, EarthSciAST #408 → #410 (merged 2026-09-19).** A bare
+    subsystem mount name (`wrf.g`) did not resolve inside an assertion
+    `reference` expression, only the model-qualified form did. The fix rebinds
+    the assertion parameter scope over flattened name → owner-relative remainder
+    → globally unambiguous dotted suffixes. **The deviation is retired:**
+    `couplings/eqweather_scm_dynamics.esm` is back to the bare `wrf.g` and
+    passes 15/15, so CLAUDE.md's bare-mount-name rule now holds with no
+    exception anywhere in the repo;
     (z) an `Assertion` admits no `description` field (schema
     `additionalProperties: false`), so per-assertion provenance has to go in the
     test description.
@@ -1527,6 +1540,128 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     that is not its own model name — the file carries no model-qualified
     constant reference, so the note above requiring `WRFSolarGeometry` as the
     mount key no longer applies.
+
+    **Trig now honours a unit's SCALE (EarthSciAST #409 → #413, merged
+    2026-09-19) — and it caught a real mis-declaration here.** Before #413 the
+    transcendentals tested only the DIMENSION of their argument, so
+    `sin(90 deg)` evaluated `sin(90 rad)`. #413 makes them apply the declared
+    scale. Rebuilding the CLI turned 17 assertions red across
+    `wrf_solar_geometry.esm` (63 assertions), `geometry_radiation_column.esm`,
+    `geometry_radiation_column_night.esm` and `solar_diurnal.esm`, all of them
+    `declin`, `coszen` or a SW flux downstream of one.
+
+    The regression was **ours, not upstream's**. `lib/wrf_constants.esm`
+    declared `degrad` as `units: "1"`, transcribing WRF's DEGRAD as the bare
+    number it is in Fortran. That made `sin(sun_longitude·wrf.degrad)` type as
+    **deg** while its value was already in radians, so #413 applied pi/180 a
+    second time — to both sine arguments of
+    `declin = arcsin(sin(obliquity·degrad)·sin(sun_longitude·degrad))`,
+    collapsing the declination to ~2e-4 rad everywhere. The other trig calls
+    read variables *declared* `rad` (`lat_rad`, `hour_angle`, `orbit_angle`,
+    `day_angle`) and were never affected: only a `deg`-typed **expression**
+    passed directly to a trig function double-converts.
+
+    Fixed by declaring `degrad` with its honest units, `rad/deg` (one line, no
+    equation changes): the stored value stays pi/180, `deg · rad/deg` types as
+    `rad` at scale 1, and Eq 2 went from unchecked to `consistent [angle]`.
+    63/63 green. The same declaration also makes Eqs 3, 11 and 12
+    (`orbit_angle`, `hour_angle`, `lat_rad`, each declared `rad` but previously
+    assigned a `deg`-typed right-hand side) type-correct, closing a latent
+    inconsistency that had been invisible only because scale was unenforced.
+
+    **Rule for the rest of the project:** a conversion factor gets the units of
+    the conversion (`rad/deg`), never `"1"`, even when the Fortran it is
+    transcribed from carries no units. Any `deg`-valued quantity handed to a
+    trig function must either be declared `deg` (and left unscaled) or be
+    converted through a variable declared `rad`. This will matter again in the
+    fire components, where CFBM carries slope and wind directions in degrees.
+
+    **The §6.6.5 `reference` scope disagrees between `validate` and `test`
+    (filed 2026-09-19, repros under `data/eqwefic/phase3_probes/`).** Chasing
+    the two loose ends left after #410/#412 turned up one defect with two faces,
+    both in the STRUCTURAL VALIDATOR rather than the runner:
+    - **EarthSciAST #421** — the validator's assertion-`reference` scope is too
+      NARROW. #410 gave the runner three spellings for a mounted parameter
+      (flattened, owner-relative, and any globally unambiguous dotted suffix);
+      the validator only learned the first two. `./esm validate` reports
+      `Variable 'g' referenced in equation is not declared` on a document that
+      `./esm test` passes 1/1 — the same binding contradicting itself
+      (`repro_reference_bare_tail.esm`). Rust, Julia, Go and TypeScript all
+      reject; Python accepts, but indiscriminately — it accepts an AMBIGUOUS
+      bare tail too (`repro_reference_bare_tail_ambiguous.esm`), where the Rust
+      runner correctly errors, which is the validator-side face of the already
+      open **#419**. Commented there rather than filing a third issue.
+    - **EarthSciAST #422** — the same scope is too PERMISSIVE about `t`. #412
+      made all three executing bindings refuse a reference mentioning the
+      independent variable (`REFERENCE_MENTIONS_TIME`, commit `556675570`,
+      because the build-time evaluator's time slot holds 0.0 and such a
+      reference silently answered with the start-of-span value). No validator
+      knows: all five pass `repro_reference_mentions_time.esm`, which no runner
+      will run. It is a purely syntactic property — does `t` occur free — so it
+      is decidable in the structural pass, and for Go and TypeScript, which
+      never execute a test, the validator is the only place it can ever be
+      caught.
+
+    **REGRESSION on EarthSciAST `main`: commit `556675570` (PR #412), filed as
+    EarthSciAST #432 (2026-09-19).** Rebuilding the CLI to pick up #410-#413
+    broke three documents that were green on the parent commit. Bisected in a
+    clean worktree (`/scratch.local/ctessum/bisect-eqwefic`), one commit, three
+    symptoms that appear and disappear together:
+
+    | document | `d7ad059d3` (last good) | `556675570` -> current `main` |
+    |---|---|---|
+    | `wildland_fire/.../fire_wind_wrffire.esm` | 21 / 0 | **0 / 21** |
+    | `atmospheric_dynamics/wrf_arw/perturbation_coriolis.esm` | 213 / 0 | **198 / 15** |
+    | `atmospheric_dynamics/sfclayrev/` | 610 / 0, **22 s** | **no result at 900 s** |
+
+    - `kstar`, a `faq` with `reduce: "min"` over a 44-element index set, answers
+      **`inf`** -- the identity of a `min` over ZERO iterations -- and `uf`/`vf`
+      go `NaN` downstream of it. The same document's other reductions over the
+      same index set are correct on the same run.
+    - `perturbation_coriolis` tendencies that are identically zero come back at
+      1e-8, and the non-zero ones agree only to ~6e-5 against a 1e-5 tolerance:
+      the numbers of a slightly different state, not of a different formula.
+    - `sfclayrev` goes from 22 s to not finishing in 40x that. **This is what
+      ate the 6 h 17 m whole-repo run** -- `/proc` showed 99 % CPU on one thread
+      with 54 read syscalls and 353 kB read in the whole six hours, i.e. spinning
+      inside one document rather than working through files. No stack sample was
+      possible: `kernel.yama.ptrace_scope=3` on the cluster blocks both `gdb -p`
+      and `eu-stack` (the same setting the fire sbatch template works around for
+      MPI shared memory).
+
+    The mechanism is that commit's "build once more with the build pipeline on
+    and read `observed_field`" retry. All three documents are algebraic and
+    state-free, exactly the class the retry targets. The `inf` is the decisive
+    one: a reduction returning its identity element was never evaluated, so the
+    retry produces a SILENT WRONG NUMBER -- the failure mode #406 was filed to
+    remove.
+
+    **Not our corpus.** Checked before blaming upstream: the pre-`faq`-rename
+    `aggregate` spelling of `fire_wind_wrffire.esm`, recovered with
+    `git show 52b9321^:`, fails identically on the new binary. The `faq`
+    migration is exonerated.
+
+    **The local `./esm` is PINNED to `d7ad059d3`** (the #413 merge) until #432
+    is resolved. That keeps #410, #411 and #413 -- so the `${ESD_ROOT}` refs, the
+    bare mount name, the `wrt` default and the trig-scale fix all hold -- and
+    gives up only #412, whose sole benefit here was making
+    `couplings/solar_diurnal.esm`'s TOA-insolation integral optional. Do not
+    rebuild from `origin/main` until #432 closes.
+
+    **Measured per-family cost** (pinned binary, for future reference): couplings
+    674 assertions / 565 s; rrtm_lw 1451 / 120 s; wildland_fire 725 / 363 s;
+    gaschem 825 / 2 s; wsm6 790 / 3 s; sfclayrev 610 / 22 s; dudhia_sw 222 / 5 s;
+    wrf_arw 213 / 1 s; ysu 157 / 3 s; land_surface 84 / <1 s; wrf_solar 63 / <1 s;
+    lib 12 / 3 s. The whole-repo run is ~20 min, not hours; a run that exceeds
+    that is a symptom, not a big suite.
+
+    **This retires the item carried since the #408 work** ("Go/TypeScript reject
+    a bare-tail name that the three executing bindings accept"). The measured
+    shape is different: it is not Go/TS versus the executing bindings, it is
+    every validator versus every runner, and Rust disagrees with itself. The
+    second carried item ("Julia's analytic `reference` path still evaluates at
+    `t = 0`") is **already fixed** by #412 — by refusing `t` outright rather
+    than by re-timing the evaluation — so nothing was filed for it.
 
     **Dynamics split (decided 2026-09-04).** "Dynamical core" means the part of
     WRF that is not a physics parameterization: the governing equations for
