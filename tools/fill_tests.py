@@ -123,8 +123,13 @@ def _eval(expr: str, ns: dict[str, Any]) -> Any:
 
 # --------------------------------------------------------------------------- esm AST
 def _const_gather(values: np.ndarray, axis: str) -> dict[str, Any]:
-    """aggregate(k from axis; index(const [...], k)) -- an inline column literal."""
-    return {"op": "aggregate", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": axis}},
+    """faq(k from axis; index(const [...], k)) -- an inline column literal.
+
+    `faq` since 2026-09-20; the `aggregate` spelling this used to emit is the
+    pre-1.1.0 alias and is REMOVED at esm 2.0.0.  Files written before that date
+    still carry it and warn on load until they are re-filled.
+    """
+    return {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": axis}},
             "expr": {"op": "index", "args": [{"op": "const", "args": [], "value": [float(x) for x in values]}, "k"]}}
 
 
@@ -138,7 +143,8 @@ def _fields_library(test: dict[str, Any], ns: dict[str, Any], esm_name: str) -> 
             "body": _const_gather(vals, spec["axis"]),
         }
     return {
-        "esm": "1.0.0",
+        # 1.1.0: the inline column literals below use the `faq` op, which arrives at 1.1.0.
+        "esm": "1.1.0",
         "metadata": {
             "name": f"{test['id']}_inputs",
             "description": (f"Input column fields of inline test `{test['id']}` of {esm_name}, extracted by "

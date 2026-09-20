@@ -1488,14 +1488,85 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     reproduces ~2 % of the θm tendency**; D(u) runs the other way, dynamics
     4.25e-4 against PBL 2.76e-4.
 
-    **Still missing for the full state document:** ~19 state coupling-target
-    parameters that do not exist yet (YSU `theta/u/v/qv/qc/qi_in`; Dudhia
-    `qv/qc/qr/qi/qs/qg_in`; RRTM column `qv/qc/qr/qi/qs_in`, `cldfra_in`; slab
-    `T_s_in`) plus their mount-edge libraries; and **a component that does not
-    exist anywhere: `cal_cldfra`**. RRTM's `cldfra` comes from a dump today and
-    nothing in this repo or `../EarthSciModels/components` computes it; with
-    `icloud = 1` WRF diagnoses it from RH in `phys/module_radiation_driver.F`.
-    Until it exists, cloud fraction in a running column is prescribed.
+    **Both of these were BUILT on 2026-09-20; the physics half is now mountable.**
+
+    - **20 state coupling-target parameters (the estimate said ~19; it missed
+      Dudhia's `T_in`) and five mount-edge libraries.** YSU `theta/u/v/qv/qc/qi_in`
+      (`scmstate_couple_ysu_inputs.esm`); Dudhia `T/qv/qc/qr/qi/qs/qg_in`
+      (`..._sw_inputs.esm`); RRTM column `qv/qc/qr/qi/qs_in` + `cldfra_in`
+      (`..._rrtmcol_inputs.esm`); slab `T_s_in` (`..._slab_inputs.esm`); and
+      CalCldfra's own six (`..._cldfra_inputs.esm`). Slab's soil geometry `ze`
+      is deliberately NOT a target — the layer depths come from SOILPARM and are
+      time-invariant, like the dynamics half's base state.
+
+      **Two components had to stop owning their state for these edges to mean
+      anything.** YSU carried `ic(x) = input_x` with `D(x) = dxdt` for all six of
+      theta, u, v, qv, qc, qi, and Dudhia the same for `T`. Lowering `input_x` to
+      a coupling target on those would have bound only the INITIAL CONDITION: the
+      component would then integrate its own copy under the PBL (or radiative)
+      tendency alone, while the document integrated the shared state under the
+      sum, and the two would silently diverge over a 24 h run. Both are tendency
+      diagnostics — YSU's outputs are dthdt/dudt/dvdt/dqvdt/dqcdt/dqidt and
+      Dudhia's is dTdt — so the seven `ic`/`D` pairs became plain algebraic reads
+      `x = input_x`, which is the instantaneous-derivative form CLAUDE.md
+      prescribes and the form every other component here already had (slab and
+      the RRTM stages were already algebraic). Both files now have no structural
+      equation at all, which post-EarthSciAST #412 (`static_evaluation_assertions`)
+      is a supported document kind in Rust, Julia and Python. Every assertion in
+      both is at t = 0 on an observed, so the counts are unchanged: YSU 157/157,
+      Dudhia 222/222.
+
+    - **`cal_cldfra` exists**, as
+      `components/atmospheric_radiation/cloud_fraction/{cal_cldfra,cal_cldfra_parameters}.esm`,
+      **63/63**. It is WRF's `cal_cldfra1` (icloud = 1): the condensate threshold,
+      the ice-weighted blend of the Murray over-water and over-ice saturation
+      fits, and the Randall (1994) fractional fit with its −6.9 exponential floor
+      and 0.01 snap, pointwise in `lev`. It observes `branch`, the Fortran's own
+      `cldfra1_flag`, so a test pins which arm fired and not only the number.
+
+      **The reference had to be a new real64 kernel replay, and that is the
+      interesting part.** The in-model real32 CLDFRA is NOT an adequate reference
+      here: the Randall branch divides the condensate by
+      (RHGRID·QVS_WEIGHT − QV)^GAMMA, a cancellation of two near-equal numbers,
+      and near saturation that costs WRF's single precision up to 5.1e-5
+      absolute — 1.2e-4 relative, twelve times looser than the rel 1e-5 contract
+      for real32 references. Measured: re-evaluating this component's own
+      expressions in binary32 reproduces the in-model CLDFRA to 6.0e-8, so the
+      gap is WRF's arithmetic and not the transcription. `kernels/cldfra_driver`
+      (+ `cldfra_state_stub.F90` and a Makefile rule) therefore compiles
+      cal_cldfra1 EXTRACTED VERBATIM from `module_radiation_driver.F` at build
+      time, the same awk-extraction trick the solar kernels use, so the reference
+      cannot drift from the model. Residual against it is binary64 roundoff
+      (≤ 4.3e-16), so tolerances are abs 1e-12 on the columns and rel 1e-9 on the
+      spot checks.
+
+      Six regimes, from two reference runs, chosen to cover branches the SCM
+      alone cannot: em_scm_xy calls 1 (fully clear — and not trivially so, RHUM
+      reaches 27 in the stratosphere, so the condensate guard is the only thing
+      holding those five layers at 0), 120 and 360 (pure-ice high cloud); and the
+      em_quarter_ss supercell columns 20/40 at calls 61 (pure LIQUID, the only
+      case that exercises the over-water arm alone), 268 (the full ice-weight
+      sweep 0 → 1, and the only case that reaches the −6.9 floor, 8 layers, and
+      the 0.01 snap, 10 layers) and 396 (deep ice anvil, 30 fractional layers).
+      Every scm_cloud dump in the repo is pure ice, which is why the supercell
+      case is here. Mutation-checked: replacing the ice fit with the water fit
+      fails 44/63, dropping the phase blend 44/63, dropping the −6.9 floor 4, the
+      0.01 snap 2, the condensate guard 1 — the last of those is why the clear
+      column is a test at all, since the first five regimes leave that guard
+      unexercised.
+
+      The dumps are built by `tools/prep_cldfra_dumps.py` (dump extraction only,
+      no equations) into `data/eqwefic/dumps/cldfra/`. A Fortran defect found
+      while transcribing is **FORTRAN_BUGS.md B13**: cal_cldfra1's `ELSE` arm
+      writes a CLDFRA that the block below unconditionally overwrites, and in that
+      arm `QCLD` and `weight` are never assigned, so the code reads an
+      uninitialised local on the first iteration and the previous cell's value
+      afterwards. Harmless for every microphysics option WRF ships through this
+      path; not transcribed.
+
+    **Still missing for the full state document:** only the document itself —
+    the two halves co-mounted, with D(θm) taking the sum of the dynamics and
+    physics tendencies and D(T_s) taking slab's. Every edge it needs now exists.
     Easy win not taken: the same θm wiring for
     `couplings/scm_physics_column_night.esm` (conversion dumps exist at steps
     1, 60, 300, 900, 1410, 2160, 3000).
