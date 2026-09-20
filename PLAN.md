@@ -1641,12 +1641,44 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     `git show 52b9321^:`, fails identically on the new binary. The `faq`
     migration is exonerated.
 
-    **The local `./esm` is PINNED to `d7ad059d3`** (the #413 merge) until #432
-    is resolved. That keeps #410, #411 and #413 -- so the `${ESD_ROOT}` refs, the
-    bare mount name, the `wrt` default and the trig-scale fix all hold -- and
-    gives up only #412, whose sole benefit here was making
-    `couplings/solar_diurnal.esm`'s TOA-insolation integral optional. Do not
-    rebuild from `origin/main` until #432 closes.
+    **RESOLVED 2026-09-20 by EarthSciAST #434 and #433, both merged; the pin on
+    `./esm` is lifted and the CLI is back on `main` (`3cf6f6f92`).** The fix
+    separated two defects that the single `inf` had been hiding:
+
+    - **The deeper one PREDATES #412 and was never about the range.**
+      `prepare::eval_observed` boxed a scalar observed as a rank-1, ONE-CELL
+      array, but `lookup_variable` answers `Value::Scalar` only for a rank-0
+      entry -- so a one-cell vector came back as a FIELD. A `faq` body reading
+      such a name therefore evaluated to an array, `reduce_contraction` collapsed
+      each term through `as_scalar()` (`None` above rank 0) and produced `NaN`
+      per iteration, and then the reducer decided what you saw: `+` accumulated
+      `NaN`, while `min` seeded at `+inf` and kept it, because IEEE-754
+      `f64::min(inf, NaN) == inf` DROPS the NaN operand. An unreduced identity is
+      indistinguishable from a reduction over zero iterations -- which is why
+      `kstar` looked like "44 elements, answered like zero". In
+      `fire_wind_wrffire.esm` the body reads the scalar observed `kdmax`: the
+      READ was empty, not the range. **Our reading in #432 was wrong on this
+      point**, and the correction matters because it means `esm simulate` had
+      been silently answering `NaN`/`inf` for this whole class on every binary,
+      including the `d7ad059d3` we pinned to -- verified directly:
+
+          simulate @ d7ad059d3   above[4] = NaN   kstar = inf   n_above = NaN
+          simulate @ 3cf6f6f92   above[4] = 1     kstar = 3     n_above = 2
+
+      Filed and fixed separately as EarthSciAST **#431 / #433** ("a build-time
+      field's rank is its declaration's"), with `tests/valid/faq/` and
+      `tests/scalar_operand_in_faq.rs` pinning it.
+    - **The #412 regression proper** was `with_build_pipeline_if_needed` running
+      eagerly inside `build_for_test`, ahead of any solve, so the runner answered
+      from `observed_field` and never called `solve` -- replacing a correct
+      answer rather than supplying a missing one, and paying a second whole
+      document build per `BuildKey` (`sfclayrev`'s 22 s -> no result at 900 s).
+      #434 makes it a LAST RESORT, reached only after `solve` refuses a problem
+      with `has_nothing_to_integrate`, and a failed retry now leaves `solve`'s
+      own diagnostic standing.
+
+    Verified on `3cf6f6f92`: `fire_wind_wrffire.esm` 21/0, `wrf_arw` 213/0,
+    `sfclayrev` 610/0 back at 22 s.
 
     **Measured per-family cost** (pinned binary, for future reference): couplings
     674 assertions / 565 s; rrtm_lw 1451 / 120 s; wildland_fire 725 / 363 s;
