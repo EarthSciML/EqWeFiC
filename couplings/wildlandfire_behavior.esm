@@ -1,0 +1,394 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "WildlandFireBehavior",
+  "description": "The fire-behavior half of EqAtmFire: NCAR's Community Fire Behavior Model (WRF 4.8 phys/fire_behavior) for one fire cell and its level set, with the nine per-cell components coupled to each other by reference instead of each being driven by its own dumped inputs. The chain is fuel category -> Anderson-13 table -> (fuel load, depth, SAVR, extinction moisture, burn weight) ; 2 m temperature/humidity/pressure -> five-class time-lag fuel moisture -> the cell's bulk moisture state and d(fmc_g)/dt ; (fuel, moisture) -> Rothermel reaction intensity, packing ratio, wind/slope coefficients and the no-wind spread r_0 ; (Rothermel, mid-flame wind, terrain slope, front normal) -> rate of spread ; ros -> the level-set PDE d psi/dt = -R |grad psi| + nu |R| (dx psi_xx + dy psi_yy) ; the level set -> ignition time and, through the subcell quadrature, the fuel fraction left and the fuel consumption RATE ; (burn rate, load, moisture) -> the sensible and latent heat flux that FireAtmosphereColumn hands to the atmosphere. THE THREE TENDENCIES ARE d psi/dt (level set, 80 x 80), dfuel_frac_dt (fuel burn rate of the cell) and dfmc_g_dt (bulk fuel moisture); everything else is a diagnostic on the way to them. WHAT IS LOAD-BEARING: the only numbers prescribed here are the ones the fire model receives from OUTSIDE itself (the fuel category, the 2 m forcing, the mid-flame wind and terrain slope, the front normal, the level-set stencil and the previous step's fuel fraction) plus the level-set field itself; every quantity that one fire-behavior component computes for another travels a coupling edge. Deleting any of the 17 inter-mount edges makes a Fortran-dump assertion fail. STAGING, measured not assumed: fire_behavior evaluates its stages sequentially within a step, and two of the couplings are therefore not bit-identical to the Fortran. (i) Calc_ros_params runs on the fuel moisture BEFORE Advance_moisture_classes updates it and Calc_fire_fluxes runs on the moisture AFTER, while a continuous formulation must evaluate both at one instantaneous state; this document feeds both the state, fmc_g_state = sum_k w_k fmc_old_k, which is what Rothermel sees exactly (2e-8 relative) and what the flux sees to 7.9e-7 relative -- inside the real32 tolerance, so no assertion is loosened for it. (ii) Calc_flame_length is called before Calc_fuel_left with the PREVIOUS step's fire_area and the LAST Runge-Kutta stage's ros, so its two inputs are prescribed from the dump rather than taken from the coupling, and the document says so rather than pretending the edge exists. Regime: cell (18, 64) of the 80 x 80 fire mesh at step 20 (ts = 10 s, dt = 0.5 s) of the fire_behavior test7 standalone run with the fuel-moisture model active, Anderson category 2 (timber with grass understory), a heading front with fire_area = 0.957 and a 0.40 m/s spread rate. The level set is Runge-Kutta stage 1 of that step with the default fire_upwinding = 9 (hybrid WENO5 in a 4-cell band around the front, ENO1 outside, guarded linear-extrapolation halo), lowered by the EarthSciDiscretizations cartesian_uniform_2d rules. References: dumps fire/run_fmc/esm_dump_{fmc,fmc_avg,ros_params,ls_tend,ls_tign,fuel_left,flame,fire_flux}_*.json, instrumented fork ctessum-claude/fire_behavior @ c9dda02, real32, rel 1e-5. Run as `./esm test couplings/wildlandfire_behavior.esm` with ESD_ROOT set.",
+  "license": "MIT",
+  "tags": [
+   "assembly",
+   "coupling",
+   "wildland_fire",
+   "fire_behavior",
+   "level-set"
+  ],
+  "references": [
+   {
+    "citation": "NCAR Community Fire Behavior Model (fire_behavior), develop @ eb77580; instrumented fork ctessum-claude/fire_behavior branch earthsciml-instrumented @ c9dda02. test7 standalone run with fmoist_run = .true., fire_upwinding = 9; dumps data/eqwefic/dumps/fire/run_fmc/."
+   },
+   {
+    "citation": "Munoz-Esparza, D., B. Kosovic, J. Jimenez and J. Coen (2018), An accurate fire-spread algorithm in the Weather Research and Forecasting model using the level-set method, JAMES 10, 908-926, doi:10.1002/2017MS001108."
+   }
+  ]
+ },
+ "metaparameters": {
+  "NX": {
+   "type": "integer",
+   "default": 80,
+   "description": "Fire-mesh cells in x (test7 ifde - ifds + 1 = 80); bound into the level-set grid and its discretization rules."
+  },
+  "NY": {
+   "type": "integer",
+   "default": 80,
+   "description": "Fire-mesh cells in y."
+  }
+ },
+ "models": {
+  "Fuel": {
+   "ref": "../components/wildland_fire/fire_behavior/anderson13_fuel_table.esm"
+  },
+  "Moisture": {
+   "ref": "../components/wildland_fire/fire_behavior/fuel_moisture_wrffire.esm",
+   "expression_template_imports": [
+    {
+     "ref": "../components/wildland_fire/fire_behavior/tests/moisture_run_step20_timber_grass_understory_inputs.esm"
+    }
+   ]
+  },
+  "Roth": {
+   "ref": "../components/wildland_fire/fire_behavior/rothermel_wrffire.esm"
+  },
+  "Ros": {
+   "ref": "../components/wildland_fire/fire_behavior/ros_wrffire.esm"
+  },
+  "Ign": {
+   "ref": "../components/wildland_fire/fire_behavior/ignition_time_wrffire.esm"
+  },
+  "FuelFrac": {
+   "ref": "../components/wildland_fire/fire_behavior/fuel_fraction_cell.esm"
+  },
+  "Flame": {
+   "ref": "../components/wildland_fire/fire_behavior/flame_length_wrffire.esm"
+  },
+  "HeatFlux": {
+   "ref": "../components/wildland_fire/level_set/fire_heat_flux.esm"
+  },
+  "LevelSet": {
+   "ref": "../components/wildland_fire/fire_behavior/level_set_tendency_wrffire.esm",
+   "bindings": {
+    "NX": "NX",
+    "NY": "NY"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/rules/weno5_eno1_norm_D2_extrapolate_bc.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    },
+    {
+     "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/rules/weno5_eno1_D1x_extrapolate_bc.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    },
+    {
+     "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/rules/weno5_eno1_D1y_extrapolate_bc.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    },
+    {
+     "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/rules/central_D2x_extrapolate_bc.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    },
+    {
+     "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/rules/central_D2y_extrapolate_bc.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    },
+    {
+     "ref": "../components/wildland_fire/fire_behavior/tests/weno5_eno1_fmc_step20_stage1_inputs.esm"
+    }
+   ]
+  },
+  "WildlandFireBehavior": {
+   "variables": {
+    "code": {"type": "unknown", "units": "1", "description": "Prescribed EXTERNAL input: Anderson fuel category of the cell (nfuel_cat = 2, timber with grass understory)."},
+    "t2": {"type": "unknown", "units": "K", "description": "Prescribed EXTERNAL input: 2 m temperature over the fire cell at the end of the moisture step."},
+    "t2_old": {"type": "unknown", "units": "K", "description": "Prescribed EXTERNAL input: 2 m temperature at the start of the moisture step."},
+    "q2": {"type": "unknown", "units": "kg/kg", "description": "Prescribed EXTERNAL input: 2 m water-vapour mixing ratio at the end of the step."},
+    "q2_old": {"type": "unknown", "units": "kg/kg", "description": "Prescribed EXTERNAL input: 2 m mixing ratio at the start of the step."},
+    "psfc": {"type": "unknown", "units": "Pa", "description": "Prescribed EXTERNAL input: surface pressure at the end of the step."},
+    "psfc_old": {"type": "unknown", "units": "Pa", "description": "Prescribed EXTERNAL input: surface pressure at the start of the step."},
+    "nvx": {"type": "unknown", "units": "1", "description": "Prescribed EXTERNAL input: x component of the upwind front normal at the cell (level_set_mod Calc_tend_ls; the level set supplies it to ROS in the Fortran, but the normal the hybrid scheme forms is not the one the component exposes, so it is prescribed here)."},
+    "nvy": {"type": "unknown", "units": "1", "description": "Prescribed EXTERNAL input: y component of the upwind front normal."},
+    "uf": {"type": "unknown", "units": "m/s", "description": "Prescribed EXTERNAL input: mid-flame wind u at the cell (FireWindWRFFire output; the standalone wind instrumentation covers only the 10 x 10 block at the domain origin, which carries no fire, so the wind component cannot be mounted at a burning cell and its output is prescribed)."},
+    "vf": {"type": "unknown", "units": "m/s", "description": "Prescribed EXTERNAL input: mid-flame wind v at the cell."},
+    "dzdxf": {"type": "unknown", "units": "1", "description": "Prescribed EXTERNAL input: terrain slope dz/dx on the fire mesh."},
+    "dzdyf": {"type": "unknown", "units": "1", "description": "Prescribed EXTERNAL input: terrain slope dz/dy."},
+    "ts": {"type": "unknown", "units": "s", "description": "Prescribed EXTERNAL input: model time at the start of the fire step."},
+    "lfn_in": {"type": "unknown", "units": "m", "description": "Prescribed EXTERNAL input: level set at the cell before the propagation of this step (Update_ignition_times lfn_in)."},
+    "lfn_out": {"type": "unknown", "units": "m", "description": "Prescribed EXTERNAL input: level set at the cell after the propagation of this step."},
+    "tign_before": {"type": "unknown", "units": "s", "description": "Prescribed EXTERNAL input: ignition time held at the cell before this step."},
+    "lfn_mm": {"type": "unknown", "units": "m", "description": "Prescribed EXTERNAL input: level set at node (i-1, j-1) of the 3 x 3 stencil Calc_fuel_left reads."},
+    "lfn_m0": {"type": "unknown", "units": "m", "description": "Level set at node (i-1, j)."},
+    "lfn_mp": {"type": "unknown", "units": "m", "description": "Level set at node (i-1, j+1)."},
+    "lfn_0m": {"type": "unknown", "units": "m", "description": "Level set at node (i, j-1)."},
+    "lfn_00": {"type": "unknown", "units": "m", "description": "Level set at the cell node (i, j)."},
+    "lfn_0p": {"type": "unknown", "units": "m", "description": "Level set at node (i, j+1)."},
+    "lfn_pm": {"type": "unknown", "units": "m", "description": "Level set at node (i+1, j-1)."},
+    "lfn_p0": {"type": "unknown", "units": "m", "description": "Level set at node (i+1, j)."},
+    "lfn_pp": {"type": "unknown", "units": "m", "description": "Level set at node (i+1, j+1)."},
+    "tign_mm": {"type": "unknown", "units": "s", "description": "Prescribed EXTERNAL input: ignition time at node (i-1, j-1)."},
+    "tign_m0": {"type": "unknown", "units": "s", "description": "Ignition time at node (i-1, j)."},
+    "tign_mp": {"type": "unknown", "units": "s", "description": "Ignition time at node (i-1, j+1)."},
+    "tign_0m": {"type": "unknown", "units": "s", "description": "Ignition time at node (i, j-1)."},
+    "tign_00": {"type": "unknown", "units": "s", "description": "Ignition time at the cell node (i, j)."},
+    "tign_0p": {"type": "unknown", "units": "s", "description": "Ignition time at node (i, j+1)."},
+    "tign_pm": {"type": "unknown", "units": "s", "description": "Ignition time at node (i+1, j-1)."},
+    "tign_p0": {"type": "unknown", "units": "s", "description": "Ignition time at node (i+1, j)."},
+    "tign_pp": {"type": "unknown", "units": "s", "description": "Ignition time at node (i+1, j+1)."},
+    "time_now": {"type": "unknown", "units": "s", "description": "Prescribed EXTERNAL input: time_start + dt, the time Calc_fuel_left evaluates the subcell exponentials at."},
+    "fuel_frac_before": {"type": "unknown", "units": "1", "description": "Prescribed EXTERNAL input: fuel fraction left at the cell at the end of the previous step."},
+    "flame_ros": {"type": "unknown", "units": "m/s", "description": "Prescribed, NOT coupled: the rate of spread Calc_flame_length sees. WRF calls it before Calc_fuel_left with grid%ros as the LAST Runge-Kutta stage of the step left it, not the stage-1 ros this document couples (0.4015839 against 0.4034055), so wiring Ros.ros here would change the reference."},
+    "flame_iboros": {"type": "unknown", "units": "1", "description": "Prescribed, NOT coupled: reaction intensity over rate of spread as Calc_flame_length sees it (same staging as flame_ros; equal to Roth.iboros to 3e-6)."},
+    "flame_fire_area": {"type": "unknown", "units": "1", "description": "Prescribed, NOT coupled: the burning-area fraction Calc_flame_length sees, which is the PREVIOUS step's (0.8145828 against this step's 0.9570873) because it runs before Calc_fuel_left."},
+    "h_fuel": {"type": "unknown", "units": "J/kg", "description": "Prescribed EXTERNAL input: heat of combustion of dry fuel (fire_behavior CMBCNST = 17.433 MJ/kg)."},
+    "i_coupled": {"type": "unknown", "units": "1", "description": "Prescribed: x index of the fire cell whose rate of spread the mounted ROSWRFFire drives in the level set."},
+    "j_coupled": {"type": "unknown", "units": "1", "description": "Prescribed: y index of that cell."},
+    "fgi_in": {"type": "parameter", "units": "kg/m^2", "default": 0.0, "description": "Receives Fuel.fgi."},
+    "fuel_time_in": {"type": "parameter", "units": "s", "default": 0.0, "description": "Receives Fuel.fuel_time."},
+    "fmc_g_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives Moisture.fmc_g."},
+    "fmc_g_state_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives Moisture.fmc_g_state."},
+    "dfmc_g_dt_in": {"type": "parameter", "units": "1/s", "default": 0.0, "description": "Receives Moisture.dfmc_g_dt."},
+    "betafl_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives Roth.betafl."},
+    "bbb_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives Roth.bbb."},
+    "phiwc_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives Roth.phiwc."},
+    "r_0_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives Roth.r_0."},
+    "iboros_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives Roth.iboros."},
+    "ros_in": {"type": "parameter", "units": "m/s", "default": 0.0, "description": "Receives Ros.ros."},
+    "speed_in": {"type": "parameter", "units": "m/s", "default": 0.0, "description": "Receives Ros.speed."},
+    "tign_in": {"type": "parameter", "units": "s", "default": 0.0, "description": "Receives Ign.tign."},
+    "fire_area_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives FuelFrac.fire_area."},
+    "fuel_frac_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives FuelFrac.fuel_frac."},
+    "fuel_frac_burnt_dt_in": {"type": "parameter", "units": "1", "default": 0.0, "description": "Receives FuelFrac.fuel_frac_burnt_dt."},
+    "dfuel_frac_dt_in": {"type": "parameter", "units": "1/s", "default": 0.0, "description": "Receives FuelFrac.dfuel_frac_dt."},
+    "flame_length_in": {"type": "parameter", "units": "m", "default": 0.0, "description": "Receives Flame.flame_length."},
+    "phi_h_in": {"type": "parameter", "units": "W/m^2", "default": 0.0, "description": "Receives HeatFlux.phi_h."},
+    "phi_q_in": {"type": "parameter", "units": "W/m^2", "default": 0.0, "description": "Receives HeatFlux.phi_q."},
+    "dpsi_dt_in": {"type": "parameter", "units": "m/s", "shape": ["x", "y"], "default": 0.0, "description": "Receives LevelSet.tend, the level-set tendency field."},
+    "grad_mag_in": {"type": "parameter", "units": "1", "shape": ["x", "y"], "default": 0.0, "description": "Receives LevelSet.grad_mag."},
+    "fgi": {"type": "unknown", "units": "kg/m^2", "description": "Oven-dry surface fuel load of the cell's category."},
+    "fuel_time": {"type": "unknown", "units": "s", "description": "Fuel e-folding burn time weight/0.85."},
+    "fmc_g": {"type": "unknown", "units": "1", "description": "Bulk fuel moisture after the moisture step (Average_moisture_classes)."},
+    "fmc_g_state": {"type": "unknown", "units": "1", "description": "Bulk fuel moisture STATE, the weighted mean of the class moistures at the start of the step; what Rothermel and the flux are evaluated at."},
+    "dfmc_g_dt": {"type": "unknown", "units": "1/s", "description": "TENDENCY: d(fmc_g)/dt of the cell."},
+    "betafl": {"type": "unknown", "units": "1", "description": "Rothermel packing ratio."},
+    "bbb": {"type": "unknown", "units": "1", "description": "Rothermel wind exponent B."},
+    "phiwc": {"type": "unknown", "units": "1", "description": "Rothermel wind coefficient C (beta/betaop)^-E."},
+    "r_0": {"type": "unknown", "units": "1", "description": "No-wind, no-slope spread rate in ft/min."},
+    "iboros": {"type": "unknown", "units": "1", "description": "Reaction intensity over rate of spread (Btu/ft^2)."},
+    "ros": {"type": "unknown", "units": "m/s", "description": "Rate of spread of the cell along the front normal."},
+    "speed": {"type": "unknown", "units": "m/s", "description": "Mid-flame wind speed projected on the front normal."},
+    "tign": {"type": "unknown", "units": "s", "description": "Ignition time at the cell after this step."},
+    "fire_area": {"type": "unknown", "units": "1", "description": "Burning-area fraction of the cell."},
+    "fuel_frac": {"type": "unknown", "units": "1", "description": "Fuel fraction left at the cell."},
+    "fuel_frac_burnt_dt": {"type": "unknown", "units": "1", "description": "Fuel fraction consumed over this fire step."},
+    "dfuel_frac_dt": {"type": "unknown", "units": "1/s", "description": "TENDENCY: fuel consumption rate of the cell."},
+    "flame_length": {"type": "unknown", "units": "m", "description": "Flame length at the front."},
+    "phi_h": {"type": "unknown", "units": "W/m^2", "description": "Sensible heat flux of the cell handed to the atmosphere (fire_behavior fgrnhfx)."},
+    "phi_q": {"type": "unknown", "units": "W/m^2", "description": "Latent heat flux of the cell (fgrnqfx)."},
+    "dpsi_dt": {"type": "unknown", "units": "m/s", "shape": ["x", "y"], "description": "TENDENCY: d psi/dt of the level set over the fire mesh."},
+    "grad_mag": {"type": "unknown", "units": "1", "description": "|grad psi| at the coupled cell."}
+   },
+   "equations": [
+    {"lhs": "code", "rhs": 2.0},
+    {"lhs": "t2", "rhs": 318.25555419921875},
+    {"lhs": "t2_old", "rhs": 318.25555419921875},
+    {"lhs": "q2", "rhs": 0.005505851469933987},
+    {"lhs": "q2_old", "rhs": 0.005505851469933987},
+    {"lhs": "psfc", "rhs": 84605.171875},
+    {"lhs": "psfc_old", "rhs": 84605.171875},
+    {"lhs": "nvx", "rhs": -0.718267560005188},
+    {"lhs": "nvy", "rhs": 0.6957668662071228},
+    {"lhs": "uf", "rhs": 0.7921292781829834},
+    {"lhs": "vf", "rhs": 3.2887778282165527},
+    {"lhs": "dzdxf", "rhs": 0.04451172053813934},
+    {"lhs": "dzdyf", "rhs": 0.07022461295127869},
+    {"lhs": "ts", "rhs": 10.0},
+    {"lhs": "lfn_in", "rhs": -7.9989166259765625},
+    {"lhs": "lfn_out", "rhs": -8.17409896850586},
+    {"lhs": "tign_before", "rhs": 9.339492797851562},
+    {"lhs": "lfn_mm", "rhs": -6.894020080566406},
+    {"lhs": "lfn_m0", "rhs": 6.148895263671875},
+    {"lhs": "lfn_mp", "rhs": 22.1827392578125},
+    {"lhs": "lfn_0m", "rhs": -29.563018798828125},
+    {"lhs": "lfn_00", "rhs": -13.982681274414062},
+    {"lhs": "lfn_0p", "rhs": 4.4417877197265625},
+    {"lhs": "lfn_pm", "rhs": -48.228126525878906},
+    {"lhs": "lfn_p0", "rhs": -29.756263732910156},
+    {"lhs": "lfn_pp", "rhs": -8.942573547363281},
+    {"lhs": "tign_mm", "rhs": 9.93557357788086},
+    {"lhs": "tign_m0", "rhs": 10.50000286102295},
+    {"lhs": "tign_mp", "rhs": 10.50000286102295},
+    {"lhs": "tign_0m", "rhs": 8.16958999633789},
+    {"lhs": "tign_00", "rhs": 9.339492797851562},
+    {"lhs": "tign_0p", "rhs": 10.50000286102295},
+    {"lhs": "tign_pm", "rhs": 6.573239803314209},
+    {"lhs": "tign_p0", "rhs": 8.13400650024414},
+    {"lhs": "tign_pp", "rhs": 9.758289337158203},
+    {"lhs": "time_now", "rhs": 10.5},
+    {"lhs": "fuel_frac_before", "rhs": 0.926552414894104},
+    {"lhs": "flame_ros", "rhs": 0.4015839099884033},
+    {"lhs": "flame_iboros", "rhs": 7160.04638671875},
+    {"lhs": "flame_fire_area", "rhs": 0.8145828247070312},
+    {"lhs": "h_fuel", "rhs": 17433000.0},
+    {"lhs": "i_coupled", "rhs": 18.0},
+    {"lhs": "j_coupled", "rhs": 64.0},
+    {"lhs": "fgi", "rhs": "fgi_in"},
+    {"lhs": "fuel_time", "rhs": "fuel_time_in"},
+    {"lhs": "fmc_g", "rhs": "fmc_g_in"},
+    {"lhs": "fmc_g_state", "rhs": "fmc_g_state_in"},
+    {"lhs": "dfmc_g_dt", "rhs": "dfmc_g_dt_in"},
+    {"lhs": "betafl", "rhs": "betafl_in"},
+    {"lhs": "bbb", "rhs": "bbb_in"},
+    {"lhs": "phiwc", "rhs": "phiwc_in"},
+    {"lhs": "r_0", "rhs": "r_0_in"},
+    {"lhs": "iboros", "rhs": "iboros_in"},
+    {"lhs": "ros", "rhs": "ros_in"},
+    {"lhs": "speed", "rhs": "speed_in"},
+    {"lhs": "tign", "rhs": "tign_in"},
+    {"lhs": "fire_area", "rhs": "fire_area_in"},
+    {"lhs": "fuel_frac", "rhs": "fuel_frac_in"},
+    {"lhs": "fuel_frac_burnt_dt", "rhs": "fuel_frac_burnt_dt_in"},
+    {"lhs": "dfuel_frac_dt", "rhs": "dfuel_frac_dt_in"},
+    {"lhs": "flame_length", "rhs": "flame_length_in"},
+    {"lhs": "phi_h", "rhs": "phi_h_in"},
+    {"lhs": "phi_q", "rhs": "phi_q_in"},
+    {"lhs": "dpsi_dt", "rhs": "dpsi_dt_in"},
+    {"lhs": "grad_mag", "rhs": {"op": "index", "args": ["grad_mag_in", 18, 64]}}
+   ],
+   "tests": [
+    {
+     "id": "test7_fmc_step20_cell_18_64",
+     "description": "Reference: NCAR fire_behavior test7 (80 x 80 fire mesh, dx = dy = 25 m, dt = 0.5 s) with the fuel-moisture model on, step 20 (ts = 10 s), fire cell (18, 64), Anderson category 2. Every expected value is a real32 Fortran dump of the run data/eqwefic/dumps/fire/run_fmc: the fuel table and Rothermel parameters from esm_dump_ros_params_20.json, the moisture classes from esm_dump_fmc_20.json and esm_dump_fmc_avg_20.json, the rate of spread and level-set tendency from Runge-Kutta stage 1 (esm_dump_ls_tend_58.json), the ignition time from esm_dump_ls_tign_20.json, the fuel fraction from esm_dump_fuel_left_20.json, the flame length from esm_dump_flame_20.json and the heat fluxes from esm_dump_fire_flux_20.json. rel 1e-5 throughout except where the description of an assertion says otherwise. The document has 6400 level-set ODE states and every assertion is at t = 0, so the time span is empty (esm-spec 6.6.2) and the runner answers from the initial state without integrating.",
+     "parameter_overrides": {},
+     "time_span": {"start": 0, "end": 0},
+     "tolerance": {"rel": 1e-05},
+     "assertions": [
+      {"variable": "fgi", "time": 0.0, "expected": 0.8960000276565552, "tolerance": {"rel": 1e-05}},
+      {"variable": "fuel_time", "time": 0.0, "expected": 8.235294342041016, "tolerance": {"rel": 1e-05}},
+      {"variable": "fmc_g", "time": 0.0, "expected": 0.058352306485176086, "tolerance": {"rel": 1e-05}},
+      {"variable": "fmc_g_state", "time": 0.0, "expected": 0.05835314467549324, "tolerance": {"rel": 1e-05}},
+      {"variable": "dfmc_g_dt", "time": 0.0, "expected": -1.6795623430707563e-06, "tolerance": {"rel": 2e-05}},
+      {"variable": "betafl", "time": 0.0, "expected": 0.005416030529886484, "tolerance": {"rel": 1e-05}},
+      {"variable": "bbb", "time": 0.0, "expected": 1.8304370641708374, "tolerance": {"rel": 1e-05}},
+      {"variable": "phiwc", "time": 0.0, "expected": 0.00021596839360427111, "tolerance": {"rel": 1e-05}},
+      {"variable": "r_0", "time": 0.0, "expected": 4.617142200469971, "tolerance": {"rel": 1e-05}},
+      {"variable": "iboros", "time": 0.0, "expected": 7160.02587890625, "tolerance": {"rel": 1e-05}},
+      {"variable": "speed", "time": 0.0, "expected": 3.3828284740448, "tolerance": {"rel": 1e-05}},
+      {"variable": "ros", "time": 0.0, "expected": 0.4034055471420288, "tolerance": {"rel": 1e-05}},
+      {"variable": "tign", "time": 0.0, "expected": 9.339492797851562, "tolerance": {"rel": 1e-05}},
+      {"variable": "fire_area", "time": 0.0, "expected": 0.9570873379707336, "tolerance": {"rel": 1e-05}},
+      {"variable": "fuel_frac", "time": 0.0, "expected": 0.8730319142341614, "tolerance": {"rel": 1e-05}},
+      {"variable": "fuel_frac_burnt_dt", "time": 0.0, "expected": 0.05352050065994263, "tolerance": {"rel": 1e-05}},
+      {"variable": "dfuel_frac_dt", "time": 0.0, "expected": 0.10704100131988526, "tolerance": {"rel": 1e-05}},
+      {"variable": "flame_length", "time": 0.0, "expected": 3.0220394134521484, "tolerance": {"rel": 1e-05}},
+      {"variable": "phi_h", "time": 0.0, "expected": 1579792.375, "tolerance": {"rel": 1e-05}},
+      {"variable": "phi_q", "time": 0.0, "expected": 140088.96875, "tolerance": {"rel": 1e-05}},
+      {"variable": "grad_mag", "time": 0.0, "expected": 0.987514078617096, "tolerance": {"rel": 1e-05}},
+      {"variable": "dpsi_dt", "time": 0.0, "coords": {"x": 18, "y": 64}, "expected": -0.3517639935016632, "tolerance": {"rel": 1e-05}},
+      {"variable": "dpsi_dt", "time": 0.0, "coords": {"x": 17, "y": 63}, "expected": -0.16829986870288849, "tolerance": {"rel": 1e-05}},
+      {"variable": "dpsi_dt", "time": 0.0, "coords": {"x": 20, "y": 66}, "expected": -1.2457104921340942, "tolerance": {"rel": 1e-05}},
+      {"variable": "dpsi_dt", "time": 0.0, "coords": {"x": 40, "y": 40}, "expected": -0.026860108599066734, "tolerance": {"rel": 1e-05}},
+      {"variable": "dpsi_dt", "time": 0.0, "coords": {"x": 10, "y": 10}, "expected": -0.029555385932326317, "tolerance": {"rel": 1e-05}}
+     ]
+    }
+   ]
+  }
+ },
+ "coupling": [
+  {"type": "variable_map", "from": "WildlandFireBehavior.code", "to": "Fuel.code", "transform": "param_to_var", "description": "Anderson fuel category of the cell"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.t2", "to": "Moisture.t2", "transform": "param_to_var", "description": "2 m temperature forcing"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.t2_old", "to": "Moisture.t2_old", "transform": "param_to_var", "description": "2 m temperature at the start of the step"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.q2", "to": "Moisture.q2", "transform": "param_to_var", "description": "2 m mixing ratio"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.q2_old", "to": "Moisture.q2_old", "transform": "param_to_var", "description": "2 m mixing ratio at the start of the step"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.psfc", "to": "Moisture.psfc", "transform": "param_to_var", "description": "surface pressure"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.psfc_old", "to": "Moisture.psfc_old", "transform": "param_to_var", "description": "surface pressure at the start of the step"},
+  {"type": "variable_map", "from": "Fuel.fgi", "to": "Roth.fgi", "transform": "param_to_var", "description": "fuel table -> Rothermel: surface fuel load"},
+  {"type": "variable_map", "from": "Fuel.fueldepthm", "to": "Roth.fueldepthm", "transform": "param_to_var", "description": "fuel table -> Rothermel: fuel bed depth"},
+  {"type": "variable_map", "from": "Fuel.fueldens", "to": "Roth.fueldens", "transform": "param_to_var", "description": "fuel table -> Rothermel: oven-dry particle density"},
+  {"type": "variable_map", "from": "Fuel.savr", "to": "Roth.savr", "transform": "param_to_var", "description": "fuel table -> Rothermel: surface-area-to-volume ratio"},
+  {"type": "variable_map", "from": "Fuel.st", "to": "Roth.st", "transform": "param_to_var", "description": "fuel table -> Rothermel: total mineral content"},
+  {"type": "variable_map", "from": "Fuel.se", "to": "Roth.se", "transform": "param_to_var", "description": "fuel table -> Rothermel: effective mineral content"},
+  {"type": "variable_map", "from": "Fuel.fuelmce", "to": "Roth.fuelmce", "transform": "param_to_var", "description": "fuel table -> Rothermel: moisture of extinction"},
+  {"type": "variable_map", "from": "Fuel.ichap", "to": "Roth.ischap", "transform": "param_to_var", "description": "fuel table -> Rothermel: chaparral flag"},
+  {"type": "variable_map", "from": "Moisture.fmc_g_state", "to": "Roth.fmc_g", "transform": "param_to_var", "description": "moisture -> Rothermel: the bulk fuel-moisture STATE (see the document description for the staging)"},
+  {"type": "variable_map", "from": "Roth.bbb", "to": "Ros.bbb", "transform": "param_to_var", "description": "Rothermel -> ROS: wind exponent"},
+  {"type": "variable_map", "from": "Roth.betafl", "to": "Ros.betafl", "transform": "param_to_var", "description": "Rothermel -> ROS: packing ratio"},
+  {"type": "variable_map", "from": "Roth.phiwc", "to": "Ros.phiwc", "transform": "param_to_var", "description": "Rothermel -> ROS: wind coefficient"},
+  {"type": "variable_map", "from": "Roth.r_0", "to": "Ros.r_0", "transform": "param_to_var", "description": "Rothermel -> ROS: no-wind spread rate"},
+  {"type": "variable_map", "from": "Fuel.ichap", "to": "Ros.ischap", "transform": "param_to_var", "description": "fuel table -> ROS: chaparral branch"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.nvx", "to": "Ros.nvx", "transform": "param_to_var", "description": "front normal x"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.nvy", "to": "Ros.nvy", "transform": "param_to_var", "description": "front normal y"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.uf", "to": "Ros.uf", "transform": "param_to_var", "description": "mid-flame wind u"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.vf", "to": "Ros.vf", "transform": "param_to_var", "description": "mid-flame wind v"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.dzdxf", "to": "Ros.dzdxf", "transform": "param_to_var", "description": "terrain slope x"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.dzdyf", "to": "Ros.dzdyf", "transform": "param_to_var", "description": "terrain slope y"},
+  {"type": "variable_map", "from": "Ros.ros", "to": "LevelSet.ros_in", "transform": "param_to_var", "description": "ROS -> level set: the spread rate of the coupled cell replaces the supplied field there"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.i_coupled", "to": "LevelSet.i_coupled", "transform": "param_to_var", "description": "which cell of the level set the coupled ROS drives"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.j_coupled", "to": "LevelSet.j_coupled", "transform": "param_to_var", "description": "which cell of the level set the coupled ROS drives"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.ts", "to": "Ign.ts", "transform": "param_to_var", "description": "step start time"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_in", "to": "Ign.lfn_in", "transform": "param_to_var", "description": "level set before propagation"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_out", "to": "Ign.lfn_out", "transform": "param_to_var", "description": "level set after propagation"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_before", "to": "Ign.tign_before", "transform": "param_to_var", "description": "ignition time held before this step"},
+  {"type": "variable_map", "from": "Fuel.fuel_time", "to": "FuelFrac.fuel_time", "transform": "param_to_var", "description": "fuel table -> fuel fraction: burn e-folding time"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.time_now", "to": "FuelFrac.time_now", "transform": "param_to_var", "description": "evaluation time of the subcell exponentials"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.fuel_frac_before", "to": "FuelFrac.fuel_frac_before", "transform": "param_to_var", "description": "fuel fraction at the end of the previous step"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_mm", "to": "FuelFrac.lfn_mm", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_m0", "to": "FuelFrac.lfn_m0", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_mp", "to": "FuelFrac.lfn_mp", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_0m", "to": "FuelFrac.lfn_0m", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_00", "to": "FuelFrac.lfn_00", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_0p", "to": "FuelFrac.lfn_0p", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_pm", "to": "FuelFrac.lfn_pm", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_p0", "to": "FuelFrac.lfn_p0", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.lfn_pp", "to": "FuelFrac.lfn_pp", "transform": "param_to_var", "description": "level-set stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_mm", "to": "FuelFrac.tign_mm", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_m0", "to": "FuelFrac.tign_m0", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_mp", "to": "FuelFrac.tign_mp", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_0m", "to": "FuelFrac.tign_0m", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_00", "to": "FuelFrac.tign_00", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_0p", "to": "FuelFrac.tign_0p", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_pm", "to": "FuelFrac.tign_pm", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_p0", "to": "FuelFrac.tign_p0", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.tign_pp", "to": "FuelFrac.tign_pp", "transform": "param_to_var", "description": "ignition-time stencil"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.flame_ros", "to": "Flame.ros", "transform": "param_to_var", "description": "prescribed, see flame_ros"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.flame_iboros", "to": "Flame.iboros", "transform": "param_to_var", "description": "prescribed, see flame_iboros"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.flame_fire_area", "to": "Flame.fire_area", "transform": "param_to_var", "description": "prescribed, see flame_fire_area"},
+  {"type": "variable_map", "from": "FuelFrac.dfuel_frac_dt", "to": "HeatFlux.fuel_burn_rate", "transform": "param_to_var", "description": "fuel fraction -> heat flux: the fuel consumption RATE"},
+  {"type": "variable_map", "from": "Fuel.fgi", "to": "HeatFlux.w_l", "transform": "param_to_var", "description": "fuel table -> heat flux: fuel load"},
+  {"type": "variable_map", "from": "Moisture.fmc_g_state", "to": "HeatFlux.M_f", "transform": "param_to_var", "description": "moisture -> heat flux: bulk fuel moisture state"},
+  {"type": "variable_map", "from": "WildlandFireBehavior.h_fuel", "to": "HeatFlux.h_fuel", "transform": "param_to_var", "description": "heat of combustion CMBCNST"},
+  {"type": "variable_map", "from": "Fuel.fgi", "to": "WildlandFireBehavior.fgi_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Fuel.fuel_time", "to": "WildlandFireBehavior.fuel_time_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Moisture.fmc_g", "to": "WildlandFireBehavior.fmc_g_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Moisture.fmc_g_state", "to": "WildlandFireBehavior.fmc_g_state_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Moisture.dfmc_g_dt", "to": "WildlandFireBehavior.dfmc_g_dt_in", "transform": "param_to_var", "description": "TENDENCY out"},
+  {"type": "variable_map", "from": "Roth.betafl", "to": "WildlandFireBehavior.betafl_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Roth.bbb", "to": "WildlandFireBehavior.bbb_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Roth.phiwc", "to": "WildlandFireBehavior.phiwc_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Roth.r_0", "to": "WildlandFireBehavior.r_0_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Roth.iboros", "to": "WildlandFireBehavior.iboros_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Ros.ros", "to": "WildlandFireBehavior.ros_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Ros.speed", "to": "WildlandFireBehavior.speed_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "Ign.tign", "to": "WildlandFireBehavior.tign_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "FuelFrac.fire_area", "to": "WildlandFireBehavior.fire_area_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "FuelFrac.fuel_frac", "to": "WildlandFireBehavior.fuel_frac_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "FuelFrac.fuel_frac_burnt_dt", "to": "WildlandFireBehavior.fuel_frac_burnt_dt_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "FuelFrac.dfuel_frac_dt", "to": "WildlandFireBehavior.dfuel_frac_dt_in", "transform": "param_to_var", "description": "TENDENCY out"},
+  {"type": "variable_map", "from": "Flame.flame_length", "to": "WildlandFireBehavior.flame_length_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "HeatFlux.phi_h", "to": "WildlandFireBehavior.phi_h_in", "transform": "param_to_var", "description": "diagnostic: the flux FireAtmosphereColumn consumes"},
+  {"type": "variable_map", "from": "HeatFlux.phi_q", "to": "WildlandFireBehavior.phi_q_in", "transform": "param_to_var", "description": "diagnostic"},
+  {"type": "variable_map", "from": "LevelSet.tend", "to": "WildlandFireBehavior.dpsi_dt_in", "transform": "param_to_var", "description": "TENDENCY out: d psi/dt over the fire mesh"},
+  {"type": "variable_map", "from": "LevelSet.grad_mag", "to": "WildlandFireBehavior.grad_mag_in", "transform": "param_to_var", "description": "diagnostic"}
+ ]
+}
