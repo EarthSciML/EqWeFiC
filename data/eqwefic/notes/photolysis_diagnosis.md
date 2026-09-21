@@ -328,3 +328,94 @@ the dump. So the chain is verified from the column state to the j-values **excep
 radiative transfer itself**. What remains is a tridiagonal solve over `2·nlayer = 138`
 unknowns repeated for each of the 101 bins — the one place in this scheme where a
 discrete recurrence is defensible under CLAUDE.md, and the one piece not attempted here.
+
+---
+
+## 8. The chain is closed (2026-09-21, later still)
+
+`optics` and `ps2str` are written. The end state §7.4 called open is reached.
+
+### 8.1 What now exists
+
+`components/gaschem/madronich/` — **409 assertions, 0 fail, 0 err**:
+
+| file | assertions | what it pins |
+|---|---|---|
+| `solar_geometry.esm` | 52 | `calc_zenith`, `chap`, `zenita` |
+| `column_setup.esm` | 148 | `nabv` extension, `o3scal` to 325 DU, cloud extinction |
+| `layer_columns.esm` | 37 | `subgrid`'s layer means, `vaer` normalization, `cvo2` |
+| `spectra.esm` | 36 | T/p-dependent cross sections and the 11 quantum yields |
+| `optical_depth.esm` | 11 | Rayleigh/O3/aerosol/cloud optical depths, delta scaling, `sphers`, **the direct beam** |
+| `two_stream.esm` | 20 | **`ps2str`** — the 138-unknown tridiagonal delta-Eddington solve |
+| `j_values.esm` | 105 | the wavelength integral → the 21 RADM2 j-values |
+
+`couplings/madronich_column.esm` — **84 assertions, 0 fail, 0 err**: mounts
+`optical_depth` and `two_stream`, wires them with 9 coupling edges, and computes
+**all 21 j-values at 4 levels from the column state**. Nothing about the radiation
+field is supplied; only the cross sections and quantum yields arrive as data, and
+those are pinned separately.
+
+### 8.2 The second check is genuinely second
+
+The expected values are `phot1_s`, from the photolysis dump. But `ph_* = 60·phot1`
+and WRF's generated KPP interface divides by 60 again, so `phot1_s(n,k)` **is**
+`jv(n,k)` — measured at **1.1e-7** relative against `dumps/radm2_wrf/*.json`, a
+different dump written by a different subroutine at a different point in the step.
+So these j-values are cross-checked against **the chemistry's own input**, not
+against the photolysis code's output twice.
+
+### 8.3 The recurrence, and why it is only here
+
+Everything upstream is an integral or a contraction — including `tauc` and `tausla`,
+which the Fortran accumulates by running addition and which telescope exactly. The
+two-stream solve does not: the Thomas pivot `bet(r) = b(r) − a(r)·d(r−1)/bet(r−1)`
+is a function of the previous **answer**, so it is a genuine recurrence under
+esm-spec §4.3.1.1 and there is no closed form. Three equations are causal
+self-references along `row`; the wavelength axis carries lag zero, which identifies
+`row` as the recurrence axis. The back substitution runs the other way and §4.3.1.1
+admits no backward lag, so it is written on the **reversed** row axis and flipped
+once — the same trick the Fortran gets from a descending `DO`.
+
+### 8.4 Agreement, measured
+
+Verified in float64 against the dump before any `.esm` was written: the full chain
+reproduces WRF's 21 j-values to **8.9e-6** relative at 7 levels. In the `.esm` the
+diffuse fluxes agree to a relative L2 of 6.4e-5 (`fldn`) and 2.7e-5 (`flup`) over
+all 70×101 entries, and the coupled j-values pass at `rel 1e-3`. The reference is a
+single-precision Thomas solve over 138 unknowns per bin; that is the size of its own
+rounding.
+
+One real bug was found and fixed by this exercise, in my own first transcription:
+`fdr(lev) = EXP(-tausla(lev-1))` over `lev = 2..nlayer+1` is **not** `fdr[k] =
+exp(-tausla[k-1])` in 0-based indexing — it is `exp(-tausla[k])`. The off-by-one
+cost 0.5–2.5 % on the j-values and vanished into 8.9e-6 when corrected.
+
+---
+
+## 9. Recommendation on `gaschem/fastjx/*` — for a human to decide
+
+**Do not delete them, and do not try to make them WRF's photolysis.** Concretely:
+
+1. **They are not WRF-Chem's scheme and cannot become it.** That was §4's finding and
+   nothing since has softened it. The reference runs Madronich; Fast-JX is not a
+   WRF-Chem option at any `phot_opt`.
+2. **Nothing in EqWeFiC should depend on them.** `INVENTORY.md`'s photolysis row now
+   points at `gaschem/madronich/*`, and `PLAN.md` §3.2's EqAtmChem assembly should
+   take its j-values from `couplings/madronich_column.esm`. The line in PLAN.md that
+   reads "reuse Fast-JX where it matches" should be struck — it matches nothing.
+3. **They may still be a valid Fast-JX for a GEOS-Chem-lineage mechanism.** They came
+   from `GasChem.jl`, and `gaschem/superfast.esm` and `gaschem/geoschem_fullchem.esm`
+   live in the same tree. Whether they are *correct* for those is a question this
+   project never asked and has no evidence on — we only established that they are not
+   Madronich.
+4. **So the decision is EarthSciModels', not ours.** The useful thing this project can
+   hand over is the diagnosis: 13 numbered defects *relative to WRF-Chem*, of which
+   the structural ones (0-D where the physics is a column, a tabulated actinic flux
+   with no cloud/aerosol/albedo, 10 of 21 species, zero tests) would be defects
+   against **any** reference, and the specific ones (Madronich's tables, the Chapman
+   function, the 325 DU rescaling) would not.
+5. **Minimum action, if any is taken now:** add a one-line note to `fastjx.esm`'s
+   description saying it is not WRF-Chem's photolysis and pointing at
+   `gaschem/madronich/`, so nobody wires it into a WRF-derived assembly by mistake.
+   That is a docs change, it breaks nothing, and it does not pre-empt the larger
+   question of whether the component earns its 46,000 lines.
