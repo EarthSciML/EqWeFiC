@@ -13,13 +13,20 @@
       { "citation": "NCAR/MMM-physics mp_wsm6.F90 at commit 550b5b4 (WRF 4.8 phys/physics_mmm submodule), lines 667-705 (melting) and 777-830 (freezing)." }
     ]
   },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 40,
+      "description": "Number of model layers (WRF kte); 40 is the em_quarter_ss supercell reference column. This component declares no index set of its own -- `lev` merges in from the hydrometeor_slopes.esm (`sd`) subsystem it mounts (esm-spec 4.7) -- so NLEV exists only to be bound at the mount edge and passed down to it, which is what lets a 59-layer assembly such as couplings/eqweather_scm.esm mount this stage beside the rest of the column."
+    }
+  },
   "models": {
     "WSM6MeltingFreezing": {
       "expression_template_imports": [ { "ref": "../../../lib/wrf_air_properties.esm" }, { "ref": "./microphysics_templates.esm" } ],
       "subsystems": {
         "wrf": { "ref": "../../../lib/wrf_constants.esm" },
         "par": { "ref": "./wsm6_parameters.esm" },
-        "sd": { "ref": "./hydrometeor_slopes.esm" }
+        "sd": { "ref": "./hydrometeor_slopes.esm", "bindings": { "NLEV": "NLEV" } }
       },
       "variables": {
         "qc_in": { "type": "parameter", "units": "kg/kg", "shape": ["lev"], "default": 0.0, "description": "Coupling-target parameter (additive): receives the cloud-water mixing ratio from the upstream stage through a document coupling (couplings/microphysics_column*.esm), where the mount-edge template library lowers `input_qc` to this name. Unused by the standalone inline tests, which lower `input_qc` to a dumped column profile instead." },
@@ -61,7 +68,13 @@
         "qi_out": { "type": "unknown", "units": "kg/kg", "shape": ["lev"], "description": "Cloud ice after the block, qi - pimlt_inc + pihmf_inc + pihtf_inc." },
         "qr_out": { "type": "unknown", "units": "kg/kg", "shape": ["lev"], "description": "Rain after the block, qr - psmlt_inc - pgmlt_inc - pgfrz_inc (the melting increments are negative)." },
         "qs_out": { "type": "unknown", "units": "kg/kg", "shape": ["lev"], "description": "Snow after the block, qs + psmlt_inc." },
-        "qg_out": { "type": "unknown", "units": "kg/kg", "shape": ["lev"], "description": "Graupel after the block, qg + pgmlt_inc + pgfrz_inc." }
+        "qg_out": { "type": "unknown", "units": "kg/kg", "shape": ["lev"], "description": "Graupel after the block, qg + pgmlt_inc + pgfrz_inc." },
+        "dqc_dt": { "type": "unknown", "units": "kg/kg/s", "shape": ["lev"], "description": "Cloud-water tendency of the block, (qc_out - qc)/dtcld. The melting/freezing block is an in-place increment, not a rate: this is the increment it applies divided by the sub-step it applies it over, which is the tendency a consumer integrating the column must add. It converges to the unlimited process rates as dtcld -> 0; at a finite dtcld it carries the block's own limiters (a species can never melt or freeze past zero)." },
+        "dqi_dt": { "type": "unknown", "units": "kg/kg/s", "shape": ["lev"], "description": "Cloud-ice tendency of the block, (qi_out - qi)/dtcld. See dqc_dt." },
+        "dqr_dt": { "type": "unknown", "units": "kg/kg/s", "shape": ["lev"], "description": "Rain tendency of the block, (qr_out - qr)/dtcld. See dqc_dt." },
+        "dqs_dt": { "type": "unknown", "units": "kg/kg/s", "shape": ["lev"], "description": "Snow tendency of the block, (qs_out - qs)/dtcld. See dqc_dt." },
+        "dqg_dt": { "type": "unknown", "units": "kg/kg/s", "shape": ["lev"], "description": "Graupel tendency of the block, (qg_out - qg)/dtcld. See dqc_dt." },
+        "dT_dt": { "type": "unknown", "units": "K/s", "shape": ["lev"], "description": "Latent-heating tendency of the block, (T_out - T)/dtcld: the fusion heating of the four melting and freezing increments. See dqc_dt." }
       },
       "equations": [
         { "lhs": "qc", "rhs": { "op": "input_qc", "args": [] } },
@@ -110,7 +123,13 @@
         { "lhs": "qi_out", "rhs": { "op": "+", "args": [{ "op": "-", "args": ["sd.qi", "pimlt_inc"] }, "pihmf_inc", "pihtf_inc"] } },
         { "lhs": "qr_out", "rhs": { "op": "-", "args": ["sd.qr", { "op": "+", "args": ["psmlt_inc", "pgmlt_inc", "pgfrz_inc"] }] } },
         { "lhs": "qs_out", "rhs": { "op": "+", "args": ["sd.qs", "psmlt_inc"] } },
-        { "lhs": "qg_out", "rhs": { "op": "+", "args": ["sd.qg", "pgmlt_inc", "pgfrz_inc"] } }
+        { "lhs": "qg_out", "rhs": { "op": "+", "args": ["sd.qg", "pgmlt_inc", "pgfrz_inc"] } },
+        { "lhs": "dqc_dt", "rhs": { "op": "/", "args": [{ "op": "-", "args": ["qc_out", "qc"] }, "dtcld"] } },
+        { "lhs": "dqi_dt", "rhs": { "op": "/", "args": [{ "op": "-", "args": ["qi_out", "sd.qi"] }, "dtcld"] } },
+        { "lhs": "dqr_dt", "rhs": { "op": "/", "args": [{ "op": "-", "args": ["qr_out", "sd.qr"] }, "dtcld"] } },
+        { "lhs": "dqs_dt", "rhs": { "op": "/", "args": [{ "op": "-", "args": ["qs_out", "sd.qs"] }, "dtcld"] } },
+        { "lhs": "dqg_dt", "rhs": { "op": "/", "args": [{ "op": "-", "args": ["qg_out", "sd.qg"] }, "dtcld"] } },
+        { "lhs": "dT_dt", "rhs": { "op": "/", "args": [{ "op": "-", "args": ["T_out", "sd.T"] }, "dtcld"] } }
       ],
       "tests": [
         {

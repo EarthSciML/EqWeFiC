@@ -1621,6 +1621,39 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     is now ~2 hours, and that one file should be excluded from a fast whole-repo
     check and run on its own.
 
+    **WSM6 MOUNTED 2026-09-20, and the document now has a CLOUDY test.** Eight more
+    mounts (Sat, Sed, Melt, Warm, Cold, IceDep, Rescale, SatAdj) take it to 24
+    components, 339 coupling edges and 656 ODE states; q_r, q_s and q_g became
+    states, and with all six moisture species prognostic `q_t` stopped being a
+    frozen input and is now computed in the document and fed to the geometry and
+    the vertical-momentum buoyancy term (bit-identical to the old frozen profile,
+    which was exactly q_v + q_c + q_i). The step-1410 test is **65/65 unchanged**.
+    The new step-60 / call-120 test is the cloudy one: cirrus ice to 4.64e-5 kg/kg,
+    cal_cldfra = 1.0 in seven layers, OLR 129.7 W/m² against 256.0 in the clear
+    column — so cal_cldfra's Randall fit, the RRTM cloud optics and WSM6's ice
+    branch are all exercised for the first time in a coupled document. **69/69,
+    but read the tolerances before believing it**: the three microphysical
+    tendencies DISAGREE with WRF and their bounds record the disagreement rather
+    than certify agreement (mp_dqv_dt 1.1e-8 against a reference maximum of
+    3.3e-8, mp_dqi_dt 2.8e-8 against 2.2e-8, mp_dtheta_dt 4.3e-5 K/s against
+    1.2e-4). The cause is measured, not assumed: three diagnostics split D(q_i)|mp
+    into its stages at exactly 0 / 2.15e-8 / 5.30e-8 kg/kg/s, so **sedimentation
+    alone is 2.4× WRF's whole ice tendency**. That is the PLM-vs-donor-cell gap
+    `sedimentation.esm` already documents about itself, appearing in a coupled
+    document for the first time because step 1410 has no falling ice. Closing it
+    needs a PLM-equivalent flux rule in EarthSciDiscretizations, or a dt→0
+    extrapolated reference of the kind the component's own sedimentation tests
+    use. It is the next thing to fix on this document. The vapour and heating
+    residuals are a different, expected effect: WRF stages fallout → melting →
+    rates → adjustment sequentially, each on the state the last one left, while a
+    continuous formulation evaluates every stage at one instantaneous state and
+    sums — O(dtcld) by construction, and not removable without abandoning the ODE
+    form.
+    Cost after WSM6: **7 m 58 s for both tests on the PR #439 binary**, 3 m 47 s
+    for the clear-sky test alone (up from 2 m 31 s). On `main` it got worse, not
+    better: 479 → 656 states means #438 now charges 1313 full RHS evaluations per
+    run instead of 959, and a run was killed unfinished at 15 minutes.
+
     Easy win still not taken: the same θm wiring for
     `couplings/scm_physics_column_night.esm` (conversion dumps exist at steps
     1, 60, 300, 900, 1410, 2160, 3000).
