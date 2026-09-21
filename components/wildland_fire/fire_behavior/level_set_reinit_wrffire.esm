@@ -1,0 +1,943 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "LevelSetReinitWRFFire",
+  "description": "The level-set REINITIALISATION equation of NCAR fire_behavior (physics/level_set_mod.F90 Reinit_level_set / Advance_ls_reinit; Sussman, Smereka and Osher 1994 as adapted by Munoz-Esparza et al. 2018), written as the PDE d psi / d tau = S(psi_0) (1 - |grad psi|) on cartesian_uniform_2d and lowered by the EarthSciDiscretizations rule each test imports. WHAT THIS IS AND IS NOT. It is NOT part of d psi/dt: the fire model propagates the level set, then re-signs it in a pseudo-time loop between the propagation and the ignition-time update, so the instantaneous tendency that couplings/wildlandfire_behavior.esm exposes is untouched by anything here. What it is, is the operator that keeps psi close to a signed distance function, which matters for two reasons: the WENO5/ENO1 band test of the PROPAGATION scheme is written on |psi| itself, so a psi that drifts away from a distance function silently changes which discretisation each cell gets; and a long .esm integration that omits it will diverge from WRF's for that reason even though every instantaneous tendency agrees. ACCEPTANCE: this component's own pseudo-time tendency is verified against the Fortran; it makes no claim about d psi/dt. THE SIGN IS FROZEN. S(psi_0) = psi_0 / sqrt(psi_0^2 + dx^2) is formed ONCE per reinitialisation from the field the propagation left (fire_behavior's lfn_s0, from lfn_out) and reused by all three Runge-Kutta stages, so psi_ref is a separate input from psi and is NOT psi at stages 2 and 3. The stage-2 test is what proves the component keeps it frozen. It is also the upwind selector: the hybrid WENO5/ENO1 derivative picks its side from S(psi_0) (d4 psi/dx), not from the wind-relative sign the propagation uses, which is why this component imports the rule weno5_eno1_signed_norm_D2_extrapolate_bc and supplies the free name upwind_sign rather than wind_u/wind_v. UNITS, stated because they are odd and the oddity is the reference code's: the reinitialisation's pseudo-time step is dt_s = reinit_pseudot_coef * dx, which is a LENGTH, and the tendency S (1 - |grad psi|) is DIMENSIONLESS, so the update lfn_fin = lfn_ini + dt_s * rk_coeff * tend_r is metres + metres and is consistent -- but the quantity fire_behavior calls a time step is a length and what it calls a tendency has no units. tau_step and dpsi_dtau are declared accordingly rather than being given a fictitious second. HOW MUCH IT MOVES psi, measured rather than assumed: at the coefficient both shipped namelists set (reinit_pseudot_coef = 0.0001, against the namelist_mod default of 0.01) one reinitialisation of one WRF step changes psi by at most 5.7 mm and on average 0.14 mm, i.e. 2.3e-4 of the 25 m cell, while rms(|grad psi| - 1) over the domain is 0.177. So on test7 the reinitialisation is very nearly inert, and the 100x larger namelist default -- what a user who does not copy test7's namelist gets -- would make it 0.57 m per step, 2.3 % of a cell. Not transcribed: Reinit_level_set's outer loop (fire_lsm_reinit_iter Runge-Kutta iterations, default 1), its final `lfn_out = min(lfn_s3, lfn_in)` clamp (\"fire area can only increase\"), and Reinit_level_set_fast_dist (the fast-sweeping option, fast_dist_reinit_opt). Reference: fire_behavior develop @ eb77580, instrumented fork ctessum-claude/fire_behavior@66a800e, real32, rel 1e-5. TOLERANCE ON dpsi_dtau, measured not guessed: the tendency is S (1 - |grad psi|), and near the front |grad psi| is within a few 1e-3 of 1, so the subtraction loses about 2.5 decimal digits to cancellation out of real32's 7. The floor is therefore an ABSOLUTE 2e-7 alongside the relative 2e-5, which is roughly three ulps of the dumped grad_mag: at (18,64), 1 - grad = 3.879e-3 with eps32(grad) = 5.96e-8, giving |S| eps32 = 1.9e-8 against an observed residual of 3.2e-8, and at (20,66) 4.2e-8 against 7.0e-8 -- a couple of ulps in both cases, i.e. the reference's own precision and not a transcription difference. Where there is no cancellation the relative tolerance still governs: at (17,57) the tendency is -1.71 and 2e-7 is 1.2e-7 relative, far tighter than 2e-5, so the floor never makes an assertion vacuous.",
+  "license": "MIT",
+  "tags": [
+   "wildland_fire",
+   "fire_behavior",
+   "level-set",
+   "reinitialisation",
+   "pde"
+  ],
+  "references": [
+   {
+    "citation": "NCAR Community Fire Behavior Model (fire_behavior), develop @ eb77580, physics/level_set_mod.F90: Reinit_level_set, Advance_ls_reinit. Instrumented fork ctessum-claude/fire_behavior branch earthsciml-instrumented @ 66a800e (the ls_reinit dump hook)."
+   },
+   {
+    "citation": "Sussman, M., P. Smereka and S. Osher (1994), A level set approach for computing solutions to incompressible two-phase flow, Journal of Computational Physics 114, 146-159.",
+    "doi": "10.1006/jcph.1994.1155"
+   },
+   {
+    "citation": "Munoz-Esparza, D., B. Kosovic, P. A. Jimenez and J. L. Coen (2018), An accurate fire-spread algorithm in the Weather Research and Forecasting model using the level-set method, JAMES 10, 908-926.",
+    "doi": "10.1002/2017MS001108"
+   }
+  ]
+ },
+ "metaparameters": {
+  "NX": {
+   "type": "integer",
+   "default": 80,
+   "description": "Fire-mesh cells in x (test7 ifde - ifds + 1 = 80)."
+  },
+  "NY": {
+   "type": "integer",
+   "default": 80,
+   "description": "Fire-mesh cells in y."
+  }
+ },
+ "models": {
+  "LevelSetReinitWRFFire": {
+   "expression_template_imports": [
+    {
+     "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/grid.esm",
+     "bindings": {
+      "NX": "NX",
+      "NY": "NY"
+     }
+    }
+   ],
+   "variables": {
+    "x0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "West edge of the fire mesh (grid geometry contract)."
+    },
+    "y0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "South edge of the fire mesh."
+    },
+    "Lx": {
+     "type": "parameter",
+     "units": "m",
+     "default": 2000.0,
+     "description": "Fire-mesh extent in x (test7: 80 cells of 25 m)."
+    },
+    "Ly": {
+     "type": "parameter",
+     "units": "m",
+     "default": 2000.0,
+     "description": "Fire-mesh extent in y."
+    },
+    "dx": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Cell size in x, Lx/NX; also the smoothing length of the sign function."
+    },
+    "dy": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Cell size in y, Ly/NY."
+    },
+    "bdy_eno1_cells": {
+     "type": "parameter",
+     "units": "1",
+     "default": 10,
+     "description": "Cells from a wall within which the derivative drops to ENO1 (fire_behavior BDY_ENO1 = 10). Free name required by the imported rule."
+    },
+    "weno_band_cells": {
+     "type": "parameter",
+     "units": "1",
+     "default": 4,
+     "description": "Band half-width in cells within which WENO5 is used (fire_lsm_band_ngp = 4; threshold_hlu = weno_band_cells dx). Free name required by the imported rule. NOTE the reinitialisation's band test is SIGNED, psi >= weno_band_cells dx selects ENO1, not |psi| >= ... -- see the rule's description and FORTRAN_BUGS."
+    },
+    "reinit_pseudot_coef": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0001,
+     "description": "Coefficient of the pseudo-time step, dt_s = reinit_pseudot_coef dx. Both shipped namelists set 1e-4; namelist_mod's default is 1e-2."
+    },
+    "psi": {
+     "type": "unknown",
+     "units": "m",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "The level set at this Runge-Kutta stage of the reinitialisation (fire_behavior lfn_curr), consumer-supplied through `input_psi`. The component does not own it: the consumer drives the pseudo-time iteration."
+    },
+    "psi_ref": {
+     "type": "unknown",
+     "units": "m",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "The level set the smoothed sign is FROZEN from, i.e. the field the propagation left before the reinitialisation started (fire_behavior lfn_out, the source of lfn_s0). Equal to psi at stage 1 only. Consumer-supplied through `input_psi_ref`."
+    },
+    "upwind_sign": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "The smoothed sign S(psi_0) = psi_ref / sqrt(psi_ref^2 + dx^2) (fire_behavior lfn_s0). It is both the coefficient of the reinitialisation forcing and the free name by which the imported rule chooses each cell's upwind side."
+    },
+    "grad_mag": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "|grad psi| from the signed-upwind hybrid WENO5/ENO1 derivative (fire_behavior grad_norm_reinit). Dimensionless: metres of psi per metre of distance."
+    },
+    "dpsi_dtau": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "TENDENCY: the pseudo-time right-hand side S(psi_0) (1 - |grad psi|) (fire_behavior tend_r). Dimensionless because the pseudo-time variable is a length -- see the component description."
+    },
+    "tau_step": {
+     "type": "unknown",
+     "units": "m",
+     "description": "The pseudo-time step fire_behavior takes, dt_s = reinit_pseudot_coef dx. A length, not a time."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "dx",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "Lx",
+       "NX"
+      ]
+     }
+    },
+    {
+     "lhs": "dy",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "Ly",
+       "NY"
+      ]
+     }
+    },
+    {
+     "lhs": "psi",
+     "rhs": {
+      "op": "input_psi",
+      "args": []
+     }
+    },
+    {
+     "lhs": "psi_ref",
+     "rhs": {
+      "op": "input_psi_ref",
+      "args": []
+     }
+    },
+    {
+     "lhs": "upwind_sign",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "psi_ref",
+       {
+        "op": "sqrt",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "^",
+            "args": [
+             "psi_ref",
+             2
+            ]
+           },
+           {
+            "op": "^",
+            "args": [
+             "dx",
+             2
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "grad_mag",
+     "rhs": {
+      "op": "sqrt",
+      "args": [
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "^",
+          "args": [
+           {
+            "op": "D",
+            "args": [
+             "psi"
+            ],
+            "wrt": "x"
+           },
+           2
+          ]
+         },
+         {
+          "op": "^",
+          "args": [
+           {
+            "op": "D",
+            "args": [
+             "psi"
+            ],
+            "wrt": "y"
+           },
+           2
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "dpsi_dtau",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "upwind_sign",
+       {
+        "op": "-",
+        "args": [
+         1.0,
+         "grad_mag"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "tau_step",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "reinit_pseudot_coef",
+       "dx"
+      ]
+     }
+    }
+   ],
+   "tests": [
+    {
+     "id": "reinit_step20_stage1",
+     "description": "Runge-Kutta stage 1 of the reinitialisation of step 20 (ts = 10 s) of the fire_behavior test7 standalone run with fire_upwinding_reinit = 4 (the default hybrid WENO5/ENO1), fire_lsm_band_ngp = 4, BDY_ENO1 = 10, reinit_pseudot_coef = 1e-4 on a 25 m mesh. At this stage psi_ref = psi, because lfn_s0 is formed from lfn_out and stage 1 is handed lfn_out unchanged -- the identity S = psi/sqrt(psi^2+dx^2) was checked against the dumped lfn_s0 to 1.0e-7. Reference: data/eqwefic/dumps/fire/run_reinit/esm_dump_ls_reinit_58.json, real32, rel 2e-5 (the WENO5 smoothness weights amplify single-precision rounding, the same tolerance the propagation component's hybrid tests use). Cells span the regimes: (18,64) and (20,66) inside the band at the front where the sign is small; (17,57) just outside the front with |grad psi| = 2.89, the largest departure from a distance function in the domain; (40,40), (50,30), (70,70) and (12,12) in the far field on the ENO1 branch; (5,40) inside the ENO1 wall strip.",
+     "expression_template_imports": [
+      {
+       "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/rules/weno5_eno1_signed_norm_D2_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "./tests/reinit_step20_stage1_inputs.esm"
+      }
+     ],
+     "parameter_overrides": {
+      "Lx": 2000.0,
+      "Ly": 2000.0,
+      "bdy_eno1_cells": 10,
+      "weno_band_cells": 4,
+      "reinit_pseudot_coef": 0.0001
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 2e-05
+     },
+     "assertions": [
+      {
+       "variable": "tau_step",
+       "time": 0.0,
+       "expected": 0.0025,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      },
+      {
+       "variable": "upwind_sign",
+       "time": 0.0,
+       "coords": {
+        "x": 18,
+        "y": 64
+       },
+       "expected": -0.31077396869659424,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "upwind_sign",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 66
+       },
+       "expected": 0.35020238161087036,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "upwind_sign",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 40
+       },
+       "expected": 0.9992527365684509,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 18,
+        "y": 64
+       },
+       "expected": 0.9961205720901489,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": 2.8897526264190674,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 40
+       },
+       "expected": 0.9608520865440369,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 12
+       },
+       "expected": 0.984190821647644,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 40
+       },
+       "expected": 0.9725668430328369,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 70,
+        "y": 70
+       },
+       "expected": 0.942289412021637,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 18,
+        "y": 64
+       },
+       "expected": -0.001205625245347619,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": -1.7144925594329834,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 40
+       },
+       "expected": 0.03911865875124931,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 12,
+        "y": 12
+       },
+       "expected": 0.015805797651410103,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 66
+       },
+       "expected": -0.0011229210067540407,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 40
+       },
+       "expected": 0.027412934228777885,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 70,
+        "y": 70
+       },
+       "expected": 0.05769839882850647,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 30
+       },
+       "expected": -0.003450031392276287,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      }
+     ]
+    },
+    {
+     "id": "reinit_step20_stage2",
+     "description": "Runge-Kutta stage 2 of the same reinitialisation (dump esm_dump_ls_reinit_59.json). psi has advanced to the stage-1 output lfn_s1 while psi_ref is still the pre-reinitialisation lfn_out, because fire_behavior freezes lfn_s0 once per reinitialisation -- the dumped lfn_s0 is bit-identical between calls 58 and 59. MEASURED, because the obvious claim is false: this test does NOT discriminate a frozen sign from a recomputed one. At the shipped reinit_pseudot_coef = 1e-4 the field moves only 1.9 mm between stages, so recomputing S from the current psi changes it by at most 5.6e-5 relative anywhere in the domain (1.1e-7 to 4.7e-6 at the cells asserted here) -- below the 2e-5 tolerance. Substituting psi_ref := psi in this test leaves all 29 assertions passing. The test that does discriminate is reinit_default_coef_step20_stage2; this one is kept because it is the shipped regime. Same tolerances and cells as stage 1.",
+     "expression_template_imports": [
+      {
+       "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/rules/weno5_eno1_signed_norm_D2_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "./tests/reinit_step20_stage2_inputs.esm"
+      }
+     ],
+     "parameter_overrides": {
+      "Lx": 2000.0,
+      "Ly": 2000.0,
+      "bdy_eno1_cells": 10,
+      "weno_band_cells": 4,
+      "reinit_pseudot_coef": 0.0001
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 2e-05
+     },
+     "assertions": [
+      {
+       "variable": "upwind_sign",
+       "time": 0.0,
+       "coords": {
+        "x": 18,
+        "y": 64
+       },
+       "expected": -0.31077396869659424,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "upwind_sign",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 66
+       },
+       "expected": 0.35020238161087036,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": 2.889678955078125,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 40
+       },
+       "expected": 0.9608536958694458,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 30
+       },
+       "expected": 1.0034494400024414,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 18,
+        "y": 64
+       },
+       "expected": -0.0012056067353114486,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": -1.7144256830215454,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 40
+       },
+       "expected": 0.039117053151130676,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 66
+       },
+       "expected": -0.001122837420552969,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 40
+       },
+       "expected": 0.027411265298724174,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 30
+       },
+       "expected": -0.003448363160714507,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      }
+     ]
+    },
+    {
+     "id": "reinit_default_coef_step20_stage2",
+     "description": "THE TEST THAT PROVES THE SIGN IS FROZEN. Same Runge-Kutta stage 2 of the same step, but from a rerun of test7 at reinit_pseudot_coef = 0.01 -- namelist_mod's default, which is 100x what both shipped namelists set. The larger pseudo-time step (dt_s = 0.25 m against 0.0025 m) moves psi 0.19 m between stages instead of 1.9 mm, and that is what makes the frozen sign observable: recomputing S(psi_0) from the CURRENT field instead of from the pre-reinitialisation one would change upwind_sign by 5.6e-3 relative at cell (21,59), 281x this test's 2e-5 tolerance, and dpsi_dtau there by the same amount with no cancellation to hide it (|tend| = 1.38). Verified by substitution: replacing psi_ref with psi in this test's input library fails it. Cell (21,59) is the domain maximum of that sensitivity among cells with |tend| > 0.05; (17,57) is the next largest at 4.7e-4. The far-field cells are insensitive (7.5e-9 and below) because S saturates at +-1 away from the front, which is itself the reason the shipped-coefficient test cannot discriminate. Reference: data/eqwefic/dumps/fire/run_reinit2/esm_dump_ls_reinit_{58,59}.json, real32.",
+     "expression_template_imports": [
+      {
+       "ref": "${ESD_ROOT}/grids/cartesian_uniform_2d/rules/weno5_eno1_signed_norm_D2_extrapolate_bc.esm",
+       "bindings": {
+        "NX": 80,
+        "NY": 80
+       }
+      },
+      {
+       "ref": "./tests/reinit_default_coef_step20_stage2_inputs.esm"
+      }
+     ],
+     "parameter_overrides": {
+      "Lx": 2000.0,
+      "Ly": 2000.0,
+      "bdy_eno1_cells": 10,
+      "weno_band_cells": 4,
+      "reinit_pseudot_coef": 0.01
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 2e-05
+     },
+     "assertions": [
+      {
+       "variable": "upwind_sign",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 59
+       },
+       "expected": -0.515906810760498,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "upwind_sign",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": 0.9072576761245728,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "upwind_sign",
+       "time": 0.0,
+       "coords": {
+        "x": 18,
+        "y": 64
+       },
+       "expected": -0.31077396869659424,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 59
+       },
+       "expected": 3.6655633449554443,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": 2.8823368549346924,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 40
+       },
+       "expected": 0.9608765244483948,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "grad_mag",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 30
+       },
+       "expected": 1.0033600330352783,
+       "tolerance": {
+        "rel": 2e-05
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 21,
+        "y": 59
+       },
+       "expected": 1.3751822710037231,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 17,
+        "y": 57
+       },
+       "expected": -1.7077645063400269,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 40,
+        "y": 40
+       },
+       "expected": 0.039094239473342896,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 50,
+        "y": 30
+       },
+       "expected": -0.003358983900398016,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 5,
+        "y": 40
+       },
+       "expected": 0.027387620881199837,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 70,
+        "y": 70
+       },
+       "expected": 0.057694703340530396,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 18,
+        "y": 64
+       },
+       "expected": -0.0012075516860932112,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "dpsi_dtau",
+       "time": 0.0,
+       "coords": {
+        "x": 20,
+        "y": 66
+       },
+       "expected": -0.001120165572501719,
+       "tolerance": {
+        "rel": 2e-05,
+        "abs": 2e-07
+       }
+      },
+      {
+       "variable": "tau_step",
+       "time": 0.0,
+       "expected": 0.25,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+}
