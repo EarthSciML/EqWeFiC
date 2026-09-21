@@ -1,0 +1,1937 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "MadronichSolarGeometry",
+    "description": "Solar geometry of WRF-Chem's Madronich photolysis scheme (phot_opt = 1): SUBROUTINE calc_zenith (chem/module_phot_mad.F:2653-2759 of WRF v4.8.0) and the zenith post-processing of madronich1_driver (:1494-1499), which turns the zenith angle into the effective cosine `zenita` that photolysis_mad takes as its argument `a`.\n\nThis scheme has its OWN ephemeris and it is not the one the radiation schemes use. components/atmospheric_radiation/wrf_solar/wrf_solar_geometry.esm codes radconst + calc_coszen (single-sine declination, 23.5 deg obliquity, day 80 as the equinox); calc_zenith instead evaluates a seven-term Fourier equation of time with time-dependent perigee, eccentricity and obliquity polynomials, and takes its declination as atan(0.4336 sin(ra)). Neither is reusable for the other, and EarthSciModels' lib/solar.esm (Spencer / NOAA) is a third formula again. The two WRF ephemerides disagree by about 0.05 deg of zenith at the reference column, which is 3000 times the 1e-5 relative tolerance of these tests.\n\nTwo details carry most of the difference from a naive cos(sza) implementation and both are tested here. First, madronich1_driver calls calc_zenith with -xlong, so the ephemeris runs on WEST longitude. Second, and more important, `zenita` is NOT cos(zenith) beyond 75 degrees: it is 1/chap(zenith), the reciprocal Chapman function, interpolated linearly from a 22-point table on whole degrees. At the reference column's sunset that is a 4 to 40 percent difference from the cosine and it grows without bound toward 90 degrees -- at zenith 87.6 the cosine is 0.0419 while zenita is 0.0585, 40 percent larger. Nine of the thirteen test regimes here sit in that branch on purpose.\n\nThis component is algebraic and owns no state: julday, gmtp, xlat and xlong are parameters a consumer advances with the clock."
+  },
+  "function_tables": {
+    "chapman_function": {
+      "description": "Chapman function ch(zenith), FUNCTION chap of chem/module_phot_mad.F:2138-2165. The Fortran walks i = 75..96 for the first integer degree exceeding the argument and blends linearly between y(i-75) and y(i-74) with weight zeta-(i-1), which is exactly linear interpolation of y on whole degrees from 75 to 96; interp.linear's extrapolate-flat clamping matches the Fortran wherever the Fortran is defined, because madronich1_driver only reaches chap for 75 < zenith < 90. Values are McCartney (1976) as the WRF comment cites them.",
+      "axes": [
+        {
+          "name": "zenith",
+          "units": "deg",
+          "values": [
+            75.0,
+            76.0,
+            77.0,
+            78.0,
+            79.0,
+            80.0,
+            81.0,
+            82.0,
+            83.0,
+            84.0,
+            85.0,
+            86.0,
+            87.0,
+            88.0,
+            89.0,
+            90.0,
+            91.0,
+            92.0,
+            93.0,
+            94.0,
+            95.0,
+            96.0
+          ]
+        }
+      ],
+      "interpolation": "linear",
+      "out_of_bounds": "clamp",
+      "data": [
+        3.8,
+        4.055,
+        4.348,
+        4.687,
+        5.083,
+        5.551,
+        6.113,
+        6.799,
+        7.65,
+        8.732,
+        10.144,
+        12.051,
+        14.73,
+        18.686,
+        24.905,
+        35.466,
+        55.211,
+        96.753,
+        197.0,
+        485.0,
+        1476.0,
+        9999.0
+      ]
+    }
+  },
+  "models": {
+    "MadronichSolarGeometry": {
+      "subsystems": {
+        "wrf": {
+          "ref": "../../../lib/wrf_constants.esm"
+        },
+        "par": {
+          "ref": "./madronich_parameters.esm"
+        }
+      },
+      "variables": {
+        "julday": {
+          "type": "parameter",
+          "units": "day",
+          "default": 294.0,
+          "description": "Julian day of year (WRF julday), the `ijd` argument of calc_zenith. Integer-valued."
+        },
+        "gmtp": {
+          "type": "parameter",
+          "units": "h",
+          "default": 19.0,
+          "description": "UTC hour of the current model time as madronich1_driver builds it (module_phot_mad.F:1478-1483): gmtp = mod(int(gmt+.01)+int(xtime/60), 24) + xmin/60, where xtime = curr_secs/60. This is the `gmt` argument of calc_zenith."
+        },
+        "xlat": {
+          "type": "parameter",
+          "units": "deg",
+          "default": 37.6,
+          "description": "Latitude, degrees north (WRF xlat)."
+        },
+        "xlong": {
+          "type": "parameter",
+          "units": "deg",
+          "default": -96.7,
+          "description": "Longitude, degrees EAST (WRF xlong). madronich1_driver passes -xlong to calc_zenith, so this component flips the sign internally; a consumer wires WRF's xlong straight in."
+        },
+        "day_number": {
+          "type": "unknown",
+          "units": "day",
+          "description": "Fractional day of year, d = jd + gmt/24."
+        },
+        "mean_longitude": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Geometric mean longitude of the sun, ml."
+        },
+        "mean_longitude_rad": {
+          "type": "unknown",
+          "units": "rad",
+          "description": "ml in radians, rml."
+        },
+        "perigee_longitude": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Mean longitude of perigee, w."
+        },
+        "perigee_longitude_rad": {
+          "type": "unknown",
+          "units": "rad",
+          "description": "w in radians, wr."
+        },
+        "eccentricity": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Orbital eccentricity, ec."
+        },
+        "obliquity": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Mean obliquity of the ecliptic, epsi."
+        },
+        "obliquity_rad": {
+          "type": "unknown",
+          "units": "rad",
+          "description": "epsi in radians, pepsi."
+        },
+        "yt": {
+          "type": "unknown",
+          "units": "1",
+          "description": "tan(pepsi/2)^2, the obliquity factor of the equation of time."
+        },
+        "cw": {
+          "type": "unknown",
+          "units": "1",
+          "description": "cos(wr)."
+        },
+        "sw": {
+          "type": "unknown",
+          "units": "1",
+          "description": "sin(wr)."
+        },
+        "ssw": {
+          "type": "unknown",
+          "units": "1",
+          "description": "sin(2 wr)."
+        },
+        "eyt": {
+          "type": "unknown",
+          "units": "1",
+          "description": "2 ec yt."
+        },
+        "feqt1": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Equation-of-time term 1 (first harmonic in rml)."
+        },
+        "feqt2": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Equation-of-time term 2."
+        },
+        "feqt3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Equation-of-time term 3 (second harmonic)."
+        },
+        "feqt4": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Equation-of-time term 4."
+        },
+        "feqt5": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Equation-of-time term 5 (third harmonic)."
+        },
+        "feqt6": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Equation-of-time term 6."
+        },
+        "feqt7": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Equation-of-time term 7 (fourth harmonic)."
+        },
+        "feqt": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sum of the seven equation-of-time terms."
+        },
+        "equation_of_time": {
+          "type": "unknown",
+          "units": "s",
+          "description": "Equation of time, eqt = feqt*13751 s."
+        },
+        "eot_degrees": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Equation of time as an angle, reqt = eqt/240."
+        },
+        "right_ascension": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Right ascension of the sun, ra = ml - reqt."
+        },
+        "right_ascension_rad": {
+          "type": "unknown",
+          "units": "rad",
+          "description": "ra in radians, rra."
+        },
+        "tan_declination": {
+          "type": "unknown",
+          "units": "1",
+          "description": "tan of the declination, tab = 0.43360 sin(rra)."
+        },
+        "declination": {
+          "type": "unknown",
+          "units": "rad",
+          "description": "Solar declination, rdecl = atan(tab)."
+        },
+        "longitude_west": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Longitude degrees WEST, -xlong: the `long` that madronich1_driver hands calc_zenith."
+        },
+        "lat_rad": {
+          "type": "unknown",
+          "units": "rad",
+          "description": "Latitude in radians, rlt."
+        },
+        "local_noon_utc": {
+          "type": "unknown",
+          "units": "h",
+          "description": "UTC hour of local solar noon, lbgmt."
+        },
+        "hour_angle_deg": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Local hour angle, lzgmt = 15 (gmt - lbgmt). Its SIGN selects the azimuth reflection."
+        },
+        "hour_angle": {
+          "type": "unknown",
+          "units": "rad",
+          "description": "Hour angle in radians, zpt."
+        },
+        "cos_zenith_raw": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Cosine of the solar zenith angle before the min(1,.) guard, csz."
+        },
+        "cos_zenith": {
+          "type": "unknown",
+          "units": "1",
+          "description": "min(1, csz)."
+        },
+        "zenith_rad": {
+          "type": "unknown",
+          "units": "rad",
+          "description": "Solar zenith angle, zr = acos(csz)."
+        },
+        "zenith": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Solar zenith angle in degrees, the `zenith` output of calc_zenith."
+        },
+        "cos_azimuth": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Cosine of the solar azimuth, caz."
+        },
+        "azimuth_unreflected": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "acos(caz) in degrees, with calc_zenith's two guards at caz < -0.999999 (-> 180) and caz > 0.999999 (-> 0)."
+        },
+        "azimuth": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "Solar azimuth, reflected about due south when the hour angle is positive (afternoon)."
+        },
+        "zenith_effective": {
+          "type": "unknown",
+          "units": "deg",
+          "description": "The zenith angle madronich1_driver actually uses, with its exactly-90-degrees nudge to 89.9."
+        },
+        "is_daylight": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when the driver runs the radiative transfer, 0 when it branches to label 199 and leaves every photolysis rate at zero (zenith_effective >= 90)."
+        },
+        "chapman": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Chapman function ch(zenith) of FUNCTION chap (module_phot_mad.F:2138-2165). Only meaningful, and only used, for 75 < zenith < 90."
+        },
+        "zenita": {
+          "type": "unknown",
+          "units": "1",
+          "description": "The effective cosine of the solar zenith angle that madronich1_driver hands photolysis_mad as its argument `a`: cos(zenith) below 75 degrees, and the RECIPROCAL CHAPMAN FUNCTION 1/chap(zenith) above it. This is the scheme's slant-path measure, not a geometric cosine, and it is where a plain cos_sza implementation first goes wrong."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "day_number",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "julday",
+              {
+                "op": "/",
+                "args": [
+                  "gmtp",
+                  "par.hours_per_day"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "mean_longitude",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "par.ml_c0",
+              {
+                "op": "*",
+                "args": [
+                  "par.ml_c1",
+                  "day_number"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.ml_c2",
+                  {
+                    "op": "^",
+                    "args": [
+                      "day_number",
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "mean_longitude_rad",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "mean_longitude",
+              "par.degrad_zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "perigee_longitude",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "par.w_c0",
+              {
+                "op": "*",
+                "args": [
+                  "par.w_c1",
+                  "day_number"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.w_c2",
+                  {
+                    "op": "^",
+                    "args": [
+                      "day_number",
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "perigee_longitude_rad",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "perigee_longitude",
+              "par.degrad_zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "eccentricity",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "par.ec_c0",
+              {
+                "op": "*",
+                "args": [
+                  "par.ec_c1",
+                  "day_number"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.ec_c2",
+                  {
+                    "op": "^",
+                    "args": [
+                      "day_number",
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "obliquity",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "par.epsi_c0",
+              {
+                "op": "*",
+                "args": [
+                  "par.epsi_c1",
+                  "day_number"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.epsi_c2",
+                  {
+                    "op": "^",
+                    "args": [
+                      "day_number",
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "obliquity_rad",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "obliquity",
+              "par.degrad_zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "yt",
+          "rhs": {
+            "op": "^",
+            "args": [
+              {
+                "op": "tan",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "obliquity_rad",
+                      2
+                    ]
+                  }
+                ]
+              },
+              2
+            ]
+          }
+        },
+        {
+          "lhs": "cw",
+          "rhs": {
+            "op": "cos",
+            "args": [
+              "perigee_longitude_rad"
+            ]
+          }
+        },
+        {
+          "lhs": "sw",
+          "rhs": {
+            "op": "sin",
+            "args": [
+              "perigee_longitude_rad"
+            ]
+          }
+        },
+        {
+          "lhs": "ssw",
+          "rhs": {
+            "op": "sin",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  2,
+                  "perigee_longitude_rad"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "eyt",
+          "rhs": {
+            "op": "*",
+            "args": [
+              2,
+              "eccentricity",
+              "yt"
+            ]
+          }
+        },
+        {
+          "lhs": "feqt1",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "sin",
+                "args": [
+                  "mean_longitude_rad"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "neg",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "eyt",
+                          "cw"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      2,
+                      "eccentricity",
+                      "cw"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "feqt2",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "cos",
+                "args": [
+                  "mean_longitude_rad"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2,
+                      "eccentricity",
+                      "sw"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "eyt",
+                      "sw"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "feqt3",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "sin",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2,
+                      "mean_longitude_rad"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  "yt",
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              5,
+                              {
+                                "op": "^",
+                                "args": [
+                                  "eccentricity",
+                                  2
+                                ]
+                              }
+                            ]
+                          },
+                          4
+                        ]
+                      },
+                      {
+                        "op": "-",
+                        "args": [
+                          {
+                            "op": "^",
+                            "args": [
+                              "cw",
+                              2
+                            ]
+                          },
+                          {
+                            "op": "^",
+                            "args": [
+                              "sw",
+                              2
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "feqt4",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "cos",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2,
+                      "mean_longitude_rad"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      5,
+                      {
+                        "op": "^",
+                        "args": [
+                          "eccentricity",
+                          2
+                        ]
+                      },
+                      "ssw"
+                    ]
+                  },
+                  4
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "feqt5",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "sin",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      3,
+                      "mean_longitude_rad"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "eyt",
+                  "cw"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "feqt6",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "cos",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      3,
+                      "mean_longitude_rad"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "neg",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "eyt",
+                      "sw"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "feqt7",
+          "rhs": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "sin",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          4,
+                          "mean_longitude_rad"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      0.5,
+                      {
+                        "op": "^",
+                        "args": [
+                          "yt",
+                          2
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "feqt",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "feqt1",
+              "feqt2",
+              "feqt3",
+              "feqt4",
+              "feqt5",
+              "feqt6",
+              "feqt7"
+            ]
+          }
+        },
+        {
+          "lhs": "equation_of_time",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "feqt",
+              "par.eqt_scale"
+            ]
+          }
+        },
+        {
+          "lhs": "eot_degrees",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "equation_of_time",
+              "par.eot_sec_per_deg"
+            ]
+          }
+        },
+        {
+          "lhs": "right_ascension",
+          "rhs": {
+            "op": "-",
+            "args": [
+              "mean_longitude",
+              "eot_degrees"
+            ]
+          }
+        },
+        {
+          "lhs": "right_ascension_rad",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "right_ascension",
+              "par.degrad_zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "tan_declination",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "par.decl_tan_coeff",
+              {
+                "op": "sin",
+                "args": [
+                  "right_ascension_rad"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "declination",
+          "rhs": {
+            "op": "atan",
+            "args": [
+              "tan_declination"
+            ]
+          }
+        },
+        {
+          "lhs": "longitude_west",
+          "rhs": {
+            "op": "neg",
+            "args": [
+              "xlong"
+            ]
+          }
+        },
+        {
+          "lhs": "lat_rad",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "xlat",
+              "par.degrad_zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "local_noon_utc",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  "par.solar_noon",
+                  {
+                    "op": "/",
+                    "args": [
+                      "equation_of_time",
+                      "par.sec_per_hour"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "longitude_west",
+                      "par.hours_per_day"
+                    ]
+                  },
+                  "par.degrees_per_turn"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "hour_angle_deg",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "par.deg_per_hour",
+              {
+                "op": "-",
+                "args": [
+                  "gmtp",
+                  "local_noon_utc"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "hour_angle",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "hour_angle_deg",
+              "par.degrad_zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "cos_zenith_raw",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "sin",
+                    "args": [
+                      "lat_rad"
+                    ]
+                  },
+                  {
+                    "op": "sin",
+                    "args": [
+                      "declination"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "cos",
+                    "args": [
+                      "lat_rad"
+                    ]
+                  },
+                  {
+                    "op": "cos",
+                    "args": [
+                      "declination"
+                    ]
+                  },
+                  {
+                    "op": "cos",
+                    "args": [
+                      "hour_angle"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "cos_zenith",
+          "rhs": {
+            "op": "min",
+            "args": [
+              1,
+              "cos_zenith_raw"
+            ]
+          }
+        },
+        {
+          "lhs": "zenith_rad",
+          "rhs": {
+            "op": "acos",
+            "args": [
+              "cos_zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "zenith",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "zenith_rad",
+              "par.degrad_zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "cos_azimuth",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "sin",
+                    "args": [
+                      "declination"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "sin",
+                        "args": [
+                          "lat_rad"
+                        ]
+                      },
+                      {
+                        "op": "cos",
+                        "args": [
+                          "zenith_rad"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "cos",
+                    "args": [
+                      "lat_rad"
+                    ]
+                  },
+                  {
+                    "op": "sin",
+                    "args": [
+                      "zenith_rad"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "azimuth_unreflected",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<",
+                "args": [
+                  "cos_azimuth",
+                  "par.caz_lo"
+                ]
+              },
+              "par.half_turn",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "cos_azimuth",
+                      "par.caz_hi"
+                    ]
+                  },
+                  0,
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "acos",
+                        "args": [
+                          "cos_azimuth"
+                        ]
+                      },
+                      "par.degrad_zenith"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "azimuth",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "hour_angle_deg",
+                  0
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  "azimuth_unreflected",
+                  {
+                    "op": "*",
+                    "args": [
+                      2,
+                      {
+                        "op": "-",
+                        "args": [
+                          "par.half_turn",
+                          "azimuth_unreflected"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "azimuth_unreflected"
+            ]
+          }
+        },
+        {
+          "lhs": "zenith_effective",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "==",
+                "args": [
+                  "zenith",
+                  "par.night_zenith"
+                ]
+              },
+              "par.zenith_nudge",
+              "zenith"
+            ]
+          }
+        },
+        {
+          "lhs": "is_daylight",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<",
+                "args": [
+                  "zenith_effective",
+                  "par.night_zenith"
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "chapman",
+          "rhs": {
+            "op": "table_lookup",
+            "table": "chapman_function",
+            "axes": {
+              "zenith": "zenith_effective"
+            },
+            "args": []
+          }
+        },
+        {
+          "lhs": "zenita",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "zenith_effective",
+                  "par.chap_threshold"
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  1,
+                  "chapman"
+                ]
+              },
+              {
+                "op": "cos",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "zenith_effective",
+                      "par.degrad_driver"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "photmad_scm_call1410",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 1410. Regime: daytime, zenith 48.885 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 295.0,
+            "gmtp": 18.483333587646484,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 48.884830474853516,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 185.77642822265625,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.6575747132301331,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call1",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 1. Regime: daytime, zenith 49.683 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 19.0,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 49.68305206298828,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 195.72633361816406,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.6470152735710144,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call60",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 60. Regime: daytime, zenith 54.546 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 19.983333587646484,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 54.545589447021484,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 213.0615997314453,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.5800549387931824,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call1200",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 1200. Regime: daytime, zenith 66.262 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 295.0,
+            "gmtp": 14.983333587646484,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 66.2621078491211,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 127.09078216552734,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.4025532305240631,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call230",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 230. Regime: high zenith, Chapman branch, zenith 80.834 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 22.816667556762695,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 80.8342514038086,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 248.64102172851562,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.1661171168088913,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call240",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 240. Regime: high zenith, Chapman branch, zenith 82.691 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 22.983333587646484,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 82.69075775146484,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 250.26548767089844,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.1353759765625,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call250",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 250. Regime: high zenith, Chapman branch, zenith 84.566 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 23.149999618530273,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 84.56607055664062,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 251.86106872558594,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.10491757094860077,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call255",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 255. Regime: high zenith, Chapman branch, zenith 85.510 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 23.233333587646484,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 85.51019287109375,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 252.64913940429688,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.08995282649993896,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call258",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 258. Regime: high zenith, Chapman branch, zenith 86.079 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 23.28333282470703,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 86.07860565185547,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 253.11904907226562,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.08155553042888641,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call260",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 260. Regime: high zenith, Chapman branch, zenith 86.458 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 23.316667556762695,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 86.45835876464844,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 253.43124389648438,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.075307197868824,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call262",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 262. Regime: high zenith, Chapman branch, zenith 86.839 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 23.350000381469727,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 86.83872985839844,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 253.74249267578125,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.06994006782770157,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call264",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 264. Regime: high zenith, Chapman branch, zenith 87.220 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 23.383333206176758,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 87.21967315673828,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 254.05291748046875,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.06410656124353409,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "photmad_scm_call266",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run with RADM2 KPP (chem_opt = 101) and Madronich photolysis (phot_opt = 1) -- 37.6 N 96.7 W, start 1999-10-22 19:00 UTC, dt = 60 s, photdt = 1 min so photolysis runs every step; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot -- dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented, at the entry of photolysis_mad in madronich1_driver for column i = its, j = jts, call 266. Regime: high zenith, Chapman branch, zenith 87.601 deg. Single-precision reference, rel 1e-5.",
+          "parameter_overrides": {
+            "julday": 294.0,
+            "gmtp": 23.41666603088379,
+            "xlat": 37.599998474121094,
+            "xlong": -96.69999694824219
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zenith",
+              "time": 0.0,
+              "expected": 87.60120391845703,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "azimuth",
+              "time": 0.0,
+              "expected": 254.36251831054688,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "zenita",
+              "time": 0.0,
+              "expected": 0.05845094844698906,
+              "tolerance": {
+                "rel": 1e-05
+              }
+            },
+            {
+              "variable": "is_daylight",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
