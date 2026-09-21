@@ -1654,6 +1654,77 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     better: 479 → 656 states means #438 now charges 1313 full RHS evaluations per
     run instead of 959, and a run was killed unfinished at 15 minutes.
 
+    **The PBL reference was WRONG IN KIND, and fixing it is what 2026-09-21 did
+    (TENDENCY_ERROR_BUDGET.md).** Every coupled document in `couplings/` that
+    mounts YSU was asserting its PBL tendencies against WRF's driver-level
+    `rthblten`/`rublten`/`rvblten`/`rqvblten`/`rqcblten`/`rqiblten`. Those are
+    the IMPLICIT tridiagonal step's `(c_new - c_old)/dt` at dt = 60 s — an
+    increment, not a derivative — while the documents evaluate an instantaneous
+    right-hand side. The gap that produced (2–31 % of the column maximum) was
+    being carried in the tolerances, which is why six of them sat at `abs 1e-3`
+    to `1e-7` and why 15 of `eqweather_scm.esm`'s 134 assertions had a tolerance
+    larger than the whole signal. Eight documents are now referenced to the
+    **dt → 0 Richardson limit** `(8T(dt/4) − 6T(dt/2) + T(dt))/3` of real64
+    `kernels/ysu_driver` replays of the SAME dumped column at dt = 0.04/0.02/0.01 s
+    (`data/eqwefic/dumps/ysu/scmref_<call>_dt*.json`, transcribed by
+    `tools/reref_pbl_dt0.py`) — the reference `ysu.esm`'s own tests already used.
+    **A trap found on the way:** `driver_120_dt*.json`, which an earlier note
+    called "the replays that already exist" for the coupled step-60 test, are
+    replays of a DIFFERENT run (`ysu_120.flat`, z0 = 0.15 m); the reference run
+    `data/eqwefic/scm_ref` has z0 = 0.05 m and its column is `scm_ref_120.flat`.
+    Using the wrong one would have moved every PBL reference by ~25 %.
+    The result is the measurement that matters: with the dumped geometry
+    (`physics_column.esm`) the residual is **1e-9 K/s and m/s²**, about 1e-5 of
+    the column maximum, so the ESM's YSU tendency IS the kernel's dt → 0 limit;
+    with a computed geometry the residual rises to ~1e-6, which is the same N50
+    lowest-layer pressure offset the surface layer shows. Tolerances everywhere
+    are now 4× the measured residual.
+
+    **Two more regimes on `couplings/eqweather_scm.esm` (2026-09-21).** The two
+    existing tests were both sunlit and both convective, so they could not
+    separate a state-dependent tendency error from a constant one and never
+    entered YSU's stable branch or the longwave-only radiation path. Added:
+    **step 900** (physics call 1800, 03:33 local, cos zenith −0.552, Ri_b +0.037,
+    surface-layer regime 1, h = 262 m over 6 layers, K_h max 2.20 m²/s against
+    176.8 at step 1410) and **step 300** (call 600, 17:33 local, just after
+    sunset, cos zenith −0.088, h = 556 m over 10 layers, and the most exercised
+    cloud fraction of the four — `cal_cldfra` returns 0.0272/0.0373/0.0670/0.1356
+    and 1.0, so the Randall fit rather than only its snap is evaluated inside a
+    coupled document). `gsw` and `dthdt_sw` are asserted at **abs 0** in both, so
+    the shortwave path is pinned OFF rather than small. The step-300 dumps had
+    to be merged first (`esm_dump_dyn_suite_300.json`, `esm_dump_scm_suite_300.json`
+    via `tools/merge_dumps.py`; the recipe was validated by rebuilding the
+    step-1410 merges byte for byte). The numbers are transcribed by
+    `tools/add_scm_regime.py`, whose expression table re-derives BOTH pre-existing
+    tests as a check.
+
+    **The WSM6 operator-split difference is now MEASURED, not assumed.** See
+    TENDENCY_ERROR_BUDGET.md for the numbers. Summary: the whole-scheme increment
+    has no dt → 0 limit, and the term responsible is **`pigen`**, ice nucleation
+    written as `max(0, (roqi0/den − q_i)/dtcld)` — a projection onto the diagnosed
+    equilibrium ice content in one sub-step, whose increment is dtcld-independent
+    (7.78e-8 kg/kg at dt = 0.01, 0.02 and 0.04 s); the saturation adjustment is
+    identically zero in this column. At the model's own dtcld = 60 s `pigen` is
+    only 3.7 % of the total, so the ESM (which prescribes the same dtcld) IS
+    comparable, and the remaining difference is the sequencing. Measured by
+    replaying the kernel at dtcld = 60 s from a synthetic post-sedimentation state
+    (`data/eqwefic/dumps/wsm6/syn_postsed_120.flat`): `pidep` moves
+    3.29972e-8 → 4.45250e-8, so `R(x1) − R(x0) = 1.145e-8` kg/kg/s — **exactly the
+    document's `mp_dqv_dt` residual, to four significant figures**, and 91 % of its
+    `mp_dtheta_dt` residual once carried through `xl/cpm/pi`. `mp_dqi_dt` is the
+    exception: its residual is dominated by the fallout stage, where the document's
+    donor-cell flux divergence gives 5.304e-8 against WRF's own PLM increment
+    3.637e-8 (1.46×, and 1.52× against the dtcld → 0 fallout 3.4935e-8). The
+    earlier "sedimentation alone is 2.4× WRF's whole ice tendency" was comparing
+    one process against the sum of all of them; the like-for-like ratio is 1.46.
+
+    **The optional schemes are confirmed off in the reference run**
+    (`data/eqwefic/scm_ref/namelist.{input,output}`): `cu_physics = 0`,
+    `SHCU_PHYSICS = 0`, `GWD_OPT = 0`, `W_DAMPING = 0`, `ICLOUD = 1`,
+    `DAMP_OPT = 2`, `SCM_FORCE = 0`, `DIFF_OPT = KM_OPT = 2`. So the absence of
+    cumulus, shallow cumulus, gravity-wave drag and w-damping from the mounted set
+    is correct rather than an omission.
+
     Easy win still not taken: the same θm wiring for
     `couplings/scm_physics_column_night.esm` (conversion dumps exist at steps
     1, 60, 300, 900, 1410, 2160, 3000).

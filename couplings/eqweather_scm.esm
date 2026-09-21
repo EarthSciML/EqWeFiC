@@ -3598,7 +3598,7 @@
    "tests": [
     {
      "id": "eqweather_scm_step1410",
-     "description": "The two halves of EqWeather-SCM on ONE shared state, at the state of WRF step 1410 (radiation call 2820): 18:29 UTC, 12:02 local solar time, the strongest daytime forcing of the 24 h em_scm_xy reference run. The initial condition is that step's column -- u, v, w, phi', theta_m and q_v from the dynamics half's own step-1410 test, q_c and q_i from couplings/tests/physics_step1410_atmos_inputs.esm, the four soil layers from scm_step1410_soil_inputs.esm and the skin temperature from the physics half's tsk -- so at t = 0 the coupled column IS the reference column and every reference below is the one the two halves already assert separately. TIME SPAN {0, 0} is the instantaneous-derivative shape of esm-spec 6.6.2, not a shortened run: with an empty interval the run's whole answer is its initial state and nothing is integrated to reach it, which is exactly what a test of tendencies asserted at t = 0 wants. WHAT IS ASSERTED. The 9 dynamics assertions are couplings/eqweather_scm_dynamics.esm's, at its tolerances, with du_dt, dv_dt and dtheta_m_dt renamed to the *_dyn parts because those three names now carry the SUM. The 52 physics assertions are couplings/scm_physics_column.esm's, unchanged, at its tolerances. Running them here is not a repetition: in this document nothing about the column is read from a dump that the state could supply. WRFColumnGeometry rebuilds the heights, the equation of state, the Exner function, the layer temperature and the hydrostatic interface pressure from theta_m, q_v and phi' and hands them to YSU, Dudhia SW, the RRTM chain and cal_cldfra; u1, v1 and qv1 are indexed out of the ODE state and t1, p1 and dz1 out of the geometry, where the frozen-column documents prescribed all six; and the skin temperature is an ODE state that the surface layer, the longwave surface emission and the slab's energy balance all read, where it was a constant before. Every one of those paths is a place the assembly could have disagreed with WRF and does not. FOUR ASSERTIONS ARE NEW and cannot exist in either half. du_dt, dv_dt and dtheta_m_dt are compared against the SUM of the two halves' own references -- the sums this document was built to form, and the only place a dropped, doubled or sign-flipped term would show. PLAN.md 3.1 measured the dynamics D(theta_m) at 1.02e-5 K/s against the physics half's 3.80e-4, so that third one is dominated by the physics and pins that the small term was added rather than lost. The fourth is cldfra: cal_cldfra computing, from this document's own state, the one radiation input every frozen-column document in couplings/ had to prescribe, against the CLDFRA the same WRF call handed RRTM. MEASURED, whole assembly, 47 + 18 -> 65/65. Fourteen surface-layer assertions and pbl_hpbl take the GEOMETRY tolerances rather than the physics suite's, for a reason already isolated in this repo: t1, p1 and dz1 now come from WRFColumnGeometry, whose lowest-layer pressure sits 0.30 Pa below the p1 the surface-layer kernel was dumped with (N50, the driver-versus-kernel offset), which moves the surface-air theta by about 8e-5 relative. Residuals: sfc_hfx 7.3e-5, sfc_mol 7.1e-5, sfc_br 4.8e-5, sfc_rmol 4.7e-5, sfc_psim 2.3e-5, sfc_psih 2.0e-5, sfc_flhc 9.2e-6, sfc_fh 7.0e-6, sfc_qfx 5.2e-6, sfc_lh 5.2e-6, sfc_flqc 5.2e-6, sfc_fm 4.2e-6, sfc_ust 2.1e-6, sfc_q2 1.8e-6 relative -- the SAME fourteen numbers, to two significant figures, that couplings/geometry_surface_pbl_column.esm measured for that substitution ALONE. That agreement is the result: co-mounting the two halves introduced nothing of its own. pbl_hpbl, at 5.1e-6, is the one not on that list, because radiation IS mounted here and YSU sees a computed rthraten instead of a prescribed one. Everything else meets the two halves' own tolerances unchanged: all twelve PBL and slab tendency assertions, the longwave fluxes and heating, gsw/glw/olr, and the nine dynamics assertions including p_p and dphi_dt = g w at 1e-12. THE THREE SUMS come out at Linf 6.2e-5 (du_dt), 3.0e-5 (dv_dt) and 1.1e-4 K/s (dtheta_m_dt), each well inside the tolerance its own PBL part already carries (5e-4, 2e-4, 1e-3), so the terms are added and none is doubled or dropped; tolerances are 3x measured. CLDFRA matches WRF's exactly, at abs 0 -- but note what that does and does not show: step 1410 is a clear column (three layers of trace cirrus, q_i <= 2.1e-9, all below cal_cldfra1's 0.01 snap), so both are identically zero and the assertion pins the WIRING and the zero, not the fractional fit. cal_cldfra's own six-regime test set is where the fit, the phase blend and the floors are exercised. COST, measured. Against EarthSciAST main at 3cf6f6f92 this test is 110 m 36 s of wall clock for ONE right-hand-side evaluation; against the fix in EarthSciAST PR #439 it is 2 m 31 s, with the same 65/65. THE CAUSE IS NOT THIS MODEL, and it is not what the first diagnosis of it said. The Rust driver built a diffsol problem and an implicit solver for EVERY run, including one that cannot advance -- an empty time span, or a non-empty one whose whole output grid sits at t0. Constructing an implicit solver materialises the Jacobian, and this crate's is a matrix-free finite-difference JVP, so it is called once per state column and each call evaluates the entire right-hand side twice: 2*n_states + 1 full evaluations to return a trajectory that is the untouched initial state. With 297 states, each re-materialising the whole RRTM longwave chain, that is the hour and three quarters. WHAT COSTS IS THE STATE COUNT -- not the recurrence in rtrn_sweep and not the geometry path. Measured three ways on the reproducers under data/eqwefic/phase3_probes/: a 103-deep self-referential sweep with NO state runs in 0.03 s; the SAME sweep with ONE scalar state that it DEPENDS ON runs in 0.09 s; the same sweep over 103 states runs in 1.84 s. Two further hypotheses were ruled out before that: it is not the param_to_var edge or a const-node-versus-parameter distinction (routing the same five dumped columns into the radiation mount through document variables and coupling edges costs 19.27 -> 19.85 s, nothing), and it is not ODE states as such in a CHEAP document (an unused scalar D(s) = 0 leaves the static radiation column at 19.06 s) -- what multiplies is the state count times the cost of one evaluation. BDF over a 1 s span, tried before the empty span, had not finished a single step in 14 minutes, which is the same Jacobian plus real stepping. RE-TIME THIS DOCUMENT WHEN #439 LANDS, and re-time the whole repository with it: the same defect was charging every test written in the standard {start: 0, end: 1} shape with assertions only at t = 0.",
+     "description": "The two halves of EqWeather-SCM on ONE shared state, at the state of WRF step 1410 (radiation call 2820): 18:29 UTC, 12:02 local solar time, the strongest daytime forcing of the 24 h em_scm_xy reference run. The initial condition is that step's column -- u, v, w, phi', theta_m and q_v from the dynamics half's own step-1410 test, q_c and q_i from couplings/tests/physics_step1410_atmos_inputs.esm, the four soil layers from scm_step1410_soil_inputs.esm and the skin temperature from the physics half's tsk -- so at t = 0 the coupled column IS the reference column and every reference below is the one the two halves already assert separately. TIME SPAN {0, 0} is the instantaneous-derivative shape of esm-spec 6.6.2, not a shortened run: with an empty interval the run's whole answer is its initial state and nothing is integrated to reach it, which is exactly what a test of tendencies asserted at t = 0 wants. WHAT IS ASSERTED. The 9 dynamics assertions are couplings/eqweather_scm_dynamics.esm's, at its tolerances, with du_dt, dv_dt and dtheta_m_dt renamed to the *_dyn parts because those three names now carry the SUM. The 52 physics assertions are couplings/scm_physics_column.esm's, unchanged, at its tolerances. Running them here is not a repetition: in this document nothing about the column is read from a dump that the state could supply. WRFColumnGeometry rebuilds the heights, the equation of state, the Exner function, the layer temperature and the hydrostatic interface pressure from theta_m, q_v and phi' and hands them to YSU, Dudhia SW, the RRTM chain and cal_cldfra; u1, v1 and qv1 are indexed out of the ODE state and t1, p1 and dz1 out of the geometry, where the frozen-column documents prescribed all six; and the skin temperature is an ODE state that the surface layer, the longwave surface emission and the slab's energy balance all read, where it was a constant before. Every one of those paths is a place the assembly could have disagreed with WRF and does not. FOUR ASSERTIONS ARE NEW and cannot exist in either half. du_dt, dv_dt and dtheta_m_dt are compared against the SUM of the two halves' own references -- the sums this document was built to form, and the only place a dropped, doubled or sign-flipped term would show. PLAN.md 3.1 measured the dynamics D(theta_m) at 1.02e-5 K/s against the physics half's 3.80e-4, so that third one is dominated by the physics and pins that the small term was added rather than lost. The fourth is cldfra: cal_cldfra computing, from this document's own state, the one radiation input every frozen-column document in couplings/ had to prescribe, against the CLDFRA the same WRF call handed RRTM. MEASURED, whole assembly, 47 + 18 -> 65/65. Fourteen surface-layer assertions and pbl_hpbl take the GEOMETRY tolerances rather than the physics suite's, for a reason already isolated in this repo: t1, p1 and dz1 now come from WRFColumnGeometry, whose lowest-layer pressure sits 0.30 Pa below the p1 the surface-layer kernel was dumped with (N50, the driver-versus-kernel offset), which moves the surface-air theta by about 8e-5 relative. Residuals: sfc_hfx 7.3e-5, sfc_mol 7.1e-5, sfc_br 4.8e-5, sfc_rmol 4.7e-5, sfc_psim 2.3e-5, sfc_psih 2.0e-5, sfc_flhc 9.2e-6, sfc_fh 7.0e-6, sfc_qfx 5.2e-6, sfc_lh 5.2e-6, sfc_flqc 5.2e-6, sfc_fm 4.2e-6, sfc_ust 2.1e-6, sfc_q2 1.8e-6 relative -- the SAME fourteen numbers, to two significant figures, that couplings/geometry_surface_pbl_column.esm measured for that substitution ALONE. That agreement is the result: co-mounting the two halves introduced nothing of its own. pbl_hpbl, at 5.1e-6, is the one not on that list, because radiation IS mounted here and YSU sees a computed rthraten instead of a prescribed one. Everything else meets the two halves' own tolerances unchanged: all twelve PBL and slab tendency assertions, the longwave fluxes and heating, gsw/glw/olr, and the nine dynamics assertions including p_p and dphi_dt = g w at 1e-12. THE THREE SUMS come out at Linf 5.29e-7 (du_dt), 6.52e-7 (dv_dt) and 2.33e-6 K/s (dtheta_m_dt), each equal to its own PBL part's residual to three significant figures, so the terms are added and none is doubled or dropped; tolerances are 4x measured (abs 3e-6, 3e-6 and 1e-5). ONE ASSERTION IN THIS TEST IS STILL WIDER THAN ITS OWN SIGNAL: dw_dt, at abs 1e-3 against a column maximum of 4.23e-4 and a residual of 3.04e-4. That is not the model -- WRF's real32 rounding of p' drives a w tendency up to half the physical one (N67), so its dw_dt cannot be a reference beyond ~3e-4 m/s^2. The constraint on the vertical momentum equation is carried by dw_dt_nonpg, asserted at abs 3e-10 against a maximum of 1.75e-4. CLDFRA matches WRF's exactly, at abs 0 -- but note what that does and does not show: step 1410 is a clear column (three layers of trace cirrus, q_i <= 2.1e-9, all below cal_cldfra1's 0.01 snap), so both are identically zero and the assertion pins the WIRING and the zero, not the fractional fit. cal_cldfra's own six-regime test set is where the fit, the phase blend and the floors are exercised. COST, measured. Against EarthSciAST main at 3cf6f6f92 this test is 110 m 36 s of wall clock for ONE right-hand-side evaluation; against the fix in EarthSciAST PR #439 it is 2 m 31 s, with the same 65/65. THE CAUSE IS NOT THIS MODEL, and it is not what the first diagnosis of it said. The Rust driver built a diffsol problem and an implicit solver for EVERY run, including one that cannot advance -- an empty time span, or a non-empty one whose whole output grid sits at t0. Constructing an implicit solver materialises the Jacobian, and this crate's is a matrix-free finite-difference JVP, so it is called once per state column and each call evaluates the entire right-hand side twice: 2*n_states + 1 full evaluations to return a trajectory that is the untouched initial state. With 297 states, each re-materialising the whole RRTM longwave chain, that is the hour and three quarters. WHAT COSTS IS THE STATE COUNT -- not the recurrence in rtrn_sweep and not the geometry path. Measured three ways on the reproducers under data/eqwefic/phase3_probes/: a 103-deep self-referential sweep with NO state runs in 0.03 s; the SAME sweep with ONE scalar state that it DEPENDS ON runs in 0.09 s; the same sweep over 103 states runs in 1.84 s. Two further hypotheses were ruled out before that: it is not the param_to_var edge or a const-node-versus-parameter distinction (routing the same five dumped columns into the radiation mount through document variables and coupling edges costs 19.27 -> 19.85 s, nothing), and it is not ODE states as such in a CHEAP document (an unused scalar D(s) = 0 leaves the static radiation column at 19.06 s) -- what multiplies is the state count times the cost of one evaluation. BDF over a 1 s span, tried before the empty span, had not finished a single step in 14 minutes, which is the same Jacobian plus real stepping. RE-TIME THIS DOCUMENT WHEN #439 LANDS, and re-time the whole repository with it: the same defect was charging every test written in the standard {start: 0, end: 1} shape with assertions only at t = 0. THE PBL TENDENCIES ARE ASSERTED AGAINST THE dt -> 0 LIMIT (changed 2026-09-21). They used to be compared with WRF's driver-level rthblten/rublten/rvblten/rqvblten/rqcblten/rqiblten, which are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s -- an increment, not a derivative, and not the quantity this document computes. TENDENCY_ERROR_BUDGET.md measured that the entire coupled PBL residual (2-31 % of the column maximum) was that mismatch and not an error in the scheme. The reference is now the second-order Richardson extrapolation (8 T(dt/4) - 6 T(dt/2) + T(dt))/3 of real64 replays of THIS step's dumped YSU column through kernels/ysu_driver of the ctessum-claude/WRF fork at dt = 0.04/0.02/0.01 s (data/eqwefic/dumps/ysu/scmref_2820_dt*.json, transcribed by tools/reref_pbl_dt0.py), the same reference components/atmospheric_dynamics/ysu/ysu.esm's own tests use; the kernel carries NEED_B4B_DURING_CCPP_TESTING = 1, so ttnp is a TEMPERATURE tendency and the theta reference is ttnp/pi2d (FORTRAN_BUGS N1). The extrapolation is self-consistent to 1.0e-9 (utnp) and 5.6e-8 (ttnp) of the column maximum when recomputed from dt = 0.08/0.04/0.02. NOTE WHICH REPLAYS: data/eqwefic/dumps/ysu/driver_120_dt*.json are replays of a DIFFERENT run (ysu_120.flat, z0 = 0.15 m); the reference run data/eqwefic/scm_ref has z0 = 0.05 m and its columns are scm_ref_<call>.flat, which is what these use. Measured residuals fall by two orders of magnitude and the tolerances follow: pbl_dthdt 1.13e-4 -> 2.34e-6 K/s (abs 1e-3 -> 1e-5), pbl_dudt 6.18e-5 -> 5.29e-7 m/s^2 (abs 5e-4 -> 3e-6), pbl_dvdt 2.96e-5 -> 6.52e-7 m/s^2 (abs 2e-4 -> 3e-6), pbl_dqvdt 1.41e-8 -> 2.36e-10 1/s (abs 1e-7 -> 1e-9), pbl_dqidt 1.52e-18 -> 1.18e-22 1/s (abs 1e-17 -> 5e-22), rth_phys_sum 1.13e-4 -> 2.34e-6 K/s (abs 1e-3 -> 1e-5), dtheta_m_dt_phys 1.13e-4 -> 2.33e-6 K/s (abs 1e-3 -> 1e-5), dtheta_m_conv_delta 6.60e-6 -> 1.17e-7 K/s (abs 2e-5 -> 5e-7), du_dt 6.18e-5 -> 5.29e-7 m/s^2 (abs 2e-4 -> 3e-6), dv_dt 2.96e-5 -> 6.52e-7 m/s^2 (abs 1e-4 -> 3e-6), dtheta_m_dt 1.13e-4 -> 2.33e-6 K/s (abs 4e-4 -> 1e-5). rth_phys_sum, du_dt, dv_dt, dtheta_m_dt_phys, dtheta_m_conv_delta and dtheta_m_dt contain a PBL term and are re-formed from the same limit; what is left is the same N50 lowest-layer pressure offset the surface layer shows.",
      "parameter_overrides": {
       "psfc0": 97142.90625,
       "xland0": 1.0,
@@ -4243,7 +4243,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-09
+        "abs": 5e-10
        }
       },
       {
@@ -4335,7 +4335,7 @@
         }
        },
        "tolerance": {
-        "abs": 2e-10
+        "abs": 1e-10
        }
       },
       {
@@ -4428,7 +4428,7 @@
         }
        },
        "tolerance": {
-        "abs": 3e-10
+        "abs": 2e-10
        }
       },
       {
@@ -4613,7 +4613,7 @@
         }
        },
        "tolerance": {
-        "abs": 2e-09
+        "abs": 2e-10
        }
       },
       {
@@ -4716,7 +4716,7 @@
        },
        "expected": 0.00042535770249656956,
        "tolerance": {
-        "rel": 1e-05
+        "rel": 2e-07
        }
       },
       {
@@ -4727,7 +4727,7 @@
        },
        "expected": -5.957295843747292e-06,
        "tolerance": {
-        "rel": 1e-05
+        "rel": 1e-06
        }
       },
       {
@@ -4826,7 +4826,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-12
+        "abs": 0.0
        }
       },
       {
@@ -4866,7 +4866,7 @@
        "time": 0.0,
        "expected": 6.029760837554932,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-07
        }
       },
       {
@@ -4890,7 +4890,7 @@
        "time": 0.0,
        "expected": 6.247579097747803,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 2e-07
        }
       },
       {
@@ -5304,7 +5304,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 1e-05
        }
       },
       {
@@ -5396,7 +5396,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0005
+        "abs": 3e-06
        }
       },
       {
@@ -5488,7 +5488,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 3e-06
        }
       },
       {
@@ -5580,7 +5580,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-07
+        "abs": 1e-09
        }
       },
       {
@@ -5764,7 +5764,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-17
+        "abs": 5e-22
        }
       },
       {
@@ -5901,7 +5901,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.002
+        "abs": 0.001
        }
       },
       {
@@ -6038,7 +6038,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 0.0005
        }
       },
       {
@@ -6130,7 +6130,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 2e-08
        }
       },
       {
@@ -6314,7 +6314,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 2e-08
        }
       },
       {
@@ -6406,7 +6406,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 1e-05
        }
       },
       {
@@ -6470,7 +6470,7 @@
        "time": 0.0,
        "expected": 2364560.0,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-07
        }
       },
       {
@@ -6615,7 +6615,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 1e-05
        }
       },
       {
@@ -6707,7 +6707,7 @@
         }
        },
        "tolerance": {
-        "abs": 2e-05
+        "abs": 5e-07
        }
       },
       {
@@ -6799,7 +6799,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 3e-06
        }
       },
       {
@@ -6891,7 +6891,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0001
+        "abs": 3e-06
        }
       },
       {
@@ -6983,7 +6983,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0004
+        "abs": 1e-05
        }
       },
       {
@@ -7082,7 +7082,7 @@
     },
     {
      "id": "eqweather_scm_step60_cirrus",
-     "description": "Reference: the CLOUDY companion of the step-1410 clear-sky test above, from the same WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, data/eqwefic/scm_ref) at step 60 / physics call 120, 1999-10-22 20:00 UTC -- early afternoon local, a cirrus deck aloft. What makes it the cloudy case: cloud ice reaches 4.64e-5 kg/kg in layers 50-56 and cal_cldfra returns a cloud fraction of exactly 1.0 in seven of them, so the longwave sees an overcast deck and the outgoing longwave falls to 129.7 W/m^2 against 256.0 at step 1410. At step 1410 every condensate species is zero and the cldfra assertion is satisfied trivially by both sides being zero; here it is not. THE COLUMN IS ICE-ONLY: q_c, q_r, q_s and q_g are identically zero at this step and the em_scm_xy sounding never produces them anywhere in the 59-hour run, so this test exercises WSM6's ice branch -- deposition and sublimation, ice nucleation, aggregation to snow and ice fallout -- and pins the warm-rain, melting/freezing and graupel branches at zero. The liquid and mixed-phase regimes are covered on the em_quarter_ss supercell column by couplings/microphysics_column.esm and microphysics_column_mixed.esm. THE MICROPHYSICAL REFERENCE is the driver-level dump esm_dump_subassembly_mp_60.json: WSM6's own increment over the model step, (q_out - q)/dt and (th_out - th)/dt with dt = 60 s. That interval is also WSM6's sub-step -- the scheme takes ndt = max(nint(dt/dtcldcr), 1) sub-steps with dtcldcr = 120 s, so ndt = 1 and dtcld = dt = 60 s -- which is why mp_dtcld0 is 60 s and the document's tendency is compared with the increment WRF actually applies divided by the same interval, with no dt-limit extrapolation. Two consequences are visible in the tolerances. (1) Sedimentation: WSM6 moves the falling species with a semi-Lagrangian PLM update while sedimentation.esm exposes the donor-cell flux divergence, and the two agree only as dt -> 0 (see the component's own description); in this column only cloud ice falls, and that is the larger part of the mp_dqi_dt residual. (2) Real32 quantization: th is ~312 K in the cirrus layers, where single precision spaces values 3.05e-5 K apart, so the reference (th_out - th)/dt is quantized at 5.1e-7 K/s and most of its 59 entries are exactly 0 or a small multiple of 2.5e-6 K/s; mp_dtheta_dt is bounded accordingly. NOT REPEATED FROM THE STEP-1410 TEST: dtheta_m_dt_phys, dtheta_m_conv_delta and dtheta_m_dt. Those three are asserted there against WRF's conv_t_tendf_to_moist, which converts the RADIATION and PBL tendencies only -- WRF applies microphysics directly to th and the moist arrays after the RK loop, outside the tendency path -- whereas this document, being a continuous formulation, hands the moist-theta conversion every physics tendency including the microphysical one. The two agree only when microphysics is inactive, which is the step-1410 case and not this one. rth_phys_sum, which is radiation plus PBL alone, IS asserted here and is the WRF-comparable quantity. The dynamics half is unchanged by the cloud and is asserted in full anyway (du_dt_dyn, dv_dt_dyn, dw_dt_nonpg, dw_dt, dtheta_m_dt_dyn, p_p, and the du_dt/dv_dt sums), from the same dumped mass-coupled increments divided by the coupling mass of their grid point as at step 1410; the formulas were checked against the step-1410 assertions and reproduce them exactly. Everything else -- the 24 surface-layer outputs, the PBL profile and tendencies, the RRTM fluxes and heating, Dudhia, the slab, and the cloud fraction -- comes from the same dump variables as the step-1410 assertions, at step 60 / call 120, and carries that test's tolerances unless stated otherwise, because the residual of a code path does not change with the column.\n TOLERANCES, and what they mean. Measured residuals against the references above (zero-tolerance run, EarthSciAST PR #439 binary): the dynamics tendencies 1.2e-10, 2.5e-11, 3.4e-11, 2.2e-4 and 2.7e-10, p_p 0.018 Pa, the surface layer <= 7.6e-6 relative, the PBL profile 0.029 and 0.019 m^2/s in K_h and K_m and <= 5.7e-5 in the four tendencies, the RRTM fluxes 2.3e-4 and 1.3e-4 W/m^2, the heating rates <= 4.0e-9 K/s, the slab <= 9.3e-4 relative -- every one of them inside the step-1410 tolerances, which are therefore carried over unchanged. Four are not. (1) pbl_dqidt was bounded at abs 1e-17 at step 1410 because the column carried no ice for YSU to diffuse; here it does, and the residual is 2.4e-12, so the bound is 2e-11. (2) cldfra was asserted at abs 0 at step 1410 because both sides were identically zero; with the Randall fit live the residual is 9.5e-6, which is the single-precision cancellation in the Randall denominator that cal_cldfra.esm's own description measures at up to 5.1e-5, so the bound is 1e-4. (3) lsm_dTs_dt and lsm_hfx sat within a factor of 1.03 and 1.08 of their step-1410 bounds, too close to be a bound at all, and are loosened to 5e-5 K/s and 3e-3 relative. (4) THE THREE MICROPHYSICAL TENDENCIES DO NOT AGREE WITH WRF AND THEIR TOLERANCES RECORD THAT, they do not certify it: mp_dqv_dt 1.1e-8 against a reference whose own maximum is 3.3e-8, mp_dqi_dt 2.8e-8 against 2.2e-8, mp_dtheta_dt 4.3e-5 K/s against 1.2e-4. The cause is measured, not guessed. mp_melt_dqi_dt, mp_rate_dqi_dt and mp_sed_dqi_dt split D(q_i)|mp into its three stages and come out at exactly 0, 2.15e-8 and 5.30e-8 kg/kg/s: nothing melts or freezes at these temperatures, the deposition and sublimation block is the same size as WRF's whole ice tendency, and SEDIMENTATION ALONE IS 2.4 TIMES WRF'S WHOLE ICE TENDENCY. That is the gap sedimentation.esm states about itself -- WSM6 moves the falling species with a semi-Lagrangian PLM update (nislfv_rain_plm), this component exposes the donor-cell flux divergence, and the two differ by factors of 0.4 to 1.6 and agree only as dt -> 0 -- appearing for the first time in a coupled document, because step 1410 has no falling ice to disagree about. Closing it needs either a PLM-equivalent flux rule in EarthSciDiscretizations or a dt -> 0 extrapolated reference of the kind couplings/microphysics_column.esm's sedimentation tests already use; it is NOT closed here, and the three bounds above are the measurement, not a pass. The vapour and heating residuals are not explained by sedimentation, which moves no vapour and carries no heat; they are the operator-splitting difference -- WRF applies fallout, then melting, then the rate block, then the adjustment, each to the state the previous one left, while this document is a continuous formulation that evaluates every stage at one instantaneous state and sums -- and that difference is O(dtcld) by construction.",
+     "description": "Reference: the CLOUDY companion of the step-1410 clear-sky test above, from the same WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, data/eqwefic/scm_ref) at step 60 / physics call 120, 1999-10-22 20:00 UTC -- early afternoon local, a cirrus deck aloft. What makes it the cloudy case: cloud ice reaches 4.64e-5 kg/kg in layers 50-56 and cal_cldfra returns a cloud fraction of exactly 1.0 in seven of them, so the longwave sees an overcast deck and the outgoing longwave falls to 129.7 W/m^2 against 256.0 at step 1410. At step 1410 every condensate species is zero and the cldfra assertion is satisfied trivially by both sides being zero; here it is not. THE COLUMN IS ICE-ONLY: q_c, q_r, q_s and q_g are identically zero at this step and the em_scm_xy sounding never produces them anywhere in the 59-hour run, so this test exercises WSM6's ice branch -- deposition and sublimation, ice nucleation, aggregation to snow and ice fallout -- and pins the warm-rain, melting/freezing and graupel branches at zero. The liquid and mixed-phase regimes are covered on the em_quarter_ss supercell column by couplings/microphysics_column.esm and microphysics_column_mixed.esm. THE MICROPHYSICAL REFERENCE is the driver-level dump esm_dump_subassembly_mp_60.json: WSM6's own increment over the model step, (q_out - q)/dt and (th_out - th)/dt with dt = 60 s. That interval is also WSM6's sub-step -- the scheme takes ndt = max(nint(dt/dtcldcr), 1) sub-steps with dtcldcr = 120 s, so ndt = 1 and dtcld = dt = 60 s -- which is why mp_dtcld0 is 60 s and the document's tendency is compared with the increment WRF actually applies divided by the same interval, with no dt-limit extrapolation. Two consequences are visible in the tolerances. (1) Sedimentation: WSM6 moves the falling species with a semi-Lagrangian PLM update while sedimentation.esm exposes the donor-cell flux divergence, and the two agree only as dt -> 0 (see the component's own description); in this column only cloud ice falls, and that is the larger part of the mp_dqi_dt residual. (2) Real32 quantization: th is ~312 K in the cirrus layers, where single precision spaces values 3.05e-5 K apart, so the reference (th_out - th)/dt is quantized at 5.1e-7 K/s and most of its 59 entries are exactly 0 or a small multiple of 2.5e-6 K/s; mp_dtheta_dt is bounded accordingly. NOT REPEATED FROM THE STEP-1410 TEST: dtheta_m_dt_phys, dtheta_m_conv_delta and dtheta_m_dt. Those three are asserted there against WRF's conv_t_tendf_to_moist, which converts the RADIATION and PBL tendencies only -- WRF applies microphysics directly to th and the moist arrays after the RK loop, outside the tendency path -- whereas this document, being a continuous formulation, hands the moist-theta conversion every physics tendency including the microphysical one. The two agree only when microphysics is inactive, which is the step-1410 case and not this one. rth_phys_sum, which is radiation plus PBL alone, IS asserted here and is the WRF-comparable quantity. The dynamics half is unchanged by the cloud and is asserted in full anyway (du_dt_dyn, dv_dt_dyn, dw_dt_nonpg, dw_dt, dtheta_m_dt_dyn, p_p, and the du_dt/dv_dt sums), from the same dumped mass-coupled increments divided by the coupling mass of their grid point as at step 1410; the formulas were checked against the step-1410 assertions and reproduce them exactly. Everything else -- the 24 surface-layer outputs, the PBL profile and tendencies, the RRTM fluxes and heating, Dudhia, the slab, and the cloud fraction -- comes from the same dump variables as the step-1410 assertions, at step 60 / call 120, and carries that test's tolerances unless stated otherwise, because the residual of a code path does not change with the column.\n TOLERANCES, and what they mean. Measured residuals against the references above (zero-tolerance run, EarthSciAST PR #439 binary): the dynamics tendencies 1.2e-10, 2.5e-11, 3.4e-11, 2.2e-4 and 2.7e-10, p_p 0.018 Pa, the surface layer <= 7.6e-6 relative, the PBL profile 0.029 and 0.019 m^2/s in K_h and K_m and <= 9.2e-7 in the four tendencies (they were <= 5.7e-5 against WRF's implicit dt = 60 s increment; see the dt -> 0 paragraph below), the RRTM fluxes 2.3e-4 and 1.3e-4 W/m^2, the heating rates <= 4.0e-9 K/s, the slab <= 9.3e-4 relative -- every one of them inside the step-1410 tolerances, which are therefore carried over unchanged. Four are not. (1) pbl_dqidt was bounded at abs 1e-17 at step 1410 because the column carried no ice for YSU to diffuse; here it does, and the residual is 2.4e-12, so the bound is 2e-11. (2) cldfra was asserted at abs 0 at step 1410 because both sides were identically zero; with the Randall fit live the residual is 9.5e-6, which is the single-precision cancellation in the Randall denominator that cal_cldfra.esm's own description measures at up to 5.1e-5, so the bound is 1e-4. (3) lsm_dTs_dt and lsm_hfx sat within a factor of 1.03 and 1.08 of their step-1410 bounds, too close to be a bound at all, and are loosened to 5e-5 K/s and 3e-3 relative. (4) THE THREE MICROPHYSICAL TENDENCIES DO NOT AGREE WITH WRF AND THEIR TOLERANCES RECORD THAT, they do not certify it: mp_dqv_dt 1.1e-8 against a reference whose own maximum is 3.3e-8, mp_dqi_dt 2.8e-8 against 2.2e-8, mp_dtheta_dt 4.3e-5 K/s against 1.2e-4. The cause is measured, not guessed. mp_melt_dqi_dt, mp_rate_dqi_dt and mp_sed_dqi_dt split D(q_i)|mp into its three stages and come out at exactly 0, 2.15e-8 and 5.30e-8 kg/kg/s: nothing melts or freezes at these temperatures, the deposition and sublimation block is the same size as WRF's whole ice tendency, and SEDIMENTATION ALONE IS 2.4 TIMES WRF'S WHOLE ICE TENDENCY. That is the gap sedimentation.esm states about itself -- WSM6 moves the falling species with a semi-Lagrangian PLM update (nislfv_rain_plm), this component exposes the donor-cell flux divergence, and the two differ by factors of 0.4 to 1.6 and agree only as dt -> 0 -- appearing for the first time in a coupled document, because step 1410 has no falling ice to disagree about. Closing it needs either a PLM-equivalent flux rule in EarthSciDiscretizations or a dt -> 0 extrapolated reference of the kind couplings/microphysics_column.esm's sedimentation tests already use; it is NOT closed here, and the three bounds above are the measurement, not a pass. The vapour and heating residuals are not explained by sedimentation, which moves no vapour and carries no heat; they are the operator-splitting difference -- WRF applies fallout, then melting, then the rate block, then the adjustment, each to the state the previous one left, while this document is a continuous formulation that evaluates every stage at one instantaneous state and sums -- and that difference is O(dtcld) by construction. THE PBL TENDENCIES ARE ASSERTED AGAINST THE dt -> 0 LIMIT (changed 2026-09-21). They used to be compared with WRF's driver-level rthblten/rublten/rvblten/rqvblten/rqcblten/rqiblten, which are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s -- an increment, not a derivative, and not the quantity this document computes. TENDENCY_ERROR_BUDGET.md measured that the entire coupled PBL residual (2-31 % of the column maximum) was that mismatch and not an error in the scheme. The reference is now the second-order Richardson extrapolation (8 T(dt/4) - 6 T(dt/2) + T(dt))/3 of real64 replays of THIS step's dumped YSU column through kernels/ysu_driver of the ctessum-claude/WRF fork at dt = 0.04/0.02/0.01 s (data/eqwefic/dumps/ysu/scmref_120_dt*.json, transcribed by tools/reref_pbl_dt0.py), the same reference components/atmospheric_dynamics/ysu/ysu.esm's own tests use; the kernel carries NEED_B4B_DURING_CCPP_TESTING = 1, so ttnp is a TEMPERATURE tendency and the theta reference is ttnp/pi2d (FORTRAN_BUGS N1). The extrapolation is self-consistent to 8.6e-10 (utnp) and 4.3e-8 (ttnp) of the column maximum when recomputed from dt = 0.08/0.04/0.02. NOTE WHICH REPLAYS: data/eqwefic/dumps/ysu/driver_120_dt*.json are replays of a DIFFERENT run (ysu_120.flat, z0 = 0.15 m); the reference run data/eqwefic/scm_ref has z0 = 0.05 m and its columns are scm_ref_<call>.flat, which is what these use. Measured residuals fall by two orders of magnitude and the tolerances follow: pbl_dthdt 2.81e-5 -> 9.21e-7 K/s (abs 1e-3 -> 5e-6), pbl_dudt 5.73e-5 -> 1.54e-7 m/s^2 (abs 5e-4 -> 1e-6), pbl_dvdt 1.60e-5 -> 4.86e-7 m/s^2 (abs 2e-4 -> 2e-6), pbl_dqvdt 2.42e-9 -> 1.15e-10 1/s (abs 1e-7 -> 5e-10), pbl_dqidt 2.44e-12 -> 4.62e-15 1/s (abs 2e-11 -> 2e-14), rth_phys_sum 2.81e-5 -> 9.20e-7 K/s (abs 1e-3 -> 5e-6), du_dt 5.73e-5 -> 1.54e-7 m/s^2 (abs 2e-4 -> 1e-6), dv_dt 1.60e-5 -> 4.86e-7 m/s^2 (abs 1e-4 -> 2e-6). du_dt is the case TENDENCY_ERROR_BUDGET.md singled out as the extreme one: its reference amplitude is small (4.86e-5, because the dynamics and PBL contributions nearly cancel) and its tolerance used to be 23x that. It is now 1e-6, 2 % of the amplitude. rth_phys_sum, du_dt, dv_dt contain a PBL term and are re-formed from the same limit; what is left is the same N50 lowest-layer pressure offset the surface layer shows.",
      "parameter_overrides": {
       "T_deep0": 288.0,
       "albedo0": 0.20000000298023224,
@@ -7910,7 +7910,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-09
+        "abs": 5e-10
        }
       },
       {
@@ -8002,7 +8002,7 @@
         }
        },
        "tolerance": {
-        "abs": 2e-10
+        "abs": 1e-10
        }
       },
       {
@@ -8095,7 +8095,7 @@
         }
        },
        "tolerance": {
-        "abs": 3e-10
+        "abs": 2e-10
        }
       },
       {
@@ -8380,7 +8380,7 @@
        "time": 0.0,
        "expected": 70.66815185546875,
        "tolerance": {
-        "rel": 0.0003
+        "rel": 2e-05
        }
       },
       {
@@ -8388,7 +8388,7 @@
        "time": 0.0,
        "expected": 7.952417945489287e-05,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 3e-06
        }
       },
       {
@@ -8396,7 +8396,7 @@
        "time": 0.0,
        "expected": 198.81045532226562,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 3e-06
        }
       },
       {
@@ -8412,7 +8412,7 @@
        "time": 0.0,
        "expected": 7.182034969329834,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 2e-07
        }
       },
       {
@@ -8420,7 +8420,7 @@
        "time": 0.0,
        "expected": 5.682413101196289,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 2e-06
        }
       },
       {
@@ -8428,7 +8428,7 @@
        "time": 0.0,
        "expected": 5.225712299346924,
        "tolerance": {
-        "rel": 3e-05
+        "rel": 5e-06
        }
       },
       {
@@ -8436,7 +8436,7 @@
        "time": 0.0,
        "expected": 6.242813587188721,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 5e-08
        }
       },
       {
@@ -8444,7 +8444,7 @@
        "time": 0.0,
        "expected": 0.5064802765846252,
        "tolerance": {
-        "rel": 7e-06
+        "rel": 1e-06
        }
       },
       {
@@ -8460,7 +8460,7 @@
        "time": 0.0,
        "expected": 0.560400664806366,
        "tolerance": {
-        "rel": 7e-05
+        "rel": 2e-05
        }
       },
       {
@@ -8468,7 +8468,7 @@
        "time": 0.0,
        "expected": 1.0171011686325073,
        "tolerance": {
-        "rel": 6e-05
+        "rel": 2e-05
        }
       },
       {
@@ -8476,7 +8476,7 @@
        "time": 0.0,
        "expected": -0.04448876157402992,
        "tolerance": {
-        "rel": 0.0002
+        "rel": 5e-05
        }
       },
       {
@@ -8484,7 +8484,7 @@
        "time": 0.0,
        "expected": 2.160446882247925,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 5e-07
        }
       },
       {
@@ -8492,7 +8492,7 @@
        "time": 0.0,
        "expected": -5.839729309082031,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-07
        }
       },
       {
@@ -8500,7 +8500,7 @@
        "time": 0.0,
        "expected": 287.0411376953125,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 5e-07
        }
       },
       {
@@ -8516,7 +8516,7 @@
        "time": 0.0,
        "expected": 0.004156248178333044,
        "tolerance": {
-        "rel": 6e-06
+        "rel": 3e-06
        }
       },
       {
@@ -8524,7 +8524,7 @@
        "time": 0.0,
        "expected": 46.444984436035156,
        "tolerance": {
-        "rel": 3e-05
+        "rel": 5e-06
        }
       },
       {
@@ -8532,7 +8532,7 @@
        "time": 0.0,
        "expected": 0.012818618677556515,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 3e-06
        }
       },
       {
@@ -8548,7 +8548,7 @@
        "time": 0.0,
        "expected": -0.010710885748267174,
        "tolerance": {
-        "rel": 0.0002
+        "rel": 5e-05
        }
       },
       {
@@ -8556,7 +8556,7 @@
        "time": 0.0,
        "expected": -0.11646607518196106,
        "tolerance": {
-        "rel": 0.0003
+        "rel": 2e-05
        }
       },
       {
@@ -8850,7 +8850,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 5e-06
        }
       },
       {
@@ -8942,7 +8942,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0005
+        "abs": 1e-06
        }
       },
       {
@@ -9034,7 +9034,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 2e-06
        }
       },
       {
@@ -9126,7 +9126,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-07
+        "abs": 5e-10
        }
       },
       {
@@ -9310,7 +9310,7 @@
         }
        },
        "tolerance": {
-        "abs": 2e-11
+        "abs": 2e-14
        }
       },
       {
@@ -9447,7 +9447,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.002
+        "abs": 0.001
        }
       },
       {
@@ -9676,7 +9676,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 2e-08
        }
       },
       {
@@ -9768,7 +9768,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-09
+        "abs": 5e-10
        }
       },
       {
@@ -9860,7 +9860,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 2e-08
        }
       },
       {
@@ -9952,7 +9952,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 5e-06
        }
       },
       {
@@ -9968,7 +9968,7 @@
        "time": 0.0,
        "expected": 292.805419921875,
        "tolerance": {
-        "rel": 2e-06
+        "rel": 1e-06
        }
       },
       {
@@ -9976,7 +9976,7 @@
        "time": 0.0,
        "expected": 129.72824096679688,
        "tolerance": {
-        "rel": 2e-06
+        "rel": 1e-06
        }
       },
       {
@@ -10068,7 +10068,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0001
+        "abs": 5e-05
        }
       },
       {
@@ -10108,7 +10108,7 @@
        "time": 0.0,
        "expected": 2364560.0,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-07
        }
       },
       {
@@ -11165,7 +11165,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 1e-06
        }
       },
       {
@@ -11257,7 +11257,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0001
+        "abs": 2e-06
        }
       },
       {
@@ -11272,7 +11272,7 @@
     },
     {
      "id": "eqweather_scm_step900_night",
-     "description": "PLACEHOLDER",
+     "description": "Reference: the NIGHT column of the same WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, 59 layers, data/eqwefic/scm_ref) at step 900 / physics call 1800 -- 1999-10-23 10:00 UTC, 03:33 local solar time, fifteen hours in. WHY A THIRD AND A FOURTH REGIME EXIST. The step-1410 and step-60 tests are both sunlit (cos zenith 0.639 and 0.562) and both convective (Ri_b -0.118 and -0.044, surface-layer regime 4, hfx +174 and +71 W/m^2). Two columns of the same regime cannot separate a state-dependent tendency error from a constant one, and between them they never enter YSU's stable branch or the longwave-only radiation path. THE SHORTWAVE PATH IS OFF, NOT SMALL. cos zenith is -0.5522, so gsw and dthdt_sw are asserted at abs 0 and are exactly zero on both sides -- WRF's Dudhia driver returns before the two-stream solve for a negative zenith cosine and DudhiaSW's csza-gated form must do the same, which a merely-small tolerance would not show. THE PBL IS STABLE. Ri_b = +0.0373, hfx = -19.1 W/m^2, u* = 0.267 m/s, and sfc_regime is 1 (the stable branch of sfclayrev) against 4 in both daytime tests; YSU's stable search with brcr = 0.25 puts the boundary layer at 262.5 m over 6 layers (kpbl = 6 against 16 and 15), with wstar = delta = 0, no counter-gradient term and no entrainment flux, so the in-PBL diffusivity comes from u*/phi_m(z) rather than from the convective velocity scale: K_h peaks at 2.20 m^2/s against 176.8 at step 1410, a factor of 80. The longwave is the only radiative term: glw 251.9 W/m^2, olr 240.1, and dthdt_lw reaches 4.06e-5 K/s. Cloud is a trace of cirrus (q_i <= 5.24e-8 kg/kg) and cal_cldfra returns 1.0 in three layers and 0.0208 in one -- so the Randall fractional fit is live here, unlike step 1410 where every cloudy layer saturates the snap. Microphysics is essentially inactive (WRF's whole-scheme |dq_i/dt| is 1.2e-12 kg/kg/s, |dtheta/dt| 5.1e-7 K/s), which is what makes the moist-theta conversion assertions meaningful at this step: WRF's conv_t_tendf_to_moist converts the RADIATION and PBL tendencies only, while this document hands the conversion every physics tendency including the microphysical one, and the two agree to the extent that microphysics is quiet. WHAT IS ASSERTED: the step-1410 test's 65 assertions with this step's references, plus the seven WSM6 whole-scheme tendencies, 72 in all. INPUTS. The state (u, v, w, phi', theta_m, q_v, q_c, q_i, q_r, q_s, q_g, the four soil layers and the skin temperature) is this step's own column from data/eqwefic/dumps/dyn_column/esm_dump_dyn_suite_900.json and the merged physics-suite dump esm_dump_scm_suite_900.json, so at t = 0 the coupled column IS the reference column; the 49 prescribed scalars are the same names the step-1410 test overrides, read at this step. The numbers were transcribed by tools/add_scm_regime.py, whose expression table is the one the existing fill sidecars use and which re-derives BOTH existing tests from the same table as a check. TIME SPAN {0, 0} is esm-spec 6.6.2's instantaneous-derivative shape. THE PBL TENDENCIES ARE ASSERTED AGAINST THE dt -> 0 LIMIT, not against WRF's driver-level rthblten/rublten/rvblten/rqvblten/rqcblten/rqiblten: those are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s, which is not an instantaneous derivative. The reference is the second-order Richardson extrapolation (8 T(dt/4) - 6 T(dt/2) + T(dt))/3 of real64 replays of this step's dumped YSU column through kernels/ysu_driver of the ctessum-claude/WRF fork at dt = 0.04/0.02/0.01 s (data/eqwefic/dumps/ysu/scmref_1800_dt*.json), the same reference ysu.esm's own tests use; the kernel carries NEED_B4B_DURING_CCPP_TESTING = 1, so ttnp is a TEMPERATURE tendency and the theta reference is ttnp/pi2d (FORTRAN_BUGS N1). The extrapolation is self-consistent to 3.6e-10 (utnp) and 6.6e-8 (ttnp) of the column maximum when recomputed from dt = 0.08/0.04/0.02. rth_phys_sum, dtheta_m_dt_phys, dtheta_m_conv_delta, dtheta_m_dt, du_dt and dv_dt contain a PBL term and are formed from the same limit. TOLERANCES: every one is the smallest of {1, 2, 3, 5} x 10^k that is at least 4x the residual measured in a zero-tolerance run of this document (relative for the scalar assertions, absolute for the Linf_error column assertions); an assertion that is exact keeps abs 0. Reference values are real32 WRF except the PBL tendencies, which are real64 kernel replays. THREE ASSERTIONS HERE ARE WIDER THAN THEIR OWN SIGNAL AND ARE NAMED RATHER THAN ROUNDED AWAY: mp_dqv_dt, mp_dqi_dt and mp_dtheta_dt. Microphysics is essentially inactive at this step -- WRF's whole-scheme reference maxima are 5.82e-12 kg/kg/s (q_v), 1.24e-12 (q_i) and 5.09e-7 K/s (theta) -- and the ESM's continuous formulation differs from WRF's operator-split increment by about the same amount, so the ratio residual/amplitude is ~1 and no tolerance can be both sufficient and non-vacuous. What they still pin is the ORDER OF MAGNITUDE: the microphysical tendency of a near-clear column is bounded at abs 1e-11, 2e-11 and 3e-6, which a gross error would break. The mechanism is measured in TENDENCY_ERROR_BUDGET.md (the operator split, and pigen's projection onto the equilibrium ice content, which is why the scheme has no dt -> 0 limit). dw_dt is wide for a different reason: WRF's real32 rounding of p' drives a w tendency up to half the physical one (N67), so the vertical momentum equation is constrained by dw_dt_nonpg (abs 3e-10) instead.",
      "parameter_overrides": {
       "psfc0": 97135.1484375,
       "xland0": 1.0,
@@ -12100,7 +12100,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-09
+        "abs": 5e-10
        }
       },
       {
@@ -12285,7 +12285,7 @@
         }
        },
        "tolerance": {
-        "abs": 3e-10
+        "abs": 1e-10
        }
       },
       {
@@ -12470,7 +12470,7 @@
         }
        },
        "tolerance": {
-        "abs": 2e-09
+        "abs": 2e-10
        }
       },
       {
@@ -12573,7 +12573,7 @@
        },
        "expected": 0.0004949709591824561,
        "tolerance": {
-        "rel": 1e-05
+        "rel": 5e-07
        }
       },
       {
@@ -12584,7 +12584,7 @@
        },
        "expected": -4.513102672668608e-06,
        "tolerance": {
-        "rel": 1e-05
+        "rel": 3e-07
        }
       },
       {
@@ -12683,7 +12683,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-12
+        "abs": 0.0
        }
       },
       {
@@ -12691,7 +12691,7 @@
        "time": 0.0,
        "expected": -19.073570251464844,
        "tolerance": {
-        "rel": 0.0003
+        "rel": 5e-05
        }
       },
       {
@@ -12723,7 +12723,7 @@
        "time": 0.0,
        "expected": 5.168717384338379,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 2e-07
        }
       },
       {
@@ -12739,7 +12739,7 @@
        "time": 0.0,
        "expected": 8.314876556396484,
        "tolerance": {
-        "rel": 3e-05
+        "rel": 2e-05
        }
       },
       {
@@ -12747,7 +12747,7 @@
        "time": 0.0,
        "expected": 6.226729869842529,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-07
        }
       },
       {
@@ -12755,7 +12755,7 @@
        "time": 0.0,
        "expected": 0.2666310667991638,
        "tolerance": {
-        "rel": 7e-06
+        "rel": 1e-05
        }
       },
       {
@@ -12771,7 +12771,7 @@
        "time": 0.0,
        "expected": -1.529018759727478,
        "tolerance": {
-        "rel": 7e-05
+        "rel": 0.0001
        }
       },
       {
@@ -12779,7 +12779,7 @@
        "time": 0.0,
        "expected": -2.088146209716797,
        "tolerance": {
-        "rel": 6e-05
+        "rel": 0.0001
        }
       },
       {
@@ -12787,7 +12787,7 @@
        "time": 0.0,
        "expected": 0.03731664642691612,
        "tolerance": {
-        "rel": 0.0002
+        "rel": 0.0001
        }
       },
       {
@@ -12795,7 +12795,7 @@
        "time": 0.0,
        "expected": 2.951647996902466,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-05
        }
       },
       {
@@ -12803,7 +12803,7 @@
        "time": 0.0,
        "expected": -2.6287219524383545,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-05
        }
       },
       {
@@ -12811,7 +12811,7 @@
        "time": 0.0,
        "expected": 280.58123779296875,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 5e-07
        }
       },
       {
@@ -12819,7 +12819,7 @@
        "time": 0.0,
        "expected": 278.2607116699219,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 5e-07
        }
       },
       {
@@ -12827,7 +12827,7 @@
        "time": 0.0,
        "expected": 0.00510042579844594,
        "tolerance": {
-        "rel": 6e-06
+        "rel": 1e-06
        }
       },
       {
@@ -12859,7 +12859,7 @@
        "time": 0.0,
        "expected": 0.010689780116081238,
        "tolerance": {
-        "rel": 0.0002
+        "rel": 0.0001
        }
       },
       {
@@ -12867,7 +12867,7 @@
        "time": 0.0,
        "expected": 0.05857847258448601,
        "tolerance": {
-        "rel": 0.0003
+        "rel": 5e-05
        }
       },
       {
@@ -12976,7 +12976,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.06
+        "abs": 0.0001
        }
       },
       {
@@ -13069,7 +13069,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.04
+        "abs": 0.0001
        }
       },
       {
@@ -13161,7 +13161,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 3e-07
        }
       },
       {
@@ -13253,7 +13253,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0005
+        "abs": 1e-07
        }
       },
       {
@@ -13345,7 +13345,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 2e-07
        }
       },
       {
@@ -13437,7 +13437,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-07
+        "abs": 1e-10
        }
       },
       {
@@ -13621,7 +13621,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-17
+        "abs": 5e-20
        }
       },
       {
@@ -13758,7 +13758,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.002
+        "abs": 0.001
        }
       },
       {
@@ -13895,7 +13895,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 0.003
        }
       },
       {
@@ -13987,7 +13987,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 3e-08
        }
       },
       {
@@ -14079,7 +14079,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-09
+        "abs": 0.0
        }
       },
       {
@@ -14171,7 +14171,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 3e-08
        }
       },
       {
@@ -14263,7 +14263,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 3e-07
        }
       },
       {
@@ -14271,7 +14271,7 @@
        "time": 0.0,
        "expected": 0.0,
        "tolerance": {
-        "rel": 1e-05
+        "abs": 0.0
        }
       },
       {
@@ -14295,7 +14295,7 @@
        "time": 0.0,
        "expected": -19.078828811645508,
        "tolerance": {
-        "rel": 0.001
+        "rel": 0.002
        }
       },
       {
@@ -14303,7 +14303,7 @@
        "time": 0.0,
        "expected": 2.9627963158418424e-06,
        "tolerance": {
-        "rel": 0.0005
+        "rel": 0.001
        }
       },
       {
@@ -14311,7 +14311,7 @@
        "time": 0.0,
        "expected": 7.406991004943848,
        "tolerance": {
-        "rel": 0.0005
+        "rel": 0.001
        }
       },
       {
@@ -14319,7 +14319,7 @@
        "time": 0.0,
        "expected": 0.005455366801470518,
        "tolerance": {
-        "rel": 0.0005
+        "rel": 0.0001
        }
       },
       {
@@ -14327,7 +14327,7 @@
        "time": 0.0,
        "expected": 2364560.0,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-07
        }
       },
       {
@@ -14343,7 +14343,7 @@
        "time": 0.0,
        "expected": -5.645751953125e-05,
        "tolerance": {
-        "rel": 0.15
+        "rel": 0.02
        }
       },
       {
@@ -14380,7 +14380,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-05
+        "abs": 2e-06
        }
       },
       {
@@ -14472,7 +14472,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 5e-07
        }
       },
       {
@@ -14564,7 +14564,7 @@
         }
        },
        "tolerance": {
-        "abs": 2e-05
+        "abs": 1e-07
        }
       },
       {
@@ -14656,7 +14656,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 1e-07
        }
       },
       {
@@ -14748,7 +14748,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0001
+        "abs": 2e-07
        }
       },
       {
@@ -14840,7 +14840,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0004
+        "abs": 5e-07
        }
       },
       {
@@ -14932,7 +14932,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0
+        "abs": 0.005
        }
       },
       {
@@ -15024,7 +15024,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 1e-11
        }
       },
       {
@@ -15208,7 +15208,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-07
+        "abs": 2e-11
        }
       },
       {
@@ -15576,14 +15576,14 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 3e-06
        }
       }
      ]
     },
     {
      "id": "eqweather_scm_step300_dusk",
-     "description": "PLACEHOLDER",
+     "description": "Reference: the EARLY-NIGHT column of the same WRF 4.8 em_scm_xy single-column run (GNU gfortran 13.3 REAL*4 build, dt = 60 s, 59 layers, data/eqwefic/scm_ref) at step 300 / physics call 600 -- 1999-10-23 00:00 UTC, 17:33 local solar time, five hours in and just after sunset. It is the companion of the step-900 test above and differs from it in the way that matters for a regression: the column is in the SAME stable, shortwave-free regime but at a much earlier stage of the nocturnal transition, so a tendency error that is constant in the regime cancels between them while one that depends on the state does not. cos zenith is -0.0883 (against -0.5522 at step 900), the boundary layer is still 555.8 m deep over 10 layers (against 262.5 m over 6), K_h peaks at 3.26 m^2/s (against 2.20), the skin temperature is 281.5 K (against 277.7) and the longwave cooling is stronger, dthdt_lw to 6.40e-5 K/s with glw 264.4 W/m^2 and olr 239.2. The surface layer is stable in both (regime 1, Ri_b +0.0576 here, hfx -19.1 W/m^2, u* 0.208 m/s). THE SHORTWAVE PATH IS OFF: gsw and dthdt_sw are asserted at abs 0 and are exactly zero on both sides, which for a zenith cosine only 0.088 below the horizon is a sharper test of the csza gate than the deep-night column is. CLOUD FRACTION IS THE MOST EXERCISED OF THE FOUR REGIMES: cal_cldfra returns five distinct values here -- 0.0272, 0.0373, 0.0670, 0.1356 and 1.0 -- so the Randall (1994) fractional fit, and not only its 0.01 snap and its saturated limit, is evaluated inside a coupled document; at step 1410 every cloudy layer is 1.0. Microphysics is nearly quiet (WRF's whole-scheme |dq_i/dt| 8.2e-11 kg/kg/s, |dtheta/dt| 4.6e-6 K/s, everything but vapour and cloud ice identically zero), which is what makes the three moist-theta assertions meaningful: WRF's conv_t_tendf_to_moist converts the RADIATION and PBL tendencies only while this document hands the conversion every physics tendency including the microphysical one, so 4.6e-6 K/s is the size of the systematic difference between them and it is bounded by the measured tolerance on dtheta_m_dt_phys. WHAT IS ASSERTED: the step-1410 test's 65 assertions with this step's references, plus the seven WSM6 whole-scheme tendencies, 72 in all. INPUTS. The state (u, v, w, phi', theta_m, q_v, q_c, q_i, q_r, q_s, q_g, the four soil layers and the skin temperature) is this step's own column, merged for the first time by tools/merge_dumps.py into esm_dump_dyn_suite_300.json and esm_dump_scm_suite_300.json from the dyn_column, subassembly all/pbl/rad/mp and sfclayrev/sw/ysu/rrtm kernel dumps of step 300 / call 600 (the recipe was verified by rebuilding the step-1410 merges byte for byte); the 49 prescribed scalars are the same names the step-1410 test overrides, read at this step. The numbers were transcribed by tools/add_scm_regime.py, whose expression table re-derives BOTH pre-existing tests as a check. TIME SPAN {0, 0} is esm-spec 6.6.2's instantaneous-derivative shape. THE PBL TENDENCIES ARE ASSERTED AGAINST THE dt -> 0 LIMIT, not against WRF's driver-level rthblten/rublten/rvblten/rqvblten/rqcblten/rqiblten, which are the IMPLICIT tridiagonal step's (c_new - c_old)/dt at dt = 60 s and are not instantaneous derivatives. The reference is the second-order Richardson extrapolation (8 T(dt/4) - 6 T(dt/2) + T(dt))/3 of real64 replays of this step's dumped YSU column through kernels/ysu_driver of the ctessum-claude/WRF fork at dt = 0.04/0.02/0.01 s (data/eqwefic/dumps/ysu/scmref_600_dt*.json), the same reference ysu.esm's own tests use; the kernel carries NEED_B4B_DURING_CCPP_TESTING = 1, so ttnp is a TEMPERATURE tendency and the theta reference is ttnp/pi2d (FORTRAN_BUGS N1). The extrapolation is self-consistent to 7.3e-10 (utnp) and 3.6e-8 (ttnp) of the column maximum when recomputed from dt = 0.08/0.04/0.02. At this step the dt = 60 s driver value and the dt -> 0 limit differ by 1.48e-5 m/s^2 in u (4.0 % of the column maximum) and 1.93e-6 K/s in theta (1.2 %), an order of magnitude less than at step 1410 -- the implicit step's error scales with the diffusivity, which is 54x smaller here. rth_phys_sum, dtheta_m_dt_phys, dtheta_m_conv_delta, dtheta_m_dt, du_dt and dv_dt contain a PBL term and are formed from the same limit. TOLERANCES: every one is the smallest of {1, 2, 3, 5} x 10^k that is at least 4x the residual measured in a zero-tolerance run of this document (relative for the scalar assertions, absolute for the Linf_error column assertions); an assertion that is exact keeps abs 0. Reference values are real32 WRF except the PBL tendencies, which are real64 kernel replays. THREE ASSERTIONS HERE ARE WIDER THAN THEIR OWN SIGNAL AND ARE NAMED RATHER THAN ROUNDED AWAY: mp_dqv_dt, mp_dqi_dt and mp_dtheta_dt. Microphysics is essentially inactive at this step -- WRF's whole-scheme reference maxima are 1.14e-9 kg/kg/s (q_v), 8.20e-11 (q_i) and 4.58e-6 K/s (theta) -- and the ESM's continuous formulation differs from WRF's operator-split increment by about the same amount, so the ratio residual/amplitude is ~1 and no tolerance can be both sufficient and non-vacuous. What they still pin is the ORDER OF MAGNITUDE: the microphysical tendency of a near-clear column is bounded at abs 5e-9, 5e-9 and 2e-5, which a gross error would break. The mechanism is measured in TENDENCY_ERROR_BUDGET.md (the operator split, and pigen's projection onto the equilibrium ice content, which is why the scheme has no dt -> 0 limit). dw_dt is wide for a different reason: WRF's real32 rounding of p' drives a w tendency up to half the physical one (N67), so the vertical momentum equation is constrained by dw_dt_nonpg (abs 2e-10) instead.",
      "parameter_overrides": {
       "psfc0": 97132.9453125,
       "xland0": 1.0,
@@ -16411,7 +16411,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-09
+        "abs": 5e-10
        }
       },
       {
@@ -16596,7 +16596,7 @@
         }
        },
        "tolerance": {
-        "abs": 3e-10
+        "abs": 2e-10
        }
       },
       {
@@ -16781,7 +16781,7 @@
         }
        },
        "tolerance": {
-        "abs": 2e-09
+        "abs": 1e-10
        }
       },
       {
@@ -16873,7 +16873,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.05
+        "abs": 0.1
        }
       },
       {
@@ -16884,7 +16884,7 @@
        },
        "expected": 0.0005298434475089696,
        "tolerance": {
-        "rel": 1e-05
+        "rel": 1e-07
        }
       },
       {
@@ -16895,7 +16895,7 @@
        },
        "expected": -4.513102672668608e-06,
        "tolerance": {
-        "rel": 1e-05
+        "rel": 3e-07
        }
       },
       {
@@ -16994,7 +16994,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-12
+        "abs": 0.0
        }
       },
       {
@@ -17002,7 +17002,7 @@
        "time": 0.0,
        "expected": -19.089826583862305,
        "tolerance": {
-        "rel": 0.0003
+        "rel": 0.0001
        }
       },
       {
@@ -17010,7 +17010,7 @@
        "time": 0.0,
        "expected": 1.0526810001465492e-05,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 0.0005
        }
       },
       {
@@ -17018,7 +17018,7 @@
        "time": 0.0,
        "expected": 26.31702423095703,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 0.0005
        }
       },
       {
@@ -17034,7 +17034,7 @@
        "time": 0.0,
        "expected": 4.587636470794678,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 5e-08
        }
       },
       {
@@ -17042,7 +17042,7 @@
        "time": 0.0,
        "expected": 8.834497451782227,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 0.0003
        }
       },
       {
@@ -17050,7 +17050,7 @@
        "time": 0.0,
        "expected": 9.533971786499023,
        "tolerance": {
-        "rel": 3e-05
+        "rel": 0.0003
        }
       },
       {
@@ -17058,7 +17058,7 @@
        "time": 0.0,
        "expected": 6.241811275482178,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 5e-08
        }
       },
       {
@@ -17066,7 +17066,7 @@
        "time": 0.0,
        "expected": 0.20781439542770386,
        "tolerance": {
-        "rel": 7e-06
+        "rel": 0.0002
        }
       },
       {
@@ -17082,7 +17082,7 @@
        "time": 0.0,
        "expected": -2.592686414718628,
        "tolerance": {
-        "rel": 7e-05
+        "rel": 0.001
        }
       },
       {
@@ -17090,7 +17090,7 @@
        "time": 0.0,
        "expected": -3.292160987854004,
        "tolerance": {
-        "rel": 6e-05
+        "rel": 0.001
        }
       },
       {
@@ -17098,7 +17098,7 @@
        "time": 0.0,
        "expected": 0.05758558586239815,
        "tolerance": {
-        "rel": 0.0002
+        "rel": 0.001
        }
       },
       {
@@ -17106,7 +17106,7 @@
        "time": 0.0,
        "expected": 2.4705984592437744,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 0.0002
        }
       },
       {
@@ -17114,7 +17114,7 @@
        "time": 0.0,
        "expected": -2.193312883377075,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 0.0002
        }
       },
       {
@@ -17138,7 +17138,7 @@
        "time": 0.0,
        "expected": 0.005499538965523243,
        "tolerance": {
-        "rel": 6e-06
+        "rel": 5e-05
        }
       },
       {
@@ -17146,7 +17146,7 @@
        "time": 0.0,
        "expected": 10.480087280273438,
        "tolerance": {
-        "rel": 3e-05
+        "rel": 0.0005
        }
       },
       {
@@ -17154,7 +17154,7 @@
        "time": 0.0,
        "expected": 0.004040828440338373,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 0.0005
        }
       },
       {
@@ -17170,7 +17170,7 @@
        "time": 0.0,
        "expected": 0.01838590018451214,
        "tolerance": {
-        "rel": 0.0002
+        "rel": 0.002
        }
       },
       {
@@ -17186,7 +17186,7 @@
        "time": 0.0,
        "expected": 555.7811279296875,
        "tolerance": {
-        "rel": 2e-05
+        "rel": 0.0001
        }
       },
       {
@@ -17287,7 +17287,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.06
+        "abs": 0.001
        }
       },
       {
@@ -17380,7 +17380,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.04
+        "abs": 0.001
        }
       },
       {
@@ -17472,7 +17472,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 3e-06
        }
       },
       {
@@ -17564,7 +17564,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0005
+        "abs": 1e-07
        }
       },
       {
@@ -17656,7 +17656,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 2e-07
        }
       },
       {
@@ -17748,7 +17748,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-07
+        "abs": 1e-09
        }
       },
       {
@@ -17932,7 +17932,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-17
+        "abs": 1e-16
        }
       },
       {
@@ -18206,7 +18206,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 0.002
        }
       },
       {
@@ -18298,7 +18298,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 2e-08
        }
       },
       {
@@ -18390,7 +18390,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-09
+        "abs": 0.0
        }
       },
       {
@@ -18482,7 +18482,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 2e-08
        }
       },
       {
@@ -18574,7 +18574,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 3e-06
        }
       },
       {
@@ -18582,7 +18582,7 @@
        "time": 0.0,
        "expected": 0.0,
        "tolerance": {
-        "rel": 1e-05
+        "abs": 0.0
        }
       },
       {
@@ -18598,7 +18598,7 @@
        "time": 0.0,
        "expected": 239.18067932128906,
        "tolerance": {
-        "rel": 2e-06
+        "rel": 5e-07
        }
       },
       {
@@ -18606,7 +18606,7 @@
        "time": 0.0,
        "expected": -19.132362365722656,
        "tolerance": {
-        "rel": 0.001
+        "rel": 0.01
        }
       },
       {
@@ -18614,7 +18614,7 @@
        "time": 0.0,
        "expected": 1.0494821253814735e-05,
        "tolerance": {
-        "rel": 0.0005
+        "rel": 0.003
        }
       },
       {
@@ -18622,7 +18622,7 @@
        "time": 0.0,
        "expected": 26.23705291748047,
        "tolerance": {
-        "rel": 0.0005
+        "rel": 0.003
        }
       },
       {
@@ -18630,7 +18630,7 @@
        "time": 0.0,
        "expected": 0.007117246277630329,
        "tolerance": {
-        "rel": 0.0005
+        "rel": 0.002
        }
       },
       {
@@ -18638,7 +18638,7 @@
        "time": 0.0,
        "expected": 2364560.0,
        "tolerance": {
-        "rel": 1e-06
+        "rel": 1e-07
        }
       },
       {
@@ -18654,7 +18654,7 @@
        "time": 0.0,
        "expected": -0.00026804606119791666,
        "tolerance": {
-        "rel": 0.15
+        "rel": 0.02
        }
       },
       {
@@ -18691,7 +18691,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-05
+        "abs": 5e-06
        }
       },
       {
@@ -18783,7 +18783,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.001
+        "abs": 2e-05
        }
       },
       {
@@ -18967,7 +18967,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 1e-07
        }
       },
       {
@@ -19059,7 +19059,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0001
+        "abs": 2e-07
        }
       },
       {
@@ -19151,7 +19151,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0004
+        "abs": 2e-05
        }
       },
       {
@@ -19243,7 +19243,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0
+        "abs": 0.0002
        }
       },
       {
@@ -19335,7 +19335,7 @@
         }
        },
        "tolerance": {
-        "abs": 5e-08
+        "abs": 5e-09
        }
       },
       {
@@ -19519,7 +19519,7 @@
         }
        },
        "tolerance": {
-        "abs": 1e-07
+        "abs": 5e-09
        }
       },
       {
@@ -19887,7 +19887,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0002
+        "abs": 2e-05
        }
       }
      ]
