@@ -1,0 +1,2038 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "MadronichLayerColumns",
+    "description": "Stage 2 of WRF-Chem's Madronich photolysis (phot_opt = 1): the layer-mean quantities SUBROUTINE subgrid derives from the interface column (chem/module_phot_mad.F:2446-2510, WRF v4.8.0) -- the layer temperature, the air, ozone and aerosol columns, the cloud optical depth, and the O2 column above each layer mid-point that the Schumann-Runge parameterization runs on.\n\nSCOPE, stated up front: this component is exact for a CLEAR column and only for a clear column. subgrid does two things -- it inserts extra levels inside cloud, and it forms layer means -- and only the second is written here. The insertion adds max(int(cloud dz 0.02), 1) levels per cloudy model layer, so `nlevel` is a function of the cloud field: 70, 72, 77 and 78 at the four dumped daytime calls of the reference run. An esm index set has a size fixed at load, so a grid whose SIZE is state-dependent cannot be expressed as one; representing the cloudy case needs either a fixed maximum grid with masked levels or an adaptive-grid discretization, and that is a design decision rather than a transcription. Where cloud is absent the insertion is a no-op, the regridded column IS the interface column, and everything below is exact -- which the test verifies against the one dumped daytime call whose column is completely clear.\n\nTwo of these are written as integrals rather than as the sums the Fortran spells. `vaer` is normalized by the column-integrated aerosol extinction. And `cvo2` -- which the Fortran builds by a downward recurrence from the model top, cvo2(L) = 0.2095 vair(L)/2 and cvo2(k) = cvo2(k+1) + 0.2095 (vair(k)+vair(k+1))/2 -- telescopes exactly to 0.2095 (column above interface k - vair(k)/2), the O2 column above the layer MID-POINT, which is what the Fortran's own comment says it is building. Writing it as the integral removes the recurrence entirely.\n\n`vo3` deserves a note: the Fortran gets it by calling trapez to interpolate the interface ozone onto zmid and then multiplying by dz. For a clear column zmid is the arithmetic mid-point of the two bounding interfaces, so that interpolation IS the arithmetic mean, and the layer ozone column is the trapezoidal one. Verified against the dump before this file was written."
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 69,
+      "description": "Number of radiative-transfer layers (nlayer = nlevel-1). 69 for a clear column of the 60-level reference sounding."
+    }
+  },
+  "models": {
+    "MadronichLayerColumns": {
+      "expression_template_imports": [
+        {
+          "ref": "${ESD_ROOT}/grids/column_nonuniform_1d/grid.esm",
+          "bindings": {
+            "NLEV": "NLEV"
+          }
+        },
+        {
+          "ref": "${ESD_ROOT}/grids/column_nonuniform_1d/rules/integral_lev_whole.esm",
+          "bindings": {
+            "NLEV": "NLEV"
+          }
+        },
+        {
+          "ref": "${ESD_ROOT}/grids/column_nonuniform_1d/rules/integral_lev_nodes_cumulative_to_top.esm",
+          "bindings": {
+            "NLEV": "NLEV"
+          }
+        }
+      ],
+      "subsystems": {
+        "par": {
+          "ref": "./madronich_parameters.esm"
+        }
+      },
+      "variables": {
+        "ze": {
+          "type": "parameter",
+          "units": "km",
+          "default": 0.0,
+          "description": "Radiative-transfer interface heights (photolysis_mad `z`), from MadronichColumnSetup. Supplied by the consumer; this component does not own it.",
+          "shape": [
+            "lev_nodes"
+          ]
+        },
+        "t_node": {
+          "type": "parameter",
+          "units": "K",
+          "default": 250.0,
+          "description": "Temperature on the RT interfaces (`zt`), from MadronichColumnSetup.",
+          "shape": [
+            "lev_nodes"
+          ]
+        },
+        "air_node": {
+          "type": "parameter",
+          "units": "cm^-3",
+          "default": 1e+19,
+          "description": "Air number density on the RT interfaces (`zair`).",
+          "shape": [
+            "lev_nodes"
+          ]
+        },
+        "o3_node": {
+          "type": "parameter",
+          "units": "cm^-3",
+          "default": 1000000000000.0,
+          "description": "Ozone number density on the RT interfaces, AFTER the 325 DU rescaling.",
+          "shape": [
+            "lev_nodes"
+          ]
+        },
+        "aer_node": {
+          "type": "parameter",
+          "units": "1/km",
+          "default": 0.0,
+          "description": "Aerosol extinction on the RT interfaces.",
+          "shape": [
+            "lev_nodes"
+          ]
+        },
+        "cloud_node": {
+          "type": "parameter",
+          "units": "1/km",
+          "default": 0.0,
+          "description": "Cloud extinction on the RT interfaces.",
+          "shape": [
+            "lev_nodes"
+          ]
+        },
+        "dz": {
+          "type": "unknown",
+          "units": "km",
+          "description": "Layer thickness, z(i+1)-z(i) (grid: column_cell_thickness).",
+          "shape": [
+            "lev"
+          ]
+        },
+        "zmid": {
+          "type": "unknown",
+          "units": "km",
+          "description": "Layer mid-point altitude (grid: column_cell_center). This is `zmid`, the altitude srband tests against 20 km and the altitude every layer-mean optical quantity refers to.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "vt": {
+          "type": "unknown",
+          "units": "K",
+          "description": "Layer-mean temperature, (zt(lay+1)+zt(lay))/2. Drives the layer-mean ozone cross section ao3 and, above 200 nm, the Schumann-Runge fit.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "air_layer": {
+          "type": "unknown",
+          "units": "cm^-3",
+          "description": "Layer-mean air number density.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "vair": {
+          "type": "unknown",
+          "units": "cm^-2",
+          "description": "Vertical air column in the layer, dz 1e5 (zair(i+1)+zair(i))/2.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "o3_layer": {
+          "type": "unknown",
+          "units": "cm^-3",
+          "description": "Layer-mean ozone number density; equivalently trapez's interpolation of o3 onto zmid.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "vo3": {
+          "type": "unknown",
+          "units": "cm^-2",
+          "description": "Vertical ozone column in the layer.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "aer_layer": {
+          "type": "unknown",
+          "units": "1/km",
+          "description": "Layer-mean aerosol extinction.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "vaer_raw": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Layer aerosol optical depth before normalization, dz times the layer mean.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "aer_total": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Column-integrated aerosol extinction, the normalization denominator."
+        },
+        "vaer": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Layer aerosol optical depth NORMALIZED so the column sums to one. optics then multiplies it by the wavelength-dependent total aaer(kl) = 0.379 (340/lambda), so only the SHAPE of the aerosol profile survives from the model; its magnitude is the Elterman climatology, not the model's.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "cloud_layer": {
+          "type": "unknown",
+          "units": "1/km",
+          "description": "Layer-mean cloud extinction.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "vcld": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Layer cloud optical depth, the layer-mean extinction times dz. Identically zero wherever this component is valid (see the description); the cloudy case needs the inserted grid that this component deliberately does not build.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "air_above": {
+          "type": "unknown",
+          "units": "cm^-3 km",
+          "description": "Air column from each interface to the model top, the integral of the layer-mean air over dz.",
+          "shape": [
+            "lev_nodes"
+          ]
+        },
+        "cvo2": {
+          "type": "unknown",
+          "units": "cm^-2",
+          "description": "Vertical O2 column above the MID-POINT of each layer, 0.2095 (column above the interface - vair/2). srband's independent variable.",
+          "shape": [
+            "lev"
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": "dz",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "column_cell_thickness",
+            "bindings": {
+              "ze": "ze"
+            }
+          }
+        },
+        {
+          "lhs": "zmid",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "column_cell_center",
+            "bindings": {
+              "ze": "ze"
+            }
+          }
+        },
+        {
+          "lhs": "vt",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j"
+            ],
+            "ranges": {
+              "j": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "t_node",
+                        "j"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "t_node",
+                        {
+                          "op": "+",
+                          "args": [
+                            "j",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "args": [
+              "t_node"
+            ]
+          }
+        },
+        {
+          "lhs": "air_layer",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j"
+            ],
+            "ranges": {
+              "j": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "air_node",
+                        "j"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "air_node",
+                        {
+                          "op": "+",
+                          "args": [
+                            "j",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "args": [
+              "air_node"
+            ]
+          }
+        },
+        {
+          "lhs": "vair",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "par.km_to_cm",
+              "dz",
+              "air_layer"
+            ]
+          }
+        },
+        {
+          "lhs": "o3_layer",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j"
+            ],
+            "ranges": {
+              "j": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "o3_node",
+                        "j"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "o3_node",
+                        {
+                          "op": "+",
+                          "args": [
+                            "j",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "args": [
+              "o3_node"
+            ]
+          }
+        },
+        {
+          "lhs": "vo3",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "par.km_to_cm",
+              "dz",
+              "o3_layer"
+            ]
+          }
+        },
+        {
+          "lhs": "aer_layer",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j"
+            ],
+            "ranges": {
+              "j": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "aer_node",
+                        "j"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "aer_node",
+                        {
+                          "op": "+",
+                          "args": [
+                            "j",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "args": [
+              "aer_node"
+            ]
+          }
+        },
+        {
+          "lhs": "vaer_raw",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "dz",
+              "aer_layer"
+            ]
+          }
+        },
+        {
+          "lhs": "aer_total",
+          "rhs": {
+            "op": "integral",
+            "args": [
+              "aer_layer"
+            ],
+            "var": "lev",
+            "lower": {
+              "op": "index",
+              "args": [
+                "ze",
+                1
+              ]
+            },
+            "upper": {
+              "op": "index",
+              "args": [
+                "ze",
+                {
+                  "op": "+",
+                  "args": [
+                    "NLEV",
+                    1
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "vaer",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "vaer_raw",
+              "aer_total"
+            ]
+          }
+        },
+        {
+          "lhs": "cloud_layer",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j"
+            ],
+            "ranges": {
+              "j": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "cloud_node",
+                        "j"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cloud_node",
+                        {
+                          "op": "+",
+                          "args": [
+                            "j",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "args": [
+              "cloud_node"
+            ]
+          }
+        },
+        {
+          "lhs": "vcld",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "cloud_layer",
+              "dz"
+            ]
+          }
+        },
+        {
+          "lhs": "air_above",
+          "rhs": {
+            "op": "integral",
+            "args": [
+              "air_layer"
+            ],
+            "var": "lev",
+            "lower": "lev_nodes",
+            "upper": {
+              "op": "index",
+              "args": [
+                "ze",
+                {
+                  "op": "+",
+                  "args": [
+                    "NLEV",
+                    1
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "cvo2",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j"
+            ],
+            "ranges": {
+              "j": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "par.o2_fraction",
+                {
+                  "op": "-",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        "par.km_to_cm",
+                        {
+                          "op": "index",
+                          "args": [
+                            "air_above",
+                            "j"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "index",
+                          "args": [
+                            "vair",
+                            "j"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "args": [
+              "air_above",
+              "vair"
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "photmad_layers_call1410",
+          "description": "Reference: the WRF-Chem 4.8 em_scm_xy single-column run (chem_opt = 101, phot_opt = 1), 37.6 N 96.7 W, 1999-10-22 19:00 UTC start, dt = 60 s; GNU gfortran 13.3 REAL*4 build; run directory data/eqwefic/chem_scm_phot; dumped by the ctessum-claude/WRF fork, branch earthsciml-instrumented-chem, inside photolysis_mad just before the optics call at call 1410. This is the ONE dumped daytime call with a completely CLEAR column (max cloud extinction exactly 0), so nlevel = 70 = NMODEL + nabv and the radiative-transfer grid is the plain extended interface grid: subgrid inserts no levels and the layer quantities are the interface means this component computes. The parameter_overrides are the dumped post-o3scal interface arrays, so this stage is pinned against its OWN input rather than only through the final j-values. Single-precision reference, rel 1e-5; whole-array assertions are relative L2 over the 69 layers.",
+          "parameter_overrides": {
+            "ze": [
+              0.0,
+              0.05157853290438652,
+              0.10465085506439209,
+              0.15930256247520447,
+              0.2155984789133072,
+              0.2736002206802368,
+              0.33337053656578064,
+              0.3949753940105438,
+              0.45848193764686584,
+              0.5239612460136414,
+              0.5914871692657471,
+              0.6611360907554626,
+              0.7329882979393005,
+              0.8071262240409851,
+              0.8836378455162048,
+              0.9626750946044922,
+              1.0447250604629517,
+              1.1298483610153198,
+              1.21811044216156,
+              1.3096189498901367,
+              1.404504656791687,
+              1.5029118061065674,
+              1.6050015687942505,
+              1.7109458446502686,
+              1.8209295272827148,
+              1.9351439476013184,
+              2.05379319190979,
+              2.1770670413970947,
+              2.305210590362549,
+              2.4384825229644775,
+              2.577160358428955,
+              2.721550226211548,
+              2.8719699382781982,
+              3.028764486312866,
+              3.1923093795776367,
+              3.3629982471466064,
+              3.541245698928833,
+              3.727442502975464,
+              3.9220454692840576,
+              4.1255269050598145,
+              4.338316440582275,
+              4.560938358306885,
+              4.794083118438721,
+              5.038523197174072,
+              5.295109748840332,
+              5.5648193359375,
+              5.849037170410156,
+              6.149740695953369,
+              6.468066692352295,
+              6.805456638336182,
+              7.163843631744385,
+              7.5461578369140625,
+              7.954976558685303,
+              8.393467903137207,
+              8.865782737731934,
+              9.377098083496094,
+              9.933985710144043,
+              10.54497241973877,
+              11.221436500549316,
+              11.979107856750488,
+              13.246471405029297,
+              14.513832092285156,
+              15.781196594238281,
+              17.048561096191406,
+              18.3159236907959,
+              24.652738571166992,
+              30.989553451538086,
+              37.32637023925781,
+              43.663185119628906,
+              50.0
+            ],
+            "t_node": [
+              287.21697998046875,
+              286.8319396972656,
+              286.05072021484375,
+              285.43963623046875,
+              284.8563232421875,
+              284.2745361328125,
+              283.6846618652344,
+              283.0819091796875,
+              282.4631042480469,
+              281.8258361816406,
+              281.1679992675781,
+              280.4872131347656,
+              279.7802429199219,
+              279.04266357421875,
+              278.2706298828125,
+              277.6786804199219,
+              278.3720397949219,
+              278.7929382324219,
+              278.9537658691406,
+              278.98138427734375,
+              278.92694091796875,
+              278.810791015625,
+              278.6468200683594,
+              278.4456787109375,
+              278.20294189453125,
+              277.90496826171875,
+              277.5534362792969,
+              277.0752258300781,
+              276.57281494140625,
+              276.0288391113281,
+              275.4372253417969,
+              274.8155822753906,
+              274.1328430175781,
+              273.3898010253906,
+              272.58441162109375,
+              271.693115234375,
+              270.68878173828125,
+              269.4805603027344,
+              268.1130065917969,
+              266.5426025390625,
+              264.6624755859375,
+              262.53094482421875,
+              260.2740478515625,
+              257.8820495605469,
+              255.34625244140625,
+              252.67018127441406,
+              250.0884552001953,
+              247.90684509277344,
+              245.20672607421875,
+              242.08517456054688,
+              238.70045471191406,
+              235.44163513183594,
+              231.7442169189453,
+              227.62081909179688,
+              223.17843627929688,
+              218.3806610107422,
+              213.17141723632812,
+              207.4775390625,
+              201.20248413085938,
+              194.21536254882812,
+              197.16213989257812,
+              200.10890197753906,
+              203.0556640625,
+              206.00244140625,
+              208.94920349121094,
+              215.19000244140625,
+              219.45025634765625,
+              234.9605712890625,
+              254.40667724609375,
+              265.70001220703125
+            ],
+            "air_node": [
+              2.52544274916893e+19,
+              2.5211234276903748e+19,
+              2.512200231123996e+19,
+              2.5013357368276156e+19,
+              2.4897715133313188e+19,
+              2.477723284816475e+19,
+              2.465261859831913e+19,
+              2.4524134067543736e+19,
+              2.439191339625716e+19,
+              2.425597857469196e+19,
+              2.411635379210394e+19,
+              2.397307203384194e+19,
+              2.382620366865013e+19,
+              2.367597079787733e+19,
+              2.3522527353151422e+19,
+              2.3346864977451418e+19,
+              2.3058210189811384e+19,
+              2.278881224882022e+19,
+              2.253477228624583e+19,
+              2.228549980608948e+19,
+              2.2036453825328447e+19,
+              2.1785648625962975e+19,
+              2.1531668037016486e+19,
+              2.1273412546861203e+19,
+              2.1010908543776195e+19,
+              2.0744870710319514e+19,
+              2.047481965942145e+19,
+              2.020577576117443e+19,
+              1.99298555172073e+19,
+              1.9647982517287387e+19,
+              1.9360235926251897e+19,
+              1.9064984068845208e+19,
+              1.8764012551950828e+19,
+              1.84568046051037e+19,
+              1.814300948409457e+19,
+              1.782367722252796e+19,
+              1.7499971103706055e+19,
+              1.7176988463535227e+19,
+              1.6850966773225226e+19,
+              1.6523738918659555e+19,
+              1.6200826647232905e+19,
+              1.587735362487609e+19,
+              1.5544492972241322e+19,
+              1.5201800486630982e+19,
+              1.4848661541045142e+19,
+              1.4483640173297926e+19,
+              1.4092230526484087e+19,
+              1.3656892091605713e+19,
+              1.3227508611703374e+19,
+              1.2795954695847805e+19,
+              1.235128250676124e+19,
+              1.1871366571957944e+19,
+              1.1382740306039407e+19,
+              1.0881182683866595e+19,
+              1.0357695302277792e+19,
+              9.809800961575617e+18,
+              9.235034556690596e+18,
+              8.630462040844009e+18,
+              7.992463821757219e+18,
+              7.31641425401217e+18,
+              6.50908904522462e+18,
+              5.701764935948698e+18,
+              4.89443862764952e+18,
+              4.0871131439840625e+18,
+              3.279787935196512e+18,
+              8.826583854035763e+17,
+              3.4203246939602944e+17,
+              1.3277603632775168e+17,
+              5.218271448006656e+16,
+              2.1400000969834496e+16
+            ],
+            "o3_node": [
+              819871612928.0,
+              818469404672.0,
+              815576842240.0,
+              812052119552.0,
+              808300052480.0,
+              804390895616.0,
+              800348438528.0,
+              796181069824.0,
+              791893573632.0,
+              787487457280.0,
+              782964752384.0,
+              778328997888.0,
+              773587795968.0,
+              768765984768.0,
+              763948302336.0,
+              759832444928.0,
+              754029035520.0,
+              745508569088.0,
+              736815808512.0,
+              728222203904.0,
+              719612739584.0,
+              710918406144.0,
+              702091034624.0,
+              693109719040.0,
+              683979767808.0,
+              674723921920.0,
+              665335758848.0,
+              656647782400.0,
+              647805927424.0,
+              638772969472.0,
+              629562408960.0,
+              620111200256.0,
+              610474655744.0,
+              600651726848.0,
+              590654341120.0,
+              580432560128.0,
+              570103627776.0,
+              559923920896.0,
+              549717475328.0,
+              539538358272.0,
+              529797840896.0,
+              519505739776.0,
+              508837003264.0,
+              497937121280.0,
+              486662045696.0,
+              474849443840.0,
+              462758248448.0,
+              448914817024.0,
+              434981830656.0,
+              420937498624.0,
+              406322479104.0,
+              390519881728.0,
+              374756737024.0,
+              358629834752.0,
+              341949284352.0,
+              324591714304.0,
+              306402557952.0,
+              287027757056.0,
+              266422042624.0,
+              244240367616.0,
+              962836955136.0,
+              1681432248320.0,
+              2400029507584.0,
+              3118626504704.0,
+              3837222977536.0,
+              4828017197056.0,
+              2523981152256.0,
+              1132260622336.0,
+              341548695552.0,
+              72589426688.0
+            ],
+            "aer_node": [
+              0.23999999463558197,
+              0.23314298689365387,
+              0.22608084976673126,
+              0.21880650520324707,
+              0.21131235361099243,
+              0.20359061658382416,
+              0.1956331580877304,
+              0.18743133544921875,
+              0.17897623777389526,
+              0.17025844752788544,
+              0.16126808524131775,
+              0.15199488401412964,
+              0.1424279808998108,
+              0.13255611062049866,
+              0.12236703932285309,
+              0.11174674332141876,
+              0.10360685735940933,
+              0.0984453409910202,
+              0.09309767186641693,
+              0.08755519986152649,
+              0.08180875331163406,
+              0.07584865391254425,
+              0.06966440379619598,
+              0.06324507296085358,
+              0.056578800082206726,
+              0.04965297877788544,
+              0.04421979561448097,
+              0.04093754664063454,
+              0.0375249907374382,
+              0.03397507593035698,
+              0.03028019890189171,
+              0.026432227343320847,
+              0.022422336041927338,
+              0.01880825124680996,
+              0.01732640713453293,
+              0.015778984874486923,
+              0.014161803759634495,
+              0.012472042813897133,
+              0.010705421678721905,
+              0.009759011678397655,
+              0.009229111485183239,
+              0.008674864657223225,
+              0.00809450726956129,
+              0.007498882710933685,
+              0.006917055696249008,
+              0.006305395159870386,
+              0.005661342293024063,
+              0.005312776193022728,
+              0.005191471427679062,
+              0.005062943324446678,
+              0.005029043182730675,
+              0.005086443852633238,
+              0.005147780291736126,
+              0.0050610085017979145,
+              0.004961806815117598,
+              0.0048910933546721935,
+              0.004824256990104914,
+              0.004641564097255468,
+              0.00456799753010273,
+              0.004736318718641996,
+              0.004301310516893864,
+              0.0038663032464683056,
+              0.003431295044720173,
+              0.002996286377310753,
+              0.0025612786412239075,
+              0.000671324145514518,
+              0.00016229250468313694,
+              3.287791332695633e-05,
+              6.064115041226614e-06,
+              9.140001111518359e-07
+            ],
+            "cloud_node": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-05
+          },
+          "assertions": [
+            {
+              "variable": "zmid",
+              "time": 0.0,
+              "reduce": "L2_error",
+              "reference": {
+                "op": "const",
+                "args": [],
+                "value": [
+                  0.02578926645219326,
+                  0.07811469584703445,
+                  0.13197670876979828,
+                  0.18745052814483643,
+                  0.2445993423461914,
+                  0.3034853935241699,
+                  0.36417296528816223,
+                  0.42672866582870483,
+                  0.4912216067314148,
+                  0.5577242374420166,
+                  0.6263116598129272,
+                  0.6970621943473816,
+                  0.7700572609901428,
+                  0.845382034778595,
+                  0.9231564998626709,
+                  1.0037000179290771,
+                  1.0872867107391357,
+                  1.17397940158844,
+                  1.2638647556304932,
+                  1.3570618629455566,
+                  1.4537081718444824,
+                  1.5539567470550537,
+                  1.6579737663269043,
+                  1.7659376859664917,
+                  1.8780367374420166,
+                  1.9944685697555542,
+                  2.1154301166534424,
+                  2.2411389350891113,
+                  2.3718466758728027,
+                  2.507821559906006,
+                  2.649355411529541,
+                  2.796760082244873,
+                  2.9503672122955322,
+                  3.110537052154541,
+                  3.277653694152832,
+                  3.4521219730377197,
+                  3.6343441009521484,
+                  3.8247439861297607,
+                  4.0237860679626465,
+                  4.231921672821045,
+                  4.44962739944458,
+                  4.677510738372803,
+                  4.9163031578063965,
+                  5.166816711425781,
+                  5.429964542388916,
+                  5.706928253173828,
+                  5.999388694763184,
+                  6.308903694152832,
+                  6.636761665344238,
+                  6.984650135040283,
+                  7.3550004959106445,
+                  7.750567436218262,
+                  8.174221992492676,
+                  8.62962532043457,
+                  9.121440887451172,
+                  9.655542373657227,
+                  10.239479064941406,
+                  10.883204460144043,
+                  11.600272178649902,
+                  12.612789154052734,
+                  13.880151748657227,
+                  15.147514343261719,
+                  16.414878845214844,
+                  17.68224334716797,
+                  21.484331130981445,
+                  27.82114601135254,
+                  34.157962799072266,
+                  40.49477767944336,
+                  46.83159255981445
+                ]
+              },
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "zmid",
+              "time": 0.0,
+              "coords": {
+                "lev": 1
+              },
+              "expected": 0.02578926645219326,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "zmid",
+              "time": 0.0,
+              "coords": {
+                "lev": 21
+              },
+              "expected": 1.4537081718444824,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "zmid",
+              "time": 0.0,
+              "coords": {
+                "lev": 41
+              },
+              "expected": 4.44962739944458,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "zmid",
+              "time": 0.0,
+              "coords": {
+                "lev": 61
+              },
+              "expected": 13.880151748657227,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "zmid",
+              "time": 0.0,
+              "coords": {
+                "lev": 69
+              },
+              "expected": 46.83159255981445,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vt",
+              "time": 0.0,
+              "reduce": "L2_error",
+              "reference": {
+                "op": "const",
+                "args": [],
+                "value": [
+                  287.02447509765625,
+                  286.44134521484375,
+                  285.74517822265625,
+                  285.1479797363281,
+                  284.5654296875,
+                  283.9796142578125,
+                  283.38330078125,
+                  282.77252197265625,
+                  282.14447021484375,
+                  281.4969177246094,
+                  280.8276062011719,
+                  280.13372802734375,
+                  279.41143798828125,
+                  278.6566467285156,
+                  277.97467041015625,
+                  278.0253601074219,
+                  278.5824890136719,
+                  278.87335205078125,
+                  278.96759033203125,
+                  278.95416259765625,
+                  278.8688659667969,
+                  278.72882080078125,
+                  278.5462646484375,
+                  278.3243103027344,
+                  278.053955078125,
+                  277.72918701171875,
+                  277.3143310546875,
+                  276.82403564453125,
+                  276.30084228515625,
+                  275.7330322265625,
+                  275.12640380859375,
+                  274.4742126464844,
+                  273.7613220214844,
+                  272.98712158203125,
+                  272.1387634277344,
+                  271.1909484863281,
+                  270.08465576171875,
+                  268.7967834472656,
+                  267.32781982421875,
+                  265.6025390625,
+                  263.5967102050781,
+                  261.4024963378906,
+                  259.07806396484375,
+                  256.6141357421875,
+                  254.00820922851562,
+                  251.3793182373047,
+                  248.99765014648438,
+                  246.55679321289062,
+                  243.6459503173828,
+                  240.392822265625,
+                  237.071044921875,
+                  233.59292602539062,
+                  229.68252563476562,
+                  225.39962768554688,
+                  220.779541015625,
+                  215.77603149414062,
+                  210.32447814941406,
+                  204.3400115966797,
+                  197.70892333984375,
+                  195.68875122070312,
+                  198.63552856445312,
+                  201.582275390625,
+                  204.529052734375,
+                  207.475830078125,
+                  212.06961059570312,
+                  217.32012939453125,
+                  227.20541381835938,
+                  244.68362426757812,
+                  260.0533447265625
+                ]
+              },
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "vt",
+              "time": 0.0,
+              "coords": {
+                "lev": 1
+              },
+              "expected": 287.02447509765625,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vt",
+              "time": 0.0,
+              "coords": {
+                "lev": 21
+              },
+              "expected": 278.8688659667969,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vt",
+              "time": 0.0,
+              "coords": {
+                "lev": 41
+              },
+              "expected": 263.5967102050781,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vt",
+              "time": 0.0,
+              "coords": {
+                "lev": 61
+              },
+              "expected": 198.63552856445312,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vt",
+              "time": 0.0,
+              "coords": {
+                "lev": 69
+              },
+              "expected": 260.0533447265625,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vair",
+              "time": 0.0,
+              "reduce": "L2_error",
+              "reference": {
+                "op": "const",
+                "args": [],
+                "value": [
+                  1.3014724680996851e+23,
+                  1.3356509161757477e+23,
+                  1.369991583910388e+23,
+                  1.4048948413104796e+23,
+                  1.4406168531228271e+23,
+                  1.4772189583743553e+23,
+                  1.5147633968119146e+23,
+                  1.5532446740439594e+23,
+                  1.59271512189816e+23,
+                  1.6331931150609957e+23,
+                  1.674688381307662e+23,
+                  1.7172418133227753e+23,
+                  1.760856293410097e+23,
+                  1.805616849530592e+23,
+                  1.8522139735791287e+23,
+                  1.903767399089579e+23,
+                  1.9513248707226563e+23,
+                  2.0001768570326248e+23,
+                  2.0507180534908274e+23,
+                  2.102760029488855e+23,
+                  2.1562038859788905e+23,
+                  2.211127445162495e+23,
+                  2.2674764837001545e+23,
+                  2.3252927949964115e+23,
+                  2.384556202924935e+23,
+                  2.4453425481034504e+23,
+                  2.5074266505505887e+23,
+                  2.571560971692091e+23,
+                  2.6373074013562072e+23,
+                  2.7047875367328757e+23,
+                  2.774106221621422e+23,
+                  2.845113396082262e+23,
+                  2.918010641234717e+23,
+                  2.9928563237299574e+23,
+                  3.069556588551749e+23,
+                  3.1481753868148005e+23,
+                  3.228369364083521e+23,
+                  3.3109704252810786e+23,
+                  3.3955667612575464e+23,
+                  3.481722423568995e+23,
+                  3.570653023826844e+23,
+                  3.662919530400679e+23,
+                  3.757813256853137e+23,
+                  3.855272233653345e+23,
+                  3.955601264424084e+23,
+                  4.060886056224781e+23,
+                  4.172129650764445e+23,
+                  4.2790018713617977e+23,
+                  4.3900274916794966e+23,
+                  4.506221442929566e+23,
+                  4.630331641460642e+23,
+                  4.7533573732014475e+23,
+                  4.881268609818024e+23,
+                  5.015719073093543e+23,
+                  5.155975577008668e+23,
+                  5.302916143346751e+23,
+                  5.45779025078841e+23,
+                  5.622405824368056e+23,
+                  5.799549331247137e+23,
+                  8.760969088426167e+23,
+                  7.737777914397385e+23,
+                  6.714626372045323e+23,
+                  5.691450330111288e+23,
+                  4.66826744270582e+23,
+                  1.3188326737272953e+24,
+                  3.880319813628899e+23,
+                  1.504387283414438e+23,
+                  5.860246865441e+22,
+                  2.3314004867390588e+22
+                ]
+              },
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "vair",
+              "time": 0.0,
+              "coords": {
+                "lev": 1
+              },
+              "expected": 1.3014724680996851e+23,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vair",
+              "time": 0.0,
+              "coords": {
+                "lev": 21
+              },
+              "expected": 2.1562038859788905e+23,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vair",
+              "time": 0.0,
+              "coords": {
+                "lev": 41
+              },
+              "expected": 3.570653023826844e+23,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vair",
+              "time": 0.0,
+              "coords": {
+                "lev": 61
+              },
+              "expected": 7.737777914397385e+23,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vair",
+              "time": 0.0,
+              "coords": {
+                "lev": 69
+              },
+              "expected": 2.3314004867390588e+22,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vo3",
+              "time": 0.0,
+              "reduce": "L2_error",
+              "reference": {
+                "op": "const",
+                "args": [],
+                "value": [
+                  4225161460973568.0,
+                  4336131336306688.0,
+                  4447635398197248.0,
+                  4560960526221312.0,
+                  4676944507437056.0,
+                  4795788936871936.0,
+                  4917698899214336.0,
+                  5042656677724160.0,
+                  5170838902931456.0,
+                  5302311609958400.0,
+                  5437121506574336.0,
+                  5575432338407424.0,
+                  5717345574060032.0,
+                  5863522638495744.0,
+                  6021771782258688.0,
+                  6210614514941952.0,
+                  6382279525924864.0,
+                  6541651803635712.0,
+                  6703172101865472.0,
+                  6868941733363712.0,
+                  7038725011800064.0,
+                  7212689977769984.0,
+                  7390676643741696.0,
+                  7572868619567104.0,
+                  7759177321545728.0,
+                  7949853468393472.0,
+                  8148299747950592.0,
+                  8357866234707968.0,
+                  8573242738475008.0,
+                  8794500126212096.0,
+                  9022010449461248.0,
+                  9255218583699456.0,
+                  9494901381136384.0,
+                  9741601081393152.0,
+                  9994574655127552.0,
+                  1.0254006785933312e+16,
+                  1.0520375288922112e+16,
+                  1.0796975477751808e+16,
+                  1.1082167748657152e+16,
+                  1.1377177241059328e+16,
+                  1.1679898347241472e+16,
+                  1.1987635975225344e+16,
+                  1.230479676145664e+16,
+                  1.2631744704413696e+16,
+                  1.2966443989598208e+16,
+                  1.3324241608900608e+16,
+                  1.3707165860626432e+16,
+                  1.406836402028544e+16,
+                  1.44389284298752e+16,
+                  1.482396151054336e+16,
+                  1.52322088894464e+16,
+                  1.5642969897959424e+16,
+                  1.6079182882668544e+16,
+                  1.6544696134270976e+16,
+                  1.70406317129728e+16,
+                  1.7569643908562944e+16,
+                  1.8128902337593344e+16,
+                  1.871944530840781e+16,
+                  1.93457138171904e+16,
+                  7.64902579854377e+16,
+                  1.675621360992256e+17,
+                  2.58634993465557e+17,
+                  3.49707438515028e+17,
+                  4.4077923072946995e+17,
+                  2.745501150399693e+18,
+                  2.329412690222514e+18,
+                  1.1584465505364214e+18,
+                  4.6696286319437414e+17,
+                  1.3121583791787213e+17
+                ]
+              },
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "vo3",
+              "time": 0.0,
+              "coords": {
+                "lev": 1
+              },
+              "expected": 4225161460973568.0,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vo3",
+              "time": 0.0,
+              "coords": {
+                "lev": 21
+              },
+              "expected": 7038725011800064.0,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vo3",
+              "time": 0.0,
+              "coords": {
+                "lev": 41
+              },
+              "expected": 1.1679898347241472e+16,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vo3",
+              "time": 0.0,
+              "coords": {
+                "lev": 61
+              },
+              "expected": 1.675621360992256e+17,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vo3",
+              "time": 0.0,
+              "coords": {
+                "lev": 69
+              },
+              "expected": 1.3121583791787213e+17,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vaer",
+              "time": 0.0,
+              "reduce": "L2_error",
+              "reference": {
+                "op": "const",
+                "args": [],
+                "value": [
+                  0.032281771302223206,
+                  0.03223951533436775,
+                  0.03216249868273735,
+                  0.03203032910823822,
+                  0.03183344006538391,
+                  0.03156442940235138,
+                  0.031216401606798172,
+                  0.03078072890639305,
+                  0.030249444767832756,
+                  0.029613163322210312,
+                  0.02886153571307659,
+                  0.027983861044049263,
+                  0.02696770429611206,
+                  0.02580077201128006,
+                  0.024476807564496994,
+                  0.023373650386929512,
+                  0.022751394659280777,
+                  0.02236333116889,
+                  0.02186765894293785,
+                  0.02125777117908001,
+                  0.020522819831967354,
+                  0.019650796428322792,
+                  0.018626421689987183,
+                  0.017432818189263344,
+                  0.016049863770604134,
+                  0.01473331917077303,
+                  0.01388638000935316,
+                  0.013300104066729546,
+                  0.012604949995875359,
+                  0.01178723108023405,
+                  0.01083205547183752,
+                  0.009720886126160622,
+                  0.008551581762731075,
+                  0.007817301899194717,
+                  0.007474806625396013,
+                  0.007059639785438776,
+                  0.006559974048286676,
+                  0.005966385826468468,
+                  0.005508337635546923,
+                  0.005344761069864035,
+                  0.005272461101412773,
+                  0.0051717609167099,
+                  0.005042070988565683,
+                  0.00489297229796648,
+                  0.004717417526990175,
+                  0.004499073140323162,
+                  0.004365200642496347,
+                  0.004423164296895266,
+                  0.004576558247208595,
+                  0.004784371238201857,
+                  0.005115678068250418,
+                  0.005534541793167591,
+                  0.005921493284404278,
+                  0.006262061186134815,
+                  0.006664213724434376,
+                  0.007156851701438427,
+                  0.007650433573871851,
+                  0.008240995928645134,
+                  0.009325267747044563,
+                  0.015151364728808403,
+                  0.013692772947251797,
+                  0.012234252877533436,
+                  0.010775690898299217,
+                  0.00931711308658123,
+                  0.027096884325146675,
+                  0.006987685803323984,
+                  0.0016359913861379027,
+                  0.0003264266124460846,
+                  5.8493169490247965e-05
+                ]
+              },
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "vaer",
+              "time": 0.0,
+              "coords": {
+                "lev": 1
+              },
+              "expected": 0.032281771302223206,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vaer",
+              "time": 0.0,
+              "coords": {
+                "lev": 21
+              },
+              "expected": 0.020522819831967354,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vaer",
+              "time": 0.0,
+              "coords": {
+                "lev": 41
+              },
+              "expected": 0.005272461101412773,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vaer",
+              "time": 0.0,
+              "coords": {
+                "lev": 61
+              },
+              "expected": 0.013692772947251797,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vaer",
+              "time": 0.0,
+              "coords": {
+                "lev": 69
+              },
+              "expected": 5.8493169490247965e-05,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "cvo2",
+              "time": 0.0,
+              "reduce": "L2_error",
+              "reference": {
+                "op": "const",
+                "args": [],
+                "value": [
+                  4.775826588347136e+24,
+                  4.748202589096756e+24,
+                  4.7198608962097584e+24,
+                  4.690794015696363e+24,
+                  4.660987247807386e+24,
+                  4.630423010489882e+24,
+                  4.5990819923086497e+24,
+                  4.56694459359811e+24,
+                  4.5339906382319325e+24,
+                  4.500199373623034e+24,
+                  4.465549182493204e+24,
+                  4.430018735794606e+24,
+                  4.3935855515579014e+24,
+                  4.3562268595833735e+24,
+                  4.3179109545296457e+24,
+                  4.2785669317241847e+24,
+                  4.2381847031038253e+24,
+                  4.1967928034758064e+24,
+                  4.1543598157291276e+24,
+                  4.110852016909779e+24,
+                  4.066239431058641e+24,
+                  4.020491505755841e+24,
+                  3.97357826504226e+24,
+                  3.9254688682676495e+24,
+                  3.8761333394728895e+24,
+                  3.8255402615469795e+24,
+                  3.773659946761176e+24,
+                  3.7204575192399646e+24,
+                  3.665894644343317e+24,
+                  3.609936157965343e+24,
+                  3.552544878387519e+24,
+                  3.493683623891321e+24,
+                  3.4333149245278494e+24,
+                  3.3713987162748194e+24,
+                  3.307894935109946e+24,
+                  3.242764093471696e+24,
+                  3.1759698743326743e+24,
+                  3.107470196057963e+24,
+                  3.037219230017754e+24,
+                  2.9651795062631476e+24,
+                  2.8913057726250877e+24,
+                  2.815534041960069e+24,
+                  2.737801768276466e+24,
+                  2.6580547642635627e+24,
+                  2.576235960306881e+24,
+                  2.4922632107492173e+24,
+                  2.406022376361616e+24,
+                  2.31749673978226e+24,
+                  2.2266886068541586e+24,
+                  2.1335004115949844e+24,
+                  2.0377949563456893e+24,
+                  1.9395007599729876e+24,
+                  1.8385780466849703e+24,
+                  1.7349070567603465e+24,
+                  1.628358518875412e+24,
+                  1.518801576439394e+24,
+                  1.406083179122556e+24,
+                  1.2900181389082206e+24,
+                  1.1703731333068927e+24,
+                  1.0178517063105722e+24,
+                  8.450273316181251e+23,
+                  6.936383617697046e+23,
+                  5.6368472470771675e+23,
+                  4.5516667263374064e+23,
+                  2.6811884945414692e+23,
+                  8.932476430443586e+22,
+                  3.29199599443903e+22,
+                  1.1022893354361714e+22,
+                  2.4421419186612716e+21
+                ]
+              },
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1e-05
+              }
+            },
+            {
+              "variable": "cvo2",
+              "time": 0.0,
+              "coords": {
+                "lev": 1
+              },
+              "expected": 4.775826588347136e+24,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "cvo2",
+              "time": 0.0,
+              "coords": {
+                "lev": 21
+              },
+              "expected": 4.066239431058641e+24,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "cvo2",
+              "time": 0.0,
+              "coords": {
+                "lev": 41
+              },
+              "expected": 2.8913057726250877e+24,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "cvo2",
+              "time": 0.0,
+              "coords": {
+                "lev": 61
+              },
+              "expected": 8.450273316181251e+23,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "cvo2",
+              "time": 0.0,
+              "coords": {
+                "lev": 69
+              },
+              "expected": 2.4421419186612716e+21,
+              "tolerance": {
+                "rel": 1e-05,
+                "abs": 1e-30
+              }
+            },
+            {
+              "variable": "vcld",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "reference": {
+                "op": "const",
+                "args": [],
+                "value": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1e-30
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

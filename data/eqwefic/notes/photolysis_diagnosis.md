@@ -259,3 +259,72 @@ parameters `components/gaschem/radm2/radm2.esm` already declares. That closes th
 * fluxes: `fldir, fldn, flup, endir, endn, enup` on the RT grid, and `d_rt`
 * outputs: `phot1_s` (s^-1, == `jv(1:22)`), `phot1_min` (min^-1, == `ph_*`),
   `uvb_dd1, uvb_du1, uvb_dir1, uvrad`
+
+---
+
+## 7. Corrections and additions from building the chain (2026-09-21, later the same day)
+
+Four things measured while implementing that change or sharpen what is written above.
+Where they contradict §4, **these supersede it**.
+
+### 7.1 D6 was right about the consequence, wrong about the mechanism
+
+`ch3coo2h` and `hcochest` are **stored table columns**, not runtime formulas. WRF's
+comments (`actually use 0.28*(h2o2 value)`, `estimate, no reliable measurement`)
+describe how those columns of `xs` were *built*, decades ago, not anything the code
+evaluates. Measured from the dumped `xs` table: the ratio `xs(:,20)/xs(:,10)` over the
+60 bins where both are non-zero is **not constant** — it runs from **0.1414 to 0.2874**,
+clustering near 0.276. So a correct implementation reproduces them by transcribing the
+tables. The substantive point in D6 survives unchanged and is if anything stronger: an
+implementation built from the literature — which is what `fastjx.esm` is — cannot match,
+because no measured peroxyacetic-acid spectrum is 0.276 times hydrogen peroxide's.
+
+### 7.2 The O2 Schumann-Runge parameterization is DEAD CODE in the shipped configuration
+
+§3 step 8 lists `srband` as part of the chain. It is present, and it never runs:
+
+* `srband`'s wavelength loop opens with `IF (wl(kl)>205.) RETURN` (`:2058`);
+* the loop starts at `kl = kl0 = 30`, where `wl(30) = 254.8 nm`;
+* so it **returns on the first iteration**, having applied nothing;
+* and `xs(kl,1)`, the O2 cross section, is **exactly 0.0 in all 101 active bins**
+  (it is non-zero only in bins 1–29, which `kl0 = 30` excludes);
+* therefore `d(1,lev)` — the O2 photolysis rate — is identically zero, and
+  `phot1(n) = d(n+1)` drops that row anyway.
+
+`sra`, `srb` and the whole `cvo2` column exist to feed a routine that cannot fire.
+Reactivating it means setting `kl0 = 1`, which WRF's own comment at `:1722` contemplates
+("If photolysis is also desired for levels above 2, kl0 should be set equal to 1 again").
+**No Schumann-Runge component was written, because there is nothing for it to contribute.**
+
+### 7.3 A cloudy column changes the RT grid SIZE, which a static index set cannot express
+
+`subgrid` inserts `max(int(cloud·dz·0.02), 1)` extra levels per cloudy model layer, so
+`nlevel` is a function of the cloud field: **70, 72, 77 and 78** at the four dumped
+daytime calls. An esm `index_sets` entry has a size fixed at load. So the cloudy case is
+not a transcription problem but a design one — it needs either a fixed maximum grid with
+masked levels, or an adaptive-grid discretization. The components built here are written
+for, and tested on, the **clear** column (call 1410, max cloud extinction exactly 0),
+where the insertion is a no-op and the regridded column *is* the interface column.
+
+### 7.4 What is built, and what the one open edge is
+
+Five components under `components/gaschem/madronich/`, **378 assertions, 0 fail, 0 err**
+(`./esm test components/gaschem` → 1203/1203 including the 825 pre-existing RADM2):
+
+| file | assertions | what it pins |
+|---|---|---|
+| `solar_geometry.esm` | 52 | `calc_zenith`, `chap`, `zenita` |
+| `column_setup.esm` | 148 | `nabv` extension, `o3scal` to 325 DU, cloud extinction |
+| `layer_columns.esm` | 37 | `subgrid`'s layer means, `vaer` normalization, `cvo2` |
+| `spectra.esm` | 36 | T/p-dependent cross sections and the 11 quantum yields |
+| `j_values.esm` | 105 | the wavelength integral → **the 21 RADM2 j-values** |
+
+`j_values.esm` reproduces **all 21 j-values at five levels** spanning the column, against
+`phot1_s` — which is bit-for-bit `jv(1:21)` of the RADM2 integrator.
+
+**The one open edge is `optics` → `ps2str`**, the delta-Eddington two-stream solve that
+produces `fldir/fldn/flup`. In `j_values.esm` those three are *parameters*, supplied from
+the dump. So the chain is verified from the column state to the j-values **except the
+radiative transfer itself**. What remains is a tridiagonal solve over `2·nlayer = 138`
+unknowns repeated for each of the 101 bins — the one place in this scheme where a
+discrete recurrence is defensible under CLAUDE.md, and the one piece not attempted here.
