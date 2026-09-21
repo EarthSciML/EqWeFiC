@@ -1,8 +1,8 @@
 {
- "esm": "1.0.0",
+ "esm": "1.1.0",
  "metadata": {
   "name": "LevelSetTendencyWRFFire",
-  "description": "The level-set propagation equation of fire_behavior (physics/level_set_mod.F90 Calc_tend_ls; Munoz-Esparza et al. 2018) as a PDE on a uniform 2-D grid: d psi/dt = -R |grad psi| + nu |R| (dx d2psi/dx2 + dy d2psi/dy2), the Hamilton-Jacobi front propagation with the rate of spread R normal to the front plus a grid-scaled artificial viscosity, together with the per-axis upwind derivatives diff2x, diff2y and the front normal (nvx, nvy) = (diff2x, diff2y)/sqrt(|grad psi|^2 + eps) that ROSWRFFire consumes. |grad psi| is written as the compound sqrt(D(psi,x)^2 + D(psi,y)^2) and the per-axis derivatives as D(psi,x), D(psi,y); the DISCRETISATION IS SELECTED BY THE RULES EACH TEST IMPORTS from EarthSciDiscretizations grids/cartesian_uniform_2d: fire_upwinding = 4 (classical Godunov) = godunov_norm_D2_dirichlet_bc for the norm and godunov_upwind_D1x/D1y_extrapolate_bc (max(D-,0) - min(D+,0)) for the normal; fire_upwinding = 9 (the DEFAULT, hybrid WENO5/ENO1) = weno5_eno1_norm_D2_extrapolate_bc and weno5_eno1_D1x/D1y_extrapolate_bc, whose free names wind_u, wind_v (the mid-flame wind that selects the WENO upwind side), bdy_eno1_cells (BDY_ENO1 = 10) and weno_band_cells (fire_lsm_band_ngp = 4) are this model's inputs and parameters, and whose wall closure is fire_behavior's own guarded linear-extrapolation halo (Extrapol_var_at_bdys). The second derivatives of the viscosity term use the centred rules with the matching wall closure (central_D2x/D2y_dirichlet_bc for the Godunov test, central_D2x/D2y_extrapolate_bc for the default scheme). R is supplied as an input field (it depends on the normal, tested in ROSWRFFire); the propagation term, the viscosity, the per-axis derivatives and the normal are what this component asserts. Tests: the ls_tend dumps of Runge-Kutta stage 1 of step 20 (t = 10 s) of test7 with fire_upwinding = 4 (39 original + 52 normal assertions, interior cells only because the Dirichlet-closed Godunov norm rule treats the walls differently) and with the default fire_upwinding = 9 (112 assertions including wall-strip and wall cells), real32, rel 1e-5 to 2e-5.",
+  "description": "The level-set propagation equation of fire_behavior (physics/level_set_mod.F90 Calc_tend_ls; Munoz-Esparza et al. 2018) as a PDE on a uniform 2-D grid: d psi/dt = -R |grad psi| + nu |R| (dx d2psi/dx2 + dy d2psi/dy2), the Hamilton-Jacobi front propagation with the rate of spread R normal to the front plus a grid-scaled artificial viscosity, together with the per-axis upwind derivatives diff2x, diff2y and the front normal (nvx, nvy) = (diff2x, diff2y)/sqrt(|grad psi|^2 + eps) that ROSWRFFire consumes. |grad psi| is written as the compound sqrt(D(psi,x)^2 + D(psi,y)^2) and the per-axis derivatives as D(psi,x), D(psi,y); the DISCRETISATION IS SELECTED BY THE RULES EACH TEST IMPORTS from EarthSciDiscretizations grids/cartesian_uniform_2d: fire_upwinding = 4 (classical Godunov) = godunov_norm_D2_dirichlet_bc for the norm and godunov_upwind_D1x/D1y_extrapolate_bc (max(D-,0) - min(D+,0)) for the normal; fire_upwinding = 9 (the DEFAULT, hybrid WENO5/ENO1) = weno5_eno1_norm_D2_extrapolate_bc and weno5_eno1_D1x/D1y_extrapolate_bc, whose free names wind_u, wind_v (the mid-flame wind that selects the WENO upwind side), bdy_eno1_cells (BDY_ENO1 = 10) and weno_band_cells (fire_lsm_band_ngp = 4) are this model's inputs and parameters, and whose wall closure is fire_behavior's own guarded linear-extrapolation halo (Extrapol_var_at_bdys). The second derivatives of the viscosity term use the centred rules with the matching wall closure (central_D2x/D2y_dirichlet_bc for the Godunov test, central_D2x/D2y_extrapolate_bc for the default scheme). R is supplied as an input field (it depends on the normal, tested in ROSWRFFire); the propagation term, the viscosity, the per-axis derivatives and the normal are what this component asserts. Tests: the ls_tend dumps of Runge-Kutta stage 1 of step 20 (t = 10 s) of test7 with fire_upwinding = 4 (39 original + 52 normal assertions, interior cells only because the Dirichlet-closed Godunov norm rule treats the walls differently) and with the default fire_upwinding = 9 (112 assertions including wall-strip and wall cells), real32, rel 1e-5 to 2e-5. Coupling hook (added 2026-09-21): the rate-of-spread field the PDE uses is `ros`, which equals the consumer-supplied `ros_supplied` everywhere except the single cell (i_coupled, j_coupled), where it is the coupling-target parameter ros_in; i_coupled = 0 by default, so nothing changes unless a coupling document sets it. couplings/wildlandfire_behavior.esm uses it to drive one cell's spread rate from the mounted Anderson13FuelTable -> FuelMoistureWRFFire -> RothermelWRFFire -> ROSWRFFire chain.",
   "license": "MIT",
   "tags": [
    "wildland_fire",
@@ -65,7 +65,7 @@
       "x",
       "y"
      ],
-     "description": "Rate of spread normal to the front at each cell (ROSWRFFire ros, itself a function of the upwind normal); supplied as an input field here so that the operator assembly is tested independently of the normal computation."
+     "description": "Effective rate-of-spread field entering the PDE: ros_supplied everywhere except the single cell (i_coupled, j_coupled), where it is the coupling target ros_in. With the default i_coupled = 0 no cell matches and ros is ros_supplied, so a standalone run is unchanged; a coupling document that mounts ROSWRFFire beside this component sets i_coupled/j_coupled and drives ros_in, which makes d psi/dt at that cell depend on the whole fuel -> moisture -> Rothermel -> ROS chain. Same idiom as s_coupled in fire_flux_to_atmosphere_wrffire.esm."
     },
     "x0": {
      "type": "parameter",
@@ -256,6 +256,33 @@
       "y"
      ],
      "description": "y-component of the front normal, psi_y / sqrt(|grad psi|^2 + eps) (nvy)."
+    },
+    "ros_supplied": {
+     "type": "unknown",
+     "units": "m/s",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "description": "Rate of spread normal to the front at each cell as supplied by the consumer (ROSWRFFire ros, itself a function of the upwind normal); the operator assembly is tested independently of the normal computation."
+    },
+    "i_coupled": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "x index (1-based) of the cell whose rate of spread is taken from ros_in; 0 disables the replacement."
+    },
+    "j_coupled": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "y index (1-based) of the cell whose rate of spread is taken from ros_in; 0 disables the replacement."
+    },
+    "ros_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Coupling target: rate of spread of cell (i_coupled, j_coupled), supplied by a mounted ROSWRFFire through a variable_map param_to_var edge."
     }
    },
    "equations": [
@@ -292,10 +319,70 @@
      }
     },
     {
-     "lhs": "ros",
+     "lhs": "ros_supplied",
      "rhs": {
       "op": "input_ros",
       "args": []
+     }
+    },
+    {
+     "lhs": "ros",
+     "rhs": {
+      "op": "faq",
+      "output_idx": [
+       "i",
+       "j"
+      ],
+      "args": [],
+      "ranges": {
+       "i": {
+        "from": "x"
+       },
+       "j": {
+        "from": "y"
+       }
+      },
+      "expr": {
+       "op": "ifelse",
+       "args": [
+        {
+         "op": "==",
+         "args": [
+          "i",
+          "i_coupled"
+         ]
+        },
+        {
+         "op": "ifelse",
+         "args": [
+          {
+           "op": "==",
+           "args": [
+            "j",
+            "j_coupled"
+           ]
+          },
+          "ros_in",
+          {
+           "op": "index",
+           "args": [
+            "ros_supplied",
+            "i",
+            "j"
+           ]
+          }
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "ros_supplied",
+          "i",
+          "j"
+         ]
+        }
+       ]
+      }
      }
     },
     {

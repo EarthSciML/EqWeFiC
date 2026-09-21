@@ -52,6 +52,10 @@ TARGETS = [
     ("couplings/scm_physics_column_night.esm", "ScmPhysicsColumn", 0, 1800, 900),
     ("couplings/geometry_surface_pbl_column.esm", "GeometrySurfacePBLColumn", 0, 2820, 1410),
     ("couplings/geometry_surface_pbl_column_night.esm", "GeometrySurfacePBLColumn", 0, 1800, 900),
+    # the older frozen-column documents assert the same driver-level tendencies
+    ("couplings/physics_column.esm", "PhysicsColumn", 0, 120, 60),
+    ("couplings/physics_column_night.esm", "PhysicsColumn", 0, 600, 300),
+    ("couplings/surface_pbl_column.esm", "SurfacePBLColumn", 0, 120, 60),
 ]
 
 # esm assertion name -> kernel output name
