@@ -1564,10 +1564,64 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       afterwards. Harmless for every microphysics option WRF ships through this
       path; not transcribed.
 
-    **Still missing for the full state document:** only the document itself —
-    the two halves co-mounted, with D(θm) taking the sum of the dynamics and
-    physics tendencies and D(T_s) taking slab's. Every edge it needs now exists.
-    Easy win not taken: the same θm wiring for
+    **The full state document was BUILT on 2026-09-20: `couplings/eqweather_scm.esm`,
+    65/65.** Sixteen components co-mounted over ten ODE states (u, v, w, φ′, θm,
+    q_v, q_c, q_i, T_s, T_sk) through 217 coupling edges, with every tendency a
+    sum: D(u)/D(v) = Coriolis + curvature + sponge + RUBLTEN/RVBLTEN, D(θm) =
+    sponge + WRFMoistThetaTendency's conversion of the radiative and PBL
+    tendencies, D(q_v)/D(q_c)/D(q_i) = YSU's, D(T_s)/D(T_sk) = the slab's.
+    Nothing about the column is read from a dump the state could supply; only
+    q_r/q_s/q_g stay frozen, because no microphysics is mounted, and they are
+    read by reference from the existing hand-authored libraries rather than
+    transcribed. One more component had to give up private state first:
+    `rrtm_lw_heating` carried `ic(T) = input_T` with `D(T,t) = dTdt` for a `T`
+    that nothing in it ever reads, i.e. 59 spurious ODE states in every document
+    mounting it; it is now `T = input_T` with a `T_in` target fed from `Geo.T`
+    (56/56 unchanged, and all thirteen documents that mount it still green).
+
+    **What the test showed.** The fourteen surface-layer residuals come out at
+    exactly `couplings/geometry_surface_pbl_column.esm`'s N50 numbers to two
+    significant figures (sfc_hfx 7.3e-5, sfc_mol 7.1e-5, … sfc_ust 2.1e-6
+    relative) — that agreement is the result, because it says co-mounting the two
+    halves introduced nothing of its own; the gap is the 0.30 Pa
+    driver-versus-kernel offset in the lowest layer, already isolated. Everything
+    else meets the two halves' own tolerances unchanged. The three SUMS land at
+    Linf 6.2e-5 (du_dt), 3.0e-5 (dv_dt) and 1.1e-4 K/s (dtheta_m_dt), each inside
+    the tolerance its own PBL part already carries, so no term is dropped or
+    doubled. `cldfra` matches WRF's CLDFRA exactly at abs 0 — but step 1410 is a
+    clear column (trace cirrus only, all below the 0.01 snap), so that assertion
+    pins the wiring and the zero, not the fractional fit; cal_cldfra's own
+    six-regime set is where the fit is exercised.
+
+    **(5) REVISITED, and the answer is not windowing. MEASURED: one right-hand-side
+    evaluation of the full document costs 1 h 47 m** (106 m 56 s wall, 99 % of one
+    core, 481 MB) on an EMPTY time span — esm-spec §6.6.2's instantaneous-derivative
+    shape, so nothing is integrated and no Jacobian is formed. Against 86 s for the
+    nine-component physics column. It is not the component count and not the
+    assertion count: a copy of the document carrying a SINGLE assertion costs the
+    same order. It is that no other document in `couplings/` drives the FULL RRTM
+    longwave chain (Col → Setcoef → GasOpt → Rtrn) from LIVE geometry —
+    `radiation_column.esm` runs the whole chain in seconds from dumped inputs, and
+    `geometry_radiation_column.esm` drives Col and Heat from live geometry in
+    seconds but stops before SETCOEF. Here the geometry expressions stop being
+    constant leaves and propagate through 103 layers × 140 g-points. BDF over a 1 s
+    span, tried first, had not finished a single step in 14 minutes, which is the
+    ~300-state Jacobian on top of that. **So the unmeasured number that decided
+    3.1's feasibility is now measured, and it was an interpreter defect, not the
+    model: EarthSciAST #438, fixed by PR #439 (see (aa) below). The driver built
+    an implicit solver even for a run that cannot advance, and materialising its
+    finite-difference Jacobian cost 2·n_states + 1 full right-hand-side
+    evaluations to return the initial state unchanged. With the fix the same
+    65/65 takes 2 m 31 s. THE FEASIBILITY QUESTION IS THEREFORE REOPENED, NOT
+    CLOSED: one RHS evaluation is ~2.5 s, not ~107 min, so a 24 h run is worth
+    re-costing from scratch once #439 merges — the earlier conclusion that it was
+    four orders of magnitude out of reach was measuring the defect, not the
+    model.**
+    The practical consequence for this repo is recorded in CLAUDE.md: `./esm test .`
+    is now ~2 hours, and that one file should be excluded from a fast whole-repo
+    check and run on its own.
+
+    Easy win still not taken: the same θm wiring for
     `couplings/scm_physics_column_night.esm` (conversion dumps exist at steps
     1, 60, 300, 900, 1410, 2160, 3000).
 
@@ -1606,6 +1660,40 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     (z) an `Assertion` admits no `description` field (schema
     `additionalProperties: false`), so per-assertion provenance has to go in the
     test description.
+    (aa) **FILED 2026-09-20 as EarthSciAST #438, fixed by PR #439** (branch
+    `perf/issue-438-nonadvancing-run`, 5 files, +395/-37), the cost defect behind
+    `couplings/eqweather_scm.esm`'s 1 h 51 m. **The title I filed it under states
+    the wrong mechanism and the issue comment corrects it.** What I measured —
+    a static document flat in N and an ODE one quadratic — was real, but the
+    reason is not the `faq` recurrence. The Rust driver built a diffsol problem
+    and an implicit solver for EVERY run, including one that cannot advance: an
+    empty `time_span`, or a non-empty one whose whole output grid sits at `t0`.
+    Constructing an implicit solver materialises the Jacobian, and that crate's
+    is a matrix-free finite-difference JVP, so diffsol calls it once per state
+    column and each call evaluates the whole right-hand side twice —
+    **2·n_states + 1 full evaluations to return the untouched initial state.**
+    In the reproducer NL is BOTH the state count and the sweep depth, which is
+    what made it look quadratic in the sweep.
+
+    **The control that settles it** (`data/eqwefic/phase3_probes/`, old binary):
+    a 103-deep self-referential sweep with NO state costs 0.03 s; the SAME sweep
+    with ONE scalar state that it DEPENDS ON costs 0.09 s; the same sweep over
+    103 states costs 1.84 s. A state-dependent recurrence is cheap — it is the
+    state COUNT that multiplies. Two further hypotheses were ruled out earlier:
+    not the `param_to_var` edge or a const-node-versus-parameter distinction
+    (19.27 → 19.85 s, nothing), and not ODE states as such in a cheap document
+    (an unused scalar `D(s) = 0` leaves the static radiation column at 19.06 s).
+    Corpus-scale before the fix: one input of `couplings/radiation_column.esm`
+    changed from an observed to a state, same numbers and same 30/30, is
+    **19.27 s → 647.86 s**. **After the fix: `eqweather_scm.esm` is 2 m 31 s for
+    the same 65/65, verified here with the PR's binary** (110 m 36 s on `main`).
+    The fix also covers a non-empty span whose output grid never leaves `t0`,
+    which is this repo's standard `{start: 0, end: 1}` algebraic-test shape, so
+    **the whole suite should be re-timed when #439 merges.** Also recorded on
+    #438, not fixed: the **Julia** tree-walk runner refuses the §4.3.1.1 causal
+    self-reference outright (`E_TREEWALK_UNSUPPORTED_RECURRENCE`), so the
+    discrete-recurrence shape the spec sanctions is evaluable in Rust and Python
+    only — an honest refusal rather than a wrong answer, and worth its own issue.
 
     **Stale caveat dropped:** `wrf_solar_geometry.esm` mounts fine under a key
     that is not its own model name — the file carries no model-qualified
