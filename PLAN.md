@@ -99,7 +99,10 @@ WRF-Chem (EqAtmChem): `chem_opt=1` (RADM2 gas phase, no aerosol) first, then
 `chem_opt=300` (GOCART simple aerosols). Components: anthropogenic emissions
 (`emissions_driver.F`), biogenic emissions, dry deposition
 (`dry_dep_driver.F`, Wesely: reuse EarthSciModels), photolysis
-(`module_phot_fastj.F` / TUV: reuse Fast-JX where it matches), gas mechanism
+(`module_phot_mad.F`, Madronich -- the SCM runs `phot_opt = 1`; Fast-JX is NOT
+a WRF-Chem option at any `phot_opt`, so the EarthSciModels `fastjx/*` components
+match nothing here and are NOT reused -- see `data/eqwefic/notes/photolysis_diagnosis.md`),
+gas mechanism
 (`chem/KPP/mechanisms/radm2` → `reaction_systems`), wet scavenging.
 
 Fire (EqAtmFire): the fire code is NCAR's **Community Fire Behavior Model**
@@ -932,8 +935,14 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   poisons the KPP vector at call 3 and the Rosenbrock fails for the rest of
   the run. Remaining: Vdot/stoichiometry verification once (p)/(q) are fixed;
   a WRF-Chem species trajectory once B8 is patched; RADM2SORG/aerosol;
-  emissions, Wesely and FastJX couplings (FastJX covers 10 of 21 j inputs;
-  Wesely ≈20 species).
+  emissions and the Madronich photolysis / WRF-Wesely couplings. (The earlier
+  note here -- "FastJX covers 10 of 21 j inputs; Wesely ~20 species" -- described
+  reusing the EarthSciModels `fastjx/*` and `wesley_dry_gas.esm` components, and
+  both reuses are now withdrawn: Fast-JX is not WRF-Chem's scheme at all, and the
+  existing Wesely is an AtmosphericDeposition.jl migration that differs from
+  `module_dep_simple.F` on every one of the 19 overlapping species. Both were
+  replaced by fresh transcriptions: `gaschem/madronich/*` 409/409 and
+  `atmospheric_deposition/wrf_wesely/*` 2048/2048.)
 - **RRTM LW stage 1 done.** Heating-rate convention proved:
   `HTR(L−1) = HEATFAC (FNET(L−1) − FNET(L))/(PZ(L−1) − PZ(L))` is the heating
   of layer L; RRTM indexes bottom-up so `TOTUFLUX/TOTDFLUX(0..kte)` map onto
