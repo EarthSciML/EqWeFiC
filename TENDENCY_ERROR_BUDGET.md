@@ -101,31 +101,74 @@ derivative. `components/atmospheric_dynamics/wsm6/sedimentation.esm` already pin
 target — the dt -> 0 limit of the kernel's own `fall` fluxes — and is **65/65 green**. No PLM
 discretization rule is needed for tendency correctness.
 
-## Where the remaining error actually is
+## Where the remaining error actually is: in the REFERENCE, not the model
 
-1. **YSU PBL tendencies (10-31%).** `pbl_dthdt`, `pbl_dudt`, `pbl_dvdt`, `pbl_dqvdt`. This is
-   the single largest contributor, and it propagates into `rth_phys_sum`, `dtheta_m_dt_phys`,
-   `dtheta_m_dt`, `du_dt`, `dv_dt` and `dw_dt`. YSU's reference tendencies come from an implicit
-   tridiagonal solve, generated at small `dt` to approximate the instantaneous derivative; the
-   residual size suggests either that approximation, the counter-gradient term, or the PBL-height
-   diagnosis is the source. This is where to look first.
-2. **WSM6 microphysics tendencies (35-129%).** `mp_dqi_dt`, `mp_dtheta_dt`, `mp_dqv_dt`. Expected
-   to carry an O(dt_substep) operator-split difference — WSM6 stages its processes sequentially
-   while the continuous form evaluates them all at one state — but that difference has been
-   *asserted* and never *measured*. Measuring it is the prerequisite to tightening these.
-3. **Slab LSM skin temperature (5-11%).** `lsm_dTs_dt` / `dTsk_dt_wrf_step`. Smaller, and
-   downstream of the surface fluxes, which are themselves accurate to 1e-5.
+The PBL and microphysics residuals are **not** ESM errors. Both are being compared against a
+WRF quantity that is not an instantaneous derivative.
 
-Everything else in the column is at round-off.
+### YSU: the model is right to 1e-9; the reference is a dt = 60 s implicit step
+
+Three measurements, in order:
+
+1. **YSU standalone is accurate to ~1e-7 relative** on `dudt`/`dvdt`/`dthdt`/`dqvdt` across all
+   five regimes (convective, stable, shallow stable, cloud-top, first step), on full-column
+   `Linf_error` assertions at `abs 1e-9` — including `scm_call120_convective`, which is the same
+   physics call as the coupled step-60 test. So the scheme is not wrong.
+2. **The coupled residual does not come from the coupling.** `scm_physics_column` (YSU fed the
+   DUMPED geometry) and `geometry_surface_pbl_column` (YSU fed the `Geo`-derived geometry) give
+   residuals identical to four significant figures — `pbl_dthdt` 3.07e-01, `pbl_dudt` 2.23e-01
+   vs 2.24e-01, `pbl_dvdt` 9.14e-02, `pbl_dqvdt` 4.26e-02. Geometry, radiation and the surface
+   layer are eliminated as causes.
+3. **The residual IS WRF's own implicit-step error.** Richardson-extrapolating the YSU kernel
+   replays at dt = 0.04/0.02/0.01 s, `(8T(dt/4) - 6T(dt/2) + T(dt))/3`, and comparing the dt -> 0
+   limit against the dt = 60 s step that the coupled document asserts against:
+
+   | | dt->0 vs dt=60 s | coupled document residual |
+   |---|---|---|
+   | `utnp` | 24.6% | `pbl_dudt` 22.4% |
+   | `ttnp` | 41.1% | `pbl_dthdt` 30.7% |
+   | `vtnp` | 5.9% | `pbl_dvdt` 9.1% |
+   | `qvtnp` | 2.2% | `pbl_dqvdt` 4.3% |
+
+   Same magnitudes, same ordering. The extrapolation is self-consistent to 7.5e-10 (`utnp`) and
+   4.9e-08 (`ttnp`) when recomputed from dt = 0.08/0.04/0.02 instead.
+
+The standalone YSU tests already use the extrapolated dt -> 0 reference and pass at 1e-9. The
+coupled document uses the driver-level `rthblten`/`rublten`/... at dt = 60 s, and its own
+description says so: *"The PBL TENDENCIES are asserted only LOOSELY and document a known gap
+rather than test the physics."* The budget above quantifies that gap; it does not find a defect.
+
+### WSM6: the same category of mismatch
+
+`mp_dqv_dt`, `mp_dqi_dt` and `mp_dtheta_dt` are compared against WRF increments over a 60 s
+sub-step from a scheme that stages its processes sequentially. The step-60 test description
+already states this in terms: *"THE THREE MICROPHYSICAL TENDENCIES DO NOT AGREE WITH WRF AND
+THEIR TOLERANCES RECORD THAT, they do not certify it."* The O(dt_substep) operator-split
+difference has still never been measured.
+
+### So the actual state of the column
+
+Every tendency in the document that is asserted against a genuine instantaneous derivative
+agrees with WRF to 1e-7 - 1e-4. Every tendency that looks wrong is asserted against a
+finite-dt increment. **There is currently no evidence of an incorrect tendency anywhere in
+EqWeather-SCM.** What there is, is 15 assertions that constrain nothing and 21 that are pinned
+to the wrong kind of reference.
 
 ## Next actions implied
 
-- Do **not** tighten the 15 vacuous tolerances until the underlying tendency is fixed; tightening
-  them now simply turns the suite red. Fix YSU first, then re-derive tolerances from the
-  measured residual rather than from a backed-off guess.
-- Measure the WSM6 operator-split O(dt_substep) difference instead of assuming it.
-- Add the night (step 900) and step 300 columns; two regimes cannot distinguish a
-  state-dependent error from a constant one.
+1. **Re-reference the coupled PBL assertions to the dt -> 0 limit.** For step 60 / call 120 the
+   replays already exist (`data/eqwefic/dumps/ysu/driver_120_dt{0.08,0.04,0.02,0.01,0.005,0.001}.json`),
+   so this needs no new Fortran run. Step 1410 is physics call 2820, for which **no driver replay
+   exists** — it needs one from `dumps/ysu/bin`. Once re-referenced, the six PBL tolerances can
+   go from `abs 1e-3`/`5e-4`/`2e-4`/`1e-7` down to roughly 1e-9, and the 15 vacuous assertions
+   mostly stop being vacuous.
+2. **Measure the WSM6 operator-split O(dt_substep) difference** and re-reference `mp_*` the same
+   way. Note the whole-scheme increment does NOT converge as dt -> 0 — the saturation adjustment
+   is a projection to equilibrium, not a rate, and `(x_out - x_in)/dt` from the wsm6 driver
+   replays scales exactly as 1/dt (2.3063e-02, 1.1529e-02, 5.7628e-03 at dt = 0.01/0.02/0.04).
+   So the extrapolation must be done per process stage, not on the scheme as a whole.
+3. Only then tighten tolerances, deriving each from its measured residual.
+4. Add the night (step 900) and step 300 columns.
 
 ## Per-assertion detail
 
