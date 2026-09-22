@@ -221,3 +221,86 @@ Clear columns are untouched: the clear branch assigns `zair(lev) = air(i)` direc
 **It must be reproduced, not corrected**, for the cloudy grid to match WRF — and it is exactly
 the kind of thing that would have been silently baked into the padded grid had the residual not
 been chased first.
+
+---
+
+## 7. Option A built — and its exactness claim, corrected
+
+`components/gaschem/madronich/cloud_grid.esm` (100 assertions) and
+`couplings/madronich_column_cloudy.esm` (315 assertions over all four dumped columns,
+nlevel 70/72/77/78) are green. **§4 and §6 above describe the padding as "exact, not
+approximate" because τ = 0 collapses the continuity rows to an identity. That wording was
+too strong and is superseded here.**
+
+### 7.1 What went wrong, and what it showed
+
+The first end-to-end cloudy run returned NaN for every j-value. The cause was
+`SUBROUTINE sphers`, which divides each layer's slant path by its **thickness** to form
+`dsdh`; on a zero-thickness padded layer that is 0/0. The §4 argument had covered the
+two-stream solve and not the geometry upstream of it.
+
+Chasing it turned up a second, quieter gap. The argument assumed a padded layer has τ = 0.
+It does not: `optics` floors `dtscat` and `dtabs` at `1/largest = 1e-36` each, so a padded
+layer carries **τ = 2e-36, ω = 0.5, g = 0**.
+
+### 7.2 What is actually true, measured
+
+* **`dsdh` is the only divisor that can reach zero.** Every division in the chain whose
+  denominator involves a height or thickness was audited. The others are `zair_rt` (a *sum*
+  of heights, B11) and the ozone/aerosol interpolation (guarded, with a numerator exactly 0
+  on padded layers), and both act on the 70-level *input* grid, which padding never touches.
+* **The guard is new logic with no Fortran counterpart**, because WRF never produces a
+  zero-thickness layer. It sets `dsdh := 0` there.
+* **Its value is immaterial.** `dsdh := 0` and `dsdh :=` its true finite secant limit agree
+  to 3e-15 in the fluxes, because a padded layer's `dsdh` is multiplied by `taun = 2e-36`.
+  So the guard is not choosing an arbitrary value that matters.
+* **The padded solve equals the unpadded one to ≤ 1.8e-13** on fluxes of order one, at every
+  real level of all four columns, in float64 (1410: 1.1e-13, 1200: 1.8e-15, 1: 1.8e-13,
+  60: 1.2e-14). That residual is float64 rounding from a 262-row elimination instead of a
+  150-row one — **nine orders of magnitude** below the precision to which WRF's own real32
+  solve determines these fluxes (1.8e-4 clear, 5.8e-4 cloudy).
+
+**Corrected claim:** the padded computation equals WRF's unpadded one *to float64 roundoff*.
+It is not an approximation in any sense that reaches a test. It is **not** bit-identical,
+though, and it depends on one guard that has no counterpart in the Fortran. The component
+descriptions now say this.
+
+**Moving the padding would not have avoided it.** `sphers` loops over every layer, so a
+zero-thickness layer *anywhere* makes `dsdh` 0/0. The only way to keep padding out of the
+geometry is to give padded layers real thickness, and that would add physics WRF does not
+have. So the design is unchanged; only the claim about it is.
+
+### 7.3 `interp.linear` and `trapez` — tested, not read
+
+Probed directly (scratch document, not committed):
+
+| question | result |
+|---|---|
+| state-valued axis | **works** — my earlier belief that it needed a constant axis was wrong |
+| shaped query, bare `fn` | **vectorizes** |
+| shaped query through `faq` | **vectorizes** |
+| outside the axis | **clamps** to the end value; `trapez` instead writes a `1e-12` sentinel |
+| repeated knot (`[1,2,2,4]`) | **NaN, silently** — the spec says to raise `interp_non_monotonic_axis` |
+
+Consequences:
+
+* **subgrid's `trapez` onto layer mid-points is now `interp.linear`** over the 70-level input
+  interfaces, which are strictly increasing. This replaced a hand-rolled bracketing
+  contraction I had written only because of the mistaken constant-axis belief. The clamp vs
+  `1e-12` difference cannot trigger, since every mid-point lies inside the input grid.
+* **`interp.linear` cannot be used on the padded RT axis**, which has repeated knots by
+  construction; it would return NaN.
+* **`trapez`'s other use, carrying j-values back onto model levels, needs no interpolation.**
+  Every model interface is itself a node of the RT grid, so the coinciding node is read
+  directly.
+* **The silent NaN on a repeated knot looks like an EarthSciAST conformance gap.** A
+  constant axis is checked at load; a state-valued one can only be checked at evaluation,
+  and it isn't. Not yet filed.
+
+### 7.4 Bound
+
+`70 ≤ nlevel ≤ NRT = 131` for this 60-model-level configuration with one inserted level per
+emission, against WRF's own abort ceiling of `nj = 200`. If a cloud field would need more
+(`idt > 1` needs `cloud·dzt ≥ 50`; the reference column peaks near 11), the excess levels
+are **not emitted**: `L_eff` clamps at NRT and the top of the column is silently truncated.
+The component description says a consumer in that regime must raise NRT.
