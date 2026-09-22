@@ -18,7 +18,7 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=${1:-/tmp/esm-cost-$$}
 SNAP=${REPO}-costsnap.$$   # unique per run: two concurrent sweeps must not share one
 ESM=$REPO/esm
-export ESD_ROOT=${ESD_ROOT:-$(dirname "$REPO")/EarthSciDiscretizations-fire}
+export ESD_ROOT=${ESD_ROOT:-$(dirname "$REPO")/EarthSciDiscretizations-integ}   # carries ESD PR 42, which wsm6/sedimentation.esm imports
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD)
 git -C "$REPO" worktree prune

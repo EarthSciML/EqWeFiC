@@ -3,7 +3,8 @@
 **First measured 2026-09-21** on `couplings/eqweather_scm.esm`; **re-measured the same
 day** after the changes this file asked for were made. EarthSciAST `main` at
 `be1fafe6d` (`./esm` built 2026-09-21; carries #439 and #440), `ESD_ROOT` = the pinned
-`EarthSciDiscretizations-column` worktree at `f80069a`.
+`EarthSciDiscretizations-column` worktree at `f80069a`. **The WSM6 sedimentation rows were re-measured 2026-09-22 after ESD PR #42 was
+mounted**, with `ESD_ROOT` = `EarthSciDiscretizations-integ` at `f15d4c0` (see the section "Mounted" below).
 
 ## Why this document exists
 
@@ -234,10 +235,7 @@ cirrus column the like-for-like numbers are:
 - **The 0.22 % left in the coupled column** is the coupled state's own geometry offset.
 - **What is left of `mp_dqi_dt` is the operator split.** 1.01e-8 is the same pidep
   sequencing difference that makes up `mp_dqv_dt`'s 1.145e-8.
-- **Not yet tightened.** The committed document still mounts the donor-cell rule, because
-  no pinned ESD_ROOT carries #42 yet. Once it does, 1.01e-8 against a 2.17e-8 amplitude
-  allows at best `abs 2e-8` (0.92 of the amplitude). The 4x convention (4e-8) would still
-  be vacuous. Do not tighten before the rule is mounted.
+- **Tightened 2026-09-22, once mounted** (next section): `mp_dqi_dt` to `abs 2e-8`.
 
 **So the ESD rule IS warranted, and this is what it would have to be** (as authored in #42):
 a new rule on the same face-flux structure as `sedimentation_upwind1_flux_D_lev`, i.e.
@@ -256,6 +254,67 @@ It is a five-point stencil in velocity and a three-point one in mass, and it is
 non-smooth (the extremum switch and the positivity reset). The finite-dt `decfl > 0.05`
 velocity clamp is NOT part of the dt -> 0 operator and should be left out. A generic PLM
 or PPM limiter from the literature would not reproduce WRF, as the minmod trial shows.
+
+## Mounted (2026-09-22): what changed, measured
+
+`wsm6/sedimentation.esm` now imports `sedimentation_jh2010_flux_D_lev` (#42) instead of the
+donor-cell rule, through a new pinned worktree `EarthSciDiscretizations-integ`
+(`integ/fire-column-sedplm` at `f15d4c0` = the `-fire` worktree merged with #42; a strict
+superset of it, only the four #42 files added). Three things had to change with it.
+
+**1. The fall speeds must be zero where WSM6 zeroes them.** WSM6 sets `workr = 0` where
+q_r <= 0 and `work1c = 0` where q_i <= 0 (the joint snow/graupel speed was already zeroed
+by `snow_graupel_weighted_mean`). Under donor-cell that was immaterial, because an empty
+layer's flux is zero either way. Under #42 it is not: the interface speed reads the
+neighbours' speeds and switches to the layer above wherever a speed is exactly zero. Without
+the zero, the early-storm rain tendency (a zero-rain layer inside the rain column) was 16 %
+off; with it, 1.1e-7.
+
+**2. Thirteen tendency references were re-derived from WRF's own operator.** The component's
+four tests had pinned the donor-cell FORMULA. The new references are WRF's
+`nislfv_rain_plm`, extracted verbatim into `data/eqwefic/plm_check`, run on each test's input
+column per category (so melting cannot contaminate rain: the whole-sub-step kernel replay
+could not separate them), at dt = 2, 1, 0.5 ms and Richardson-extrapolated. Speeds come from
+the tests' kernel-derived flux references; the top two layers take the rule's value (B16).
+`nislfv_rain_plm6` is the same operator per species (checked by diff). Zero-tolerance
+residuals, the component against WRF, as a fraction of each column's maximum:
+
+| test | rain | snow | graupel | ice | donor-cell was off by |
+|---|---|---|---|---|---|
+| supercell step 250, col 24 (mature) | 8.8e-8 | 1.1e-7 | 1.1e-7 | 1.1e-6 | 36-45 % |
+| supercell step 250, col 25 (graupel) | 8.8e-8 | 1.1e-7 | 1.1e-7 | 2.7e-7 | 39-51 % |
+| supercell step 200, col 20 (early) | 1.1e-7 | 1.3e-7 | 1.3e-7 | 5.6e-6 | 16-112 % |
+| SCM cirrus, layers 20-59 | 0 | 0 | 0 | 5.9e-6 | 59 % |
+
+Rain, snow and graupel sit at the real32 floor the flux assertions already had, and keep
+1e-6 of the column maximum. The cirrus reference also agrees with the whole-kernel
+Richardson extrapolation to 4.5e-7 of the peak.
+
+**3. Ice is 50x worse than the rest, and the cause is a branch #42 does not carry.** The
+third-order interface speed overshoots below zero at the edge of an ice layer (3-12 faces per
+column here). There WRF's remap draws the mass crossing the face from the TOP face value of
+the layer BELOW. The rule always takes the bottom face of the layer above. Adding that switch
+to the Python transcription takes the ice gap from 5.6e-7..6.4e-6 to 1.0e-8..3.9e-8. It is
+recorded as FORTRAN_BUGS N77(3). The ice tendency assertions carry 3e-5 of the column
+maximum until #42 adds the switch. **That is a correction owed to #42, not a property of WRF.**
+
+**In the coupled document** (4 regimes, zero tolerance, donor-cell -> jh2010; nothing else moved):
+
+| assertion | donor-cell | jh2010 | reference amplitude | tolerance |
+|---|---|---|---|---|
+| step 60 `mp_sed_dqi_dt` | 2.04e-8 (vs WRF) | **7.7e-11** | 3.49e-8 | 6e-8 vs zero -> **abs 3e-10 vs WRF** |
+| step 60 `mp_dqi_dt` | 2.81e-8 | **1.01e-8** | 2.17e-8 | 1e-7 -> **abs 2e-8** |
+| step 900 `mp_dqi_dt` | 3.34e-12 | 1.34e-12 | 1.24e-12 | 2e-11 (unchanged) |
+| step 300 `mp_dqi_dt` | 7.75e-10 | 1.17e-9 | 8.20e-11 | 5e-9 (unchanged) |
+
+`mp_sed_dqi_dt` used to be a magnitude record against zero. It is now a comparison against
+WRF's converged ice fallout (the kernel extrapolation above, with the rule's value in the top
+two layers), and it rejects donor-cell by a factor of 68. `mp_dqi_dt` at step 60 is bounded
+at 2x its residual. That still rejects donor-cell (2.81e-8), but it is 0.92 of the amplitude,
+because the remainder is the pidep operator split. **The step-300 and step-900 `mp_dqi_dt`
+bounds are 61x and 16x their reference amplitudes.** They were vacuous before this change and
+still are; their residuals are the finite-dtcld split, not sedimentation. They are named here
+and not touched.
 
 **Consequence for the three `mp_*` assertions.** They keep WRF's dt = 60 s increment as
 their reference, because no dt -> 0 reference exists for a scheme containing `pigen`, and
@@ -307,9 +366,10 @@ instantaneous derivative now agrees with WRF to **1e-9 to 1e-6 absolute** — 1e
 of its own column maximum — across four regimes spanning day and night, convective and
 stable. The exceptions are named, measured and attributed:
 
-1. **`mp_dqi_dt`** (step 60 only): residual 2.812e-08 against a reference amplitude of
-   2.173e-08, dominated by donor-cell-versus-PLM sedimentation. **This is the one in-scope
-   assertion whose tolerance cannot be brought below its reference amplitude.**
+1. **`mp_dqi_dt`** (step 60 only): residual 1.01e-08 against a reference amplitude of
+   2.173e-08 since the jh2010 rule was mounted (it was 2.812e-08 with donor-cell). The
+   remainder is the pidep operator split, so its bound (abs 2e-8) is still 0.92 of the
+   amplitude. **The ice sedimentation stage itself now agrees with WRF to 0.22 %.**
 2. **`dw_dt`**: WRF's real32 p' rounding drives a w tendency up to half the physical one
    (N67), so w cannot be matched beyond ~3e-4 m/s².
 3. The surface layer's 1e-6 to 7e-5 relative floor, which is the 0.30 Pa
@@ -317,10 +377,10 @@ stable. The exceptions are named, measured and attributed:
 
 ## Next actions implied
 
-1. **The sedimentation flux rule specified above** (N77's interface velocity and
-   face reconstruction) in EarthSciDiscretizations. It is the only thing that makes
-   `mp_dqi_dt` non-vacuous, and the only known place where the SCM's tendencies differ
-   from WRF's dt -> 0 operator for a reason on the model side.
+1. **DONE 2026-09-22: the sedimentation flux rule** (ESD PR #42), mounted. One
+   follow-up remains on #42 itself: the upwind switch at a negative interface speed
+   (FORTRAN_BUGS N77(3)), which would take the ice tendency tolerances from 3e-5 to
+   1e-6 of the column maximum.
 2. `dw_dt`'s tolerance is set by WRF's real32 STATE, not by the model or by arithmetic,
    and a real64 kernel replay does not escape it: `pg_buoy_w` takes p' as an input, and
    replaying it in real64 on the dumped p' reproduces WRF (that is what
