@@ -34,6 +34,9 @@ gives `idt = 2`.
 **Bounds.** The Fortran aborts at `lev > nj = 200`. For this 60-model-level
 configuration, `idt = 1` and every model level cloudy gives `nlevel = 131`; alternating
 cloud/clear gives 130. So **70 ≤ nlevel ≤ 131** here, against WRF's own ceiling of 200.
+*(Corrected in §8: counted exactly, every model level cloudy gives **130**, not 131. The
+above-model levels carry no cloud, so 130 is the ceiling for `idt = 1`. NRT = 131 was kept,
+with one spare.)*
 
 ## 2. The insertion is pure numerical refinement — it conserves optical depth exactly
 
@@ -293,14 +296,90 @@ Consequences:
 * **`trapez`'s other use, carrying j-values back onto model levels, needs no interpolation.**
   Every model interface is itself a node of the RT grid, so the coinciding node is read
   directly.
-* **The silent NaN on a repeated knot looks like an EarthSciAST conformance gap.** A
-  constant axis is checked at load; a state-valued one can only be checked at evaluation,
-  and it isn't. Not yet filed.
+* **The silent NaN on a repeated knot is an EarthSciAST defect, now filed as #443.**
+  *Correction:* I wrote here that "a constant axis is checked at load". That is **false** on
+  this binary. A literal `const [0,1,1,3]` axis also returns NaN at evaluation, and
+  `esm validate` passes it, measured independently. The actual defect is broader: in the
+  Rust binding **every** closed-function error — `interp_non_monotonic_axis`,
+  `interp_axis_length_mismatch`, `closed_function_arg_type` — is discarded on the evaluation
+  path and replaced by NaN (`simulate_array/eval.rs:530`, `:561`; `simulate/interpret.rs:65`).
+  No closed-function error reaches the author.
 
-### 7.4 Bound
+### 7.4 Bound — superseded by §8
 
-`70 ≤ nlevel ≤ NRT = 131` for this 60-model-level configuration with one inserted level per
-emission, against WRF's own abort ceiling of `nj = 200`. If a cloud field would need more
-(`idt > 1` needs `cloud·dzt ≥ 50`; the reference column peaks near 11), the excess levels
-are **not emitted**: `L_eff` clamps at NRT and the top of the column is silently truncated.
-The component description says a consumer in that regime must raise NRT.
+This section originally said the column top was "silently truncated" beyond NRT. That is no
+longer true: the run now stops with a diagnostic. See §8.
+
+---
+
+## 8. The bounds now stop the run (2026-09-22)
+
+**The user decided the 131-level overflow must fail loudly.** Doing that turned up a worse
+failure than the one it was aimed at.
+
+### 8.1 The worse failure: `idt > 1` was silently wrong *inside* the bound
+
+`cloud_grid.esm` implemented the emission rule for **idt = 1 only**, and nothing checked that
+assumption. Measured against a direct replication of `subgrid`:
+
+| cloud field | WRF nlevel | unchecked `cloud_grid` | |
+|---|---|---|---|
+| every model level cloudy, one block | 130 | 130 | agrees |
+| all 70 input levels cloudy | 139 | 139 | over NRT |
+| **one very thick cloud layer** | **77** | **72** | **silently wrong** |
+
+The thick-cloud row doesn't overflow and doesn't error. It produces a wrong grid, and deep
+convection reaches it well inside NRT. That is exactly the category of defect this project has
+been removing, and it is more likely than the overflow the user asked about. Both are now
+checked.
+
+### 8.2 What "fail loudly" can mean in this format — measured, not read
+
+* **Closed-function errors cannot do it** in the Rust binding. They are all replaced by NaN on
+  the evaluation path (#443, §7.3).
+* **A variable cannot declare a valid range.** `ModelVariable` has no bounds, min, max,
+  constraint or assert field.
+* **The test schema cannot express an expected error.** `Test` has no such field and no xfail.
+* **An out-of-range gather on a const array DOES stop the run.** It raises
+  `E_TREEWALK_CONSTARRAY_OOB`, which CONFORMANCE_SPEC §5.5.5 makes fail-closed for every binding.
+  In the Rust engine the fault is *latched* and raised after evaluation, so it is not on the
+  NaN-substituting path. Probed across every form:
+
+| array form | out-of-range gather |
+|---|---|
+| literal `const` node | **raises**, as `'inline const' index 5 out of range 1..3` |
+| **shaped parameter** | **raises and names the array**, as `'cap_par' index 5 out of range 1..3` |
+| index driven by an ODE state (runtime only) | **raises**, as `'cap' index 4 out of range 1..3` |
+| **observed** defined by a const | **silently returns 0** (the zero ghost) |
+
+### 8.3 What was delivered: option 1, a real stop with a named cause
+
+Two shaped-parameter sentinels are multiplied into `nlevel`, so the gather cannot be skipped:
+`idt_supported` (one entry) is gathered at `max_idt`, and `rt_level_capacity` (NRT entries) at
+the raw level count. In range they read 1.0 and change nothing. Out of range they stop the run.
+Run through the real component by `tools/check_cloud_grid_bounds.py`:
+
+```
+OK   in_range  passes, no false alarm
+OK   idt_over  E_TREEWALK_CONSTARRAY_OOB: const array 'idt_supported' index 4 out of range 1..1
+OK   nrt_over  E_TREEWALK_CONSTARRAY_OOB: const array 'rt_level_capacity' index 139 out of range 1..131
+```
+
+The index is what the cloud field needs; the range is what the component supports. The inline
+suite stays green on all four real columns (100/100, 315/315), because the check has to be a
+script: an inline test cannot express an expected failure.
+
+**Cautions, also in the component description:**
+
+* The sentinels must stay **parameters**. An observed takes the zero-ghost convention and
+  returns 0 silently, which was measured. That would turn the check back into the silent
+  failure it replaces.
+* They must never be given a `periodic` or `clamp` boundary policy, for the same reason.
+* The mechanism is an idiom: a bounds check doing the work of an assertion. It is fail-closed
+  by a normative rule rather than by accident, but a first-class assertion op would be cleaner
+  if the format ever adds one.
+* Only the Rust binding has been run against it.
+
+**To support deep convection**, implement `idt > 1` (uniform sub-levels `dzt/idt` within each
+half-layer) and raise NRT. Until then the component refuses the regime instead of getting it
+wrong.

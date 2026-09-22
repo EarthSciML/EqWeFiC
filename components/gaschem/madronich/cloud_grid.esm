@@ -2,7 +2,7 @@
   "esm": "1.1.0",
   "metadata": {
     "name": "MadronichCloudGrid",
-    "description": "The cloud-refined radiative-transfer grid of WRF-Chem's Madronich photolysis, on a FIXED grid padded with zero-thickness layers (chem/module_phot_mad.F:2205-2320, WRF v4.8.0).\n\nTHE PROBLEM THIS SOLVES. subgrid inserts extra levels inside cloud, so `nlevel` is a function of the cloud field -- 70, 72, 77 and 78 at the four dumped daytime calls of the reference run. An esm index set has a size fixed at load, so a grid whose SIZE is state-dependent cannot be one. Everything upstream in this chain was therefore written for a clear column.\n\nWHY THE PADDING IS NOT AN APPROXIMATION -- and precisely what it is, because an earlier draft of this description overstated it. The argument was: a padded level duplicates the top level, so its layer has dz = 0 and hence taun = 0; in ps2str a zero-optical-depth layer gives expon = exp(0) = 1, so cup = cuptn and cdn = cdntn, the layer's two continuity rows reduce to identities, and the solution is unchanged. That is correct for taun = 0, but TWO facts break it as an exact identity. (1) WRF floors dtscat and dtabs at 1/largest = 1e-36 each (module_phot_mad.F optics), so a padded layer carries tau = 2e-36, omega = 0.5, g = 0 -- not tau = 0. (2) SUBROUTINE sphers divides by each layer's thickness to form the slant ratio dsdh, which is 0/0 on a zero-thickness layer. WRF never meets that case, so the guard that resolves it (dsdh := 0; see MadronichOpticalDepth.dsdh) is NEW LOGIC WITH NO FORTRAN COUNTERPART. An audit of every division in the chain whose denominator involves a height or thickness found dsdh to be the ONLY one that can reach zero on the padded grid; the others all act on the 70-level input grid, which the padding never touches.\nWhat is TRUE, and measured on all four dumped columns (nlevel 70, 72, 77, 78) in float64: the padded solve equals the unpadded one to at most 1.8e-13 on fluxes of order one, at every real level. The value the guard assigns does not matter -- dsdh := 0 and dsdh := its true finite secant limit agree to 3e-15 -- because a padded layer's dsdh is multiplied by taun = 2e-36. The 1.8e-13 that remains is float64 rounding from a 262-row elimination instead of a 150-row one, nine orders of magnitude below the precision to which WRF's own single-precision solve determines these fluxes (1.8e-4 clear, 5.8e-4 cloudy). So: equal to WRF's unpadded computation to float64 roundoff. Not an approximation in any sense that reaches a test, but not bit-identical either, and it rests on a guard that is new logic.\n\nNO RECURRENCE IS NEEDED HERE. The emission counts are pointwise; the running level index the Fortran carries is a prefix COUNT of them, which telescopes to a contraction; and the inverse map from an RT level back to the model level that emitted it is another contraction (how many model levels start at or below it) rather than a search. Only the two-stream solve downstream needs a causal self-reference.\n\nBOUND: 70 <= nlevel <= NRT = 131, and what happens if a consumer exceeds it. With one inserted level per emission -- which is what `idt = max(ifix(cloud*dzt*0.02), 1)` gives unless `cloud*dzt >= 50` -- a model level emits 1 level when clear and 2 or 3 when cloudy, so for this 60-model-level configuration `nlevel` runs from 70 (clear) to 131 (every level cloudy in one block). NRT defaults to 131 for that reason, against WRF's own abort ceiling of `nj = 200`. If a consumer supplies a cloud field that would need more, the extra levels are simply not emitted: `L_eff = min(L, nlevel)` clamps, and the column is silently truncated at the top rather than failing. A consumer in that regime must RAISE NRT; the reference SCM never approaches it (its largest `cloud*dzt` is about 11 against the 50 that `idt = 2` needs), but a deep convective cloud can.\n\nREPRODUCED, NOT CORRECTED: the air density on inserted levels goes through WRF's log-linear interpolation, which divides by a SUM of heights where a difference belongs (FORTRAN_BUGS B11). It therefore does NOT return `air(i)` at `z = zz(i)`: on the reference column the air at inserted-grid levels that coincide exactly with model levels is wrong by 4.9 percent at model level 55 rising to 8.9 percent at level 60. It feeds every pressure-quenched quantum yield. Since the purpose of this component is to reproduce WRF, the bug is transcribed as written and flagged here; `j_hcocho` is the channel it moves most.\n\nINTERPOLATION. Where subgrid calls trapez to carry ozone and aerosol onto the layer mid-points, this uses interp.linear over the 70-level input interfaces. That was probed before use rather than assumed: interp.linear accepts a state-valued axis, vectorizes over a shaped query, and CLAMPS outside the axis where trapez writes a 1e-12 sentinel -- a difference that cannot trigger here, since every mid-point lies inside the input grid. It could NOT be used on the padded RT axis itself: an axis with a repeated value, which is what the padding produces, makes interp.linear return NaN silently rather than raising the interp_non_monotonic_axis the spec calls for. trapez's other use -- carrying the j-values from the RT grid back onto the model levels -- needs no interpolation at all, because every model interface is itself a node of the RT grid; the consumer reads the coinciding node directly."
+    "description": "The cloud-refined radiative-transfer grid of WRF-Chem's Madronich photolysis, on a FIXED grid padded with zero-thickness layers (chem/module_phot_mad.F:2205-2320, WRF v4.8.0).\n\nTHE PROBLEM THIS SOLVES. subgrid inserts extra levels inside cloud, so `nlevel` is a function of the cloud field -- 70, 72, 77 and 78 at the four dumped daytime calls of the reference run. An esm index set has a size fixed at load, so a grid whose SIZE is state-dependent cannot be one. Everything upstream in this chain was therefore written for a clear column.\n\nWHY THE PADDING IS NOT AN APPROXIMATION -- and precisely what it is, because an earlier draft of this description overstated it. The argument was: a padded level duplicates the top level, so its layer has dz = 0 and hence taun = 0; in ps2str a zero-optical-depth layer gives expon = exp(0) = 1, so cup = cuptn and cdn = cdntn, the layer's two continuity rows reduce to identities, and the solution is unchanged. That is correct for taun = 0, but TWO facts break it as an exact identity. (1) WRF floors dtscat and dtabs at 1/largest = 1e-36 each (module_phot_mad.F optics), so a padded layer carries tau = 2e-36, omega = 0.5, g = 0 -- not tau = 0. (2) SUBROUTINE sphers divides by each layer's thickness to form the slant ratio dsdh, which is 0/0 on a zero-thickness layer. WRF never meets that case, so the guard that resolves it (dsdh := 0; see MadronichOpticalDepth.dsdh) is NEW LOGIC WITH NO FORTRAN COUNTERPART. An audit of every division in the chain whose denominator involves a height or thickness found dsdh to be the ONLY one that can reach zero on the padded grid; the others all act on the 70-level input grid, which the padding never touches.\nWhat is TRUE, and measured on all four dumped columns (nlevel 70, 72, 77, 78) in float64: the padded solve equals the unpadded one to at most 1.8e-13 on fluxes of order one, at every real level. The value the guard assigns does not matter -- dsdh := 0 and dsdh := its true finite secant limit agree to 3e-15 -- because a padded layer's dsdh is multiplied by taun = 2e-36. The 1.8e-13 that remains is float64 rounding from a 262-row elimination instead of a 150-row one, nine orders of magnitude below the precision to which WRF's own single-precision solve determines these fluxes (1.8e-4 clear, 5.8e-4 cloudy). So: equal to WRF's unpadded computation to float64 roundoff. Not an approximation in any sense that reaches a test, but not bit-identical either, and it rests on a guard that is new logic.\n\nNO RECURRENCE IS NEEDED HERE. The emission counts are pointwise; the running level index the Fortran carries is a prefix COUNT of them, which telescopes to a contraction; and the inverse map from an RT level back to the model level that emitted it is another contraction (how many model levels start at or below it) rather than a search. Only the two-stream solve downstream needs a causal self-reference.\n\nBOUNDS, AND WHAT HAPPENS OUTSIDE THEM -- THE RUN STOPS. This component reproduces subgrid for ONE inserted level per cloudy half-layer (idt = 1) on a grid of NRT levels, and it refuses to run outside that rather than return a grid that is silently wrong. Two conditions are checked.\n(1) idt > 1. subgrid inserts idt = max(ifix(cloud*dzt*0.02), 1) levels into each cloudy half-layer, so a half-layer optical depth of 50 or more needs more than one. The emission rule here assumes one, and without the check it would simply UNDER-COUNT: for a single very thick cloud layer WRF emits 77 levels and the unchecked rule emits 72, with no overflow and no error. That is the more dangerous of the two failures, since deep convection reaches it well inside NRT. The reference SCM never does -- its largest half-layer optical depth is about 11.\n(2) nlevel > NRT. With idt = 1 and cloud confined to the 60 model levels, which MadronichColumnSetup guarantees, 70 <= nlevel <= 130, and NRT = 131 leaves one spare. It can be exceeded only if a consumer supplies cloud above the model top (139 for all 70 input levels) or once idt > 1 is supported.\nHOW THE RUN IS STOPPED. Each condition gathers a shaped PARAMETER sentinel -- `idt_supported` (one entry) at max_idt, `rt_level_capacity` (NRT entries) at the raw level count -- and multiplies the result into nlevel, so the gather cannot be skipped. In range it reads 1.0 and changes nothing. Out of range it raises `E_TREEWALK_CONSTARRAY_OOB`, which is fail-closed by CONFORMANCE_SPEC section 5.5.5 ('the zero-ghost convention is never applied to a const-array gather'); the Rust engine latches that fault and raises it after evaluation rather than returning a number. The messages are, verbatim: `const array 'idt_supported' index 4 out of range 1..1` and `const array 'rt_level_capacity' index 139 out of range 1..131` -- the index is what the cloud field needs, the range is what this component supports. Verified by tools/check_cloud_grid_bounds.py, which drives the current file past each bound and asserts both messages, and asserts that an in-range column still passes. An esm inline test cannot express an expected failure, which is why that check is a script.\nTwo cautions. The sentinels must stay PARAMETERS: an observed takes the zero-ghost convention instead and returns 0 silently -- measured -- which would turn the check back into the silent failure it replaces. And they must never be given a `periodic` or `clamp` boundary policy, which would do the same. This is deliberately NOT built on a closed-function error such as interp_non_monotonic_axis: in the Rust binding every closed-function error is replaced by NaN on the evaluation path (EarthSciAST #443), whereas the const-array gather fault is not. Only the Rust binding has been run against these checks, although section 5.5.5 is normative for all of them.\n\nREPRODUCED, NOT CORRECTED: the air density on inserted levels goes through WRF's log-linear interpolation, which divides by a SUM of heights where a difference belongs (FORTRAN_BUGS B11). It therefore does NOT return `air(i)` at `z = zz(i)`: on the reference column the air at inserted-grid levels that coincide exactly with model levels is wrong by 4.9 percent at model level 55 rising to 8.9 percent at level 60. It feeds every pressure-quenched quantum yield. Since the purpose of this component is to reproduce WRF, the bug is transcribed as written and flagged here; `j_hcocho` is the channel it moves most.\n\nINTERPOLATION. Where subgrid calls trapez to carry ozone and aerosol onto the layer mid-points, this uses interp.linear over the 70-level input interfaces. That was probed before use rather than assumed: interp.linear accepts a state-valued axis, vectorizes over a shaped query, and CLAMPS outside the axis where trapez writes a 1e-12 sentinel -- a difference that cannot trigger here, since every mid-point lies inside the input grid. It could NOT be used on the padded RT axis itself: an axis with a repeated value, which is what the padding produces, makes interp.linear return NaN silently rather than raising the interp_non_monotonic_axis the spec calls for. trapez's other use -- carrying the j-values from the RT grid back onto the model levels -- needs no interpolation at all, because every model interface is itself a node of the RT grid; the consumer reads the coinciding node directly.\n\nPORTABILITY: this component passes `ze`, `o3_node` and `aer_node` to interp.linear as VARIABLE references. esm-spec section 9.2's load-time error table forbids that (`interp_table_not_const` / `interp_axis_not_const`: 'the table or any axis argument is not a literal const-op array'). The Rust binding accepts it; the Julia and TypeScript bindings implement that check and would REJECT this file at load, while Go and Python do not. Whether to keep the const rule or relax it for state-dependent axes is open upstream as EarthSciAST #443. This file depends on the outcome."
   },
   "metaparameters": {
     "NN": {
@@ -34,6 +34,10 @@
           1
         ]
       }
+    },
+    "idt_cap": {
+      "kind": "interval",
+      "size": 1
     }
   },
   "models": {
@@ -123,7 +127,7 @@
         "nlevel": {
           "type": "unknown",
           "units": "1",
-          "description": "Number of ACTIVE radiative-transfer levels, WRF's nlevel. Bounded here by 70 <= nlevel <= NRT = 131 for this 60-model-level configuration with one inserted level per emission. If a cloud field would need more (idt > 1, which needs cloud*dzt >= 50, or a larger model column), the excess levels are NOT emitted: L_eff clamps at NRT and the top of the column is silently truncated. A consumer in that regime must raise NRT."
+          "description": "Number of ACTIVE radiative-transfer levels, WRF's nlevel: nlevel_raw once both bound checks have passed, and identical to it whenever they do. For a cloud field confined to the 60 model levels, which MadronichColumnSetup guarantees, 70 <= nlevel <= 130; NRT = 131 leaves one spare. See the description for what happens outside that."
         },
         "L_eff": {
           "type": "unknown",
@@ -291,6 +295,60 @@
           "shape": [
             "rt_lay"
           ]
+        },
+        "nlevel_raw": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Number of radiative-transfer levels subgrid emits for this cloud field, before the two bound checks. Read `nlevel` instead: it is this value once both checks have passed."
+        },
+        "idt_below": {
+          "type": "unknown",
+          "shape": [
+            "node"
+          ],
+          "units": "1",
+          "description": "How many levels subgrid would insert in the half-layer BELOW this cloudy interface, max(ifix(cloud*dzt*0.02),1) with dzt the half-layer thickness. 1 wherever this component's emission rule applies."
+        },
+        "idt_above": {
+          "type": "unknown",
+          "shape": [
+            "node"
+          ],
+          "units": "1",
+          "description": "The same for the half-layer ABOVE."
+        },
+        "max_idt": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Largest idt anywhere in the column. This component implements idt = 1 ONLY; see the description. Exposed so the regime is visible and assertable, and fed into the idt check that stops the run when it is exceeded."
+        },
+        "idt_check": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1.0 when max_idt = 1; otherwise the gather raises and the run stops."
+        },
+        "rt_check": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1.0 when nlevel_raw <= NRT; otherwise the gather raises and the run stops."
+        },
+        "idt_supported": {
+          "type": "parameter",
+          "shape": [
+            "idt_cap"
+          ],
+          "units": "1",
+          "default": 1.0,
+          "description": "BOUND SENTINEL, not data -- do not override it. A one-entry array gathered at max_idt: in range when max_idt = 1, and otherwise the gather raises `E_TREEWALK_CONSTARRAY_OOB: const array 'idt_supported' index <max_idt> out of range 1..1`, which reads as 'subgrid needed idt = <max_idt>, this component supports 1'. It must be a PARAMETER: an observed would take the zero-ghost convention and return 0 silently."
+        },
+        "rt_level_capacity": {
+          "type": "parameter",
+          "shape": [
+            "rt"
+          ],
+          "units": "1",
+          "default": 1.0,
+          "description": "BOUND SENTINEL, not data -- do not override it. An NRT-entry array gathered at nlevel_raw: in range when the grid fits, and otherwise the gather raises `E_TREEWALK_CONSTARRAY_OOB: const array 'rt_level_capacity' index <needed> out of range 1..<NRT>`, which names both the level count the cloud field needs and NRT. Its length follows NRT automatically, which a literal array would not. It must be a PARAMETER: an observed would take the zero-ghost convention and return 0 silently."
         }
       },
       "equations": [
@@ -521,7 +579,7 @@
           }
         },
         {
-          "lhs": "nlevel",
+          "lhs": "nlevel_raw",
           "rhs": {
             "op": "+",
             "args": [
@@ -2904,6 +2962,309 @@
             "args": [
               "vaer_raw_rt",
               "vaer_total"
+            ]
+          }
+        },
+        {
+          "lhs": "idt_below",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "node"
+              }
+            },
+            "args": [
+              "cloud_node",
+              "is_cloudy",
+              "ze"
+            ],
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "==",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "is_cloudy",
+                        "i"
+                      ]
+                    },
+                    0
+                  ]
+                },
+                1,
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "<=",
+                      "args": [
+                        "i",
+                        1
+                      ]
+                    },
+                    1,
+                    {
+                      "op": "max",
+                      "args": [
+                        1,
+                        {
+                          "op": "floor",
+                          "args": [
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "cloud_node",
+                                    "i"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    0.5,
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "ze",
+                                            "i"
+                                          ]
+                                        },
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "ze",
+                                            {
+                                              "op": "min",
+                                              "args": [
+                                                "NN",
+                                                {
+                                                  "op": "max",
+                                                  "args": [
+                                                    1,
+                                                    {
+                                                      "op": "-",
+                                                      "args": [
+                                                        "i",
+                                                        1
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                "par.cloud_fnum"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "idt_above",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "node"
+              }
+            },
+            "args": [
+              "cloud_node",
+              "is_cloudy",
+              "ze"
+            ],
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "==",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "is_cloudy",
+                        "i"
+                      ]
+                    },
+                    0
+                  ]
+                },
+                1,
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": ">=",
+                      "args": [
+                        "i",
+                        "NN"
+                      ]
+                    },
+                    1,
+                    {
+                      "op": "max",
+                      "args": [
+                        1,
+                        {
+                          "op": "floor",
+                          "args": [
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "cloud_node",
+                                    "i"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    0.5,
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "ze",
+                                            {
+                                              "op": "min",
+                                              "args": [
+                                                "NN",
+                                                {
+                                                  "op": "max",
+                                                  "args": [
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        "i",
+                                                        1
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "ze",
+                                            "i"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                "par.cloud_fnum"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "max_idt",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [],
+            "reduce": "max",
+            "ranges": {
+              "i": {
+                "from": "node"
+              }
+            },
+            "args": [
+              "idt_above",
+              "idt_below"
+            ],
+            "expr": {
+              "op": "max",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "idt_below",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "idt_above",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "idt_check",
+          "rhs": {
+            "op": "index",
+            "args": [
+              "idt_supported",
+              "max_idt"
+            ]
+          }
+        },
+        {
+          "lhs": "rt_check",
+          "rhs": {
+            "op": "index",
+            "args": [
+              "rt_level_capacity",
+              "nlevel_raw"
+            ]
+          }
+        },
+        {
+          "lhs": "nlevel",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "nlevel_raw",
+              "idt_check",
+              "rt_check"
             ]
           }
         }
