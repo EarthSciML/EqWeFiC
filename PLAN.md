@@ -423,6 +423,54 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       coagulation, separately) and `mosaic_drydep`. All three Tiedtke
       convection types plus the inactive branch, Noah day and night, and all
       three MOSAIC sub-processes are covered.
+
+1.4c Noah stage 2, first tranche (done 2026-09-22). Five hand-authored
+    components under `components/land_surface/noah/`, 448/448 green at
+    rel 1e-9 against the real64 `noah_driver` replay of the 16 idealized-column
+    dumps of 1.4b:
+
+    - `noah_parameters.esm` -- Noah's own thermodynamic constants and the
+      GENPARM scalars. Deliberately separate from `lib/wrf_constants.esm`:
+      Noah shadows rd and sigma, and PENMAN shadows cp again, so one call
+      evaluates three different values of two constants (FORTRAN_BUGS N88).
+      The GENPARM defaults are the REAL32-WIDENED table values, not the
+      table's decimal text: those numbers reach the scheme through a real32
+      array, and using the decimal for `cmcmax` puts a 4.7e-8 error in a
+      canopy-wetness ratio near one, which the transpiration amplifies to
+      1.5e-5.
+    - `canopy_resistance.esm` (CANRES), `potential_evaporation.esm` (PENMAN),
+      `evapotranspiration.esm` (EVAPO/DEVAP/TRANSP, including the dew branch)
+      and `soil_heat.esm` (TDFCND + HRT + the yy/zz1 surface closure).
+    - The soil heat equation is the flux-form PDE D(K D(T) - F) lowered by the
+      existing ESD rule `varcoeff_face_flux_laplacian_lev` -- the same rule the
+      slab scheme uses; no new ESD rule was needed. Both boundary fluxes are
+      prescribed (the linearised surface energy balance at the top, conduction
+      to `tbot` at the bottom), which is exactly the form the rule expects.
+      The interface conductivity is UPWIND, not a face average, because that is
+      what the Fortran does (FORTRAN_BUGS N90).
+    - The root-zone stress factors are written as column integrals: `rcsoil` as
+      a thickness-weighted mean over the root zone, and TRANSP's `sgx` as the
+      UNWEIGHTED layer mean, which is the integral of gx/dz over the masked
+      root zone divided by nroot.
+    - **Two dt scales are needed for the references and the distinction is
+      load-bearing.** SFLX is an in-place step: the surface closure (yy, zz1,
+      t1, ssoil, sheat) is referenced at ESM_DT = 1e-6 s, where the O(dt)
+      contamination from SMFLX having already moved the soil moisture is below
+      1e-10 relative; the soil-temperature tendency must use ESM_DT = 0.01 s,
+      because at 1e-6 s the increment of two ~300 K temperatures is lost to
+      cancellation. WRF's own dt = 60 s increment is off the dt -> 0 limit by
+      up to 2.7e-7 K/s -- the implicit solve, not the physics.
+    - **Instrumentation added.** `df1`, `yy`, `zz1` and the pre-step ground
+      heat flux are not Registry variables. `kernels/noah_esm_{state,penman,
+      nopac}.inc` are spliced by `kernels/Makefile` into a BUILD-TIME COPY of
+      `phys/module_sf_noahlsm.F` (the WRF source is untouched), following the
+      pattern the New Tiedtke driver already uses.
+    - **Still to do:** soil moisture (SMFLX/SRT/SSTEP, Richards plus the three
+      runoff terms), the frozen-soil sink (SNKSRC/FRH2O/TMPAVG/TBND), the snow
+      pack (SNOPAC and friends), REDPRM's table lookups as a component, and the
+      urban and `opt_thcnd = 2` branches. The reference set is above freezing
+      and snow-free, so those branches are UNTESTED, not merely unused -- a
+      consumer must not mount these components where they matter.
     - **Kernel replays.** New real64 drivers `kernels/{ntiedtke,noah}_driver`.
       Noah agrees with WRF to real32 round-off. Tiedtke's in-model `rthcuten`
       is cancellation-limited at ~3e-7 K/s (N84), so the real64 replay is the
