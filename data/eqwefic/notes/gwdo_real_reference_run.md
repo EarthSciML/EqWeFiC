@@ -81,7 +81,7 @@ With the 4 × 5 decomposition this gives:
 **Kernel replay (GWDO).** All 140 dumped rows were replayed through a standalone `bl_gwdo_run` driver.
 - The real32 build (`PREC=`, WRF's own flags) reproduces WRF **bit for bit in every output on 140/140 rows**, so the dump captures every input.
 - The real64 build (`kind_phys = real64`) agrees with the real32 in-model values to a median of 1.4e-5 and a worst case of 1.5e-3 of each field's row maximum. The worst case is `dtaux3d` at s2_j81_i76.
-  - That is single-precision amplification, not a transcription gap: the reference-level and blocking-layer searches are threshold tests on real32 inputs.
+  - The mechanism was isolated afterwards and is **not** a threshold flip: see "Where the real64 replay differs from WRF" below.
   - Tests should use the real64 replay and state that.
 
 **GWDO is active, strongly diurnal:**
@@ -122,3 +122,82 @@ The scheme switches drag off where `bnv2 < 0` or `velco < 0` below the reference
 - No `.esm` authoring, by design.
 - No real64 driver for New Tiedtke or Noah yet. The dumps carry everything a driver needs; Noah additionally needs the `VEGPARM`/`SOILPARM`/`GENPARM` tables through `SOIL_VEG_GEN_PARM`.
 - No coarser (12–30 km) run, for lack of ERA5 intermediate files.
+
+## Where the real64 replay differs from WRF, and what tolerance that supports (2026-09-22)
+
+The first pass reported that the real64 GWDO replay differs from the in-model real32 values by a median 1.4e-5 and a worst 1.5e-3 of each row maximum, and guessed "single-precision threshold tests". That guess was tested and is **wrong in its mechanism**: no threshold flips. The difference is single-precision round-off amplified by two near-cancellations, one of which sits exactly on the critical Richardson number.
+
+**Method.** `kernels/gwdo_diag_patch.py` generates a copy of `bl_gwdo.F90` that also exposes each column's branch record (`d_ldrag`, `d_kref`, `d_komax`, `d_kbomax`, `d_kblk`, `d_icrilv`, the per-level saturation flag `d_sat`, the limiter `d_dtfac`, and `d_taup`, `d_velco`, `d_usqj`, `d_fr`, `d_taub`, `d_ulow`, `d_bnv2low`). The physics is untouched: the real32 diagnostic build is bit-identical to WRF on the worst row. `kernels/gwdo_diag_driver.F90` runs it, and `gwdo_real/diag_compare.py` replays all 140 rows at both precisions.
+
+**Result: no branch flips at all.** Over 140 rows (52 500 columns of branch record and 262 500 cells of limiter state):
+
+| branch decision | real32 vs real64 disagreements |
+|---|---|
+| `ldrag` (the ELVMAX/50 m, `var`, critical-level and stability gates) | 0 |
+| `kref`, `komax`, `kbomax` (reference and blocking levels) | 0 |
+| `kblk` (flow-blocking layer) | 0 |
+| `icrilv` (critical level above the reference level) | 0 |
+| saturation hypothesis vs no wave breaking, per level | 0 |
+| limiter active vs inactive, per cell | 0 of 262 500 |
+
+So the mechanism is **(b), accumulation**, not (a) a threshold flip; and it is not (c) a transcription difference, since the real32 driver reproduces WRF bit for bit on all 140 rows.
+
+**The amplifier.** Traced on the worst cell (row `s2_j81_i76`, column 31, level 11, where the saturation branch is taken in both precisions):
+
+| step | real32 | real64 | relative difference |
+|---|---|---|---|
+| `usqj` (the Richardson number) | 0.25660196 | 0.25664472 | 1.7e-4 |
+| `2*sqrt(temc) - temc`, `temc = 2 + 1/sqrt(Ri)` | 1.2927e-2 | 1.3009e-2 | 6.3e-3 |
+| `taup(k+1)` (goes as that factor squared) | 7.3528e-3 | 7.4454e-3 | 1.2e-2 |
+| `taup(k+1) - taup(k)` (the tendency is this difference) | −4.6500e-3 | −4.5575e-3 | 2.0e-2 |
+| `dtaux3d` at the cell | −2.3632e-5 | −2.3161e-5 | 2.0e-2 (1.5e-3 of the row maximum) |
+
+Two cancellations, in series:
+1. `2*sqrt(temc) - temc` is **zero at `temc = 4`, that is at `Ri = 0.25`, which is exactly `ric`**, the value the branch test compares against. Columns that take the saturation branch marginally therefore have the smallest factor and the largest amplification. Here it turns 1.7e-4 into 6.3e-3, a factor of 37. Recorded as FORTRAN_BUGS N85.
+2. The tendency is `g*(taup(k+1) - taup(k))/del`, a difference of stresses that are within a factor of 2.6 of each other at this cell.
+
+The row-level residual tracks the first mechanism: taking each row's smallest `|2*sqrt(temc) - temc|` over the levels where the saturation test was evaluated,
+
+| rows | count | residual/amplitude, `dtaux3d` |
+|---|---|---|
+| margin < 0.05 (`Ri` within ~2 % of 0.25) | 27 | median 9.2e-5, max 1.5e-3 |
+| margin ≥ 0.05 | 19 | median 1.1e-5, max 8.7e-4 |
+
+The rank correlation between the row residual and the margin is 0.58, so the marginal-`Ri` conditioning explains much but not all of it; the rest is the second cancellation, which is present in every column.
+
+**Tolerance that the dumps support.** Two cases, and they differ by six orders of magnitude, so a test must say which reference it uses.
+
+- **Against the real64 replay** (recommended, per the CLAUDE.md rule for double-precision kernel references): the reference is exact to the `.esm` formulation, so `rel: 1e-9`. The GWDO scheme itself carries no real32 module constants of the kind noted for YSU and WSM6 in N2.
+- **Against the in-model real32 values**, measured over the 57 rows with GWDO signal, as residual / row maximum:
+
+  | field | median | p90 | max | suggested bound |
+  |---|---|---|---|---|
+  | `dtaux3d` | 5.7e-5 | 4.2e-4 | 1.5e-3 | 2e-3 of the row maximum |
+  | `dtauy3d` | 6.2e-5 | 6.3e-4 | 1.1e-3 | 2e-3 |
+  | `dusfcg` | 5.2e-6 | 5.3e-5 | 1.2e-4 | 3e-4 |
+  | `dvsfcg` | 4.6e-6 | 5.5e-5 | 1.8e-4 | 3e-4 |
+
+  Per-cell relative tolerances are not supportable at all: at a cell where the stress divergence nearly cancels, the relative difference reaches 2e-2. Normalise by the row (or column) maximum.
+
+**Rows that cannot be pinned tightly** are those with a near-critical Richardson number in the saturating levels. The eight worst, by `dtaux3d` residual / row amplitude: `s2_j81_i76` (1.5e-3, margin 1.6e-3), `s2_j61_i76` (1.3e-3, 5.3e-3), `s2_j61_i114` (1.1e-3, 3.7e-2), `s2_j141_i1` (8.7e-4), `s2_j61_i1` (6.9e-4), `s1440_j61_i1` (4.3e-4), `s2_j141_i39` (4.1e-4), `s1440_j91_i39` (3.2e-4). Rows with a comfortable margin, such as `s2_j91_i39` and `s2_j101_i39`, sit at 3.5e-7 to 1.2e-6 and can carry a much tighter bound if a test wants one.
+
+## New Tiedtke: the chem170 driver runs on these rows too (2026-09-22)
+
+No new driver was written. `ntiedtke_driver.F90` from fork branch `earthsciml-instrumented-chem170` (@ ac6d4cc) builds against this worktree unchanged; `gwdo_real/nt_adapt.py` renames this run's kernel-boundary keys (`k_pu` → `pu` and so on, plus the three sizes `im`, `kx`, `kx1`) into the flat input it expects. All 140 real-terrain rows replay (`gwdo_real/nt_compare.py`).
+
+- **Trigger decisions are precision-independent here too:** `ktype`, `kcbot` and `kctop` agree between the real32 and real64 replays in every column of every row, 0 disagreements.
+- **The real32 replay is bit-identical to WRF on 57 of 140 rows**, and on the other 83 it differs by at most 1.2e-7 of the row amplitude, i.e. float32 round-off. `cu_ntiedtke_post_run` forms the tendencies as `(xf - x) * rdelt` with `rdelt = 1/delt` precomputed, while the driver divides by `delt`; that is a one-ulp difference and it explains the size, though it was not isolated further.
+- **Precision sensitivity is about 100x GWDO's.** Over the 24 rows with convective precipitation, real64 versus in-model real32, residual / row maximum:
+
+  | field | median | p90 | max |
+  |---|---|---|---|
+  | `rthcuten` | 5.5e-4 | 4.3e-3 | 4.1e-2 |
+  | `rqvcuten` | 4.8e-4 | 4.4e-3 | 1.5e-2 |
+  | `rqccuten` | 1.8e-4 | 3.4e-3 | 1.9e-2 |
+  | `rqicuten` | 4.1e-4 | 1.7e-3 | 1.9e-2 |
+  | `rucuten` | 3.0e-4 | 1.6e-3 | 6.5e-3 |
+  | `rvcuten` | 4.3e-4 | 2.7e-3 | 1.1e-2 |
+
+  So a stage-2 New Tiedtke test on these real-terrain rows should reference the real64 replay, not the in-model values; against in-model values 5e-2 of the row maximum is the honest bound. Rows whose amplitude is dominated by a single triggered column are the loose ones.
+
+**Noah was not replayed on these rows.** The chem170 `noah_driver` reads the Noah parameter tables from the dump (`tbl_*`, as `REDPRM` uses them), and this run's `SFLX` dump does not carry them; its inout state also uses `_in` suffixes. Reusing it here needs that branch's table-dump hook added to this branch's wrapper and the run repeated (about 25 min of build plus run), not a naming adapter. Left for whoever authors the Noah component, who has the chem170 SCM dumps already.
