@@ -471,6 +471,56 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       urban and `opt_thcnd = 2` branches. The reference set is above freezing
       and snow-free, so those branches are UNTESTED, not merely unused -- a
       consumer must not mount these components where they matter.
+
+1.4d Noah stage 2, second tranche (done 2026-09-22). Two more components, on
+    the same reference data; no new WRF run and no new ESD rule.
+
+    - `soil_veg_parameters.esm` -- SUBROUTINE REDPRM: the SOILPARM (STAS, 19),
+      VEGPARM (USGS, 27) and GENPARM lookups, the derived kdt/frzfact/frzx, and
+      the four quantities selected by greenness (xlai, embrd, z0brd, alb).
+      Each lookup is `interp.linear` on a constant table with an integer axis,
+      the anderson13_fuel_table pattern. **48/48 BIT-EXACT at zero tolerance.**
+      Seven soil types are checked against the REAL-TERRAIN run, a different
+      executable and a different land-use table, which makes the soil half an
+      independent end-to-end check rather than a transcription check. The
+      vegetation half cannot be: that run uses the 20-category MODIS table
+      (isurban = 13), so a MODIS run must not mount this component.
+    - `soil_moisture.esm` -- SMFLX/SRT/WDFCND as Richards' equation,
+      d(theta)/dt = d/dz( D d(theta)/dz - K ) - S, with Clapp-Hornberger
+      closures. **176/176.**
+    - **No new ESD rule was needed, and the reason is worth recording.** The
+      gravity drainage K(theta) looks like it needs a new advective-flux rule,
+      but WRF evaluates it UPWIND, at the layer above each interface, so from
+      the operator's point of view it is a PRESCRIBED interface flux and drops
+      into the F slot of the SAME `varcoeff_face_flux_laplacian_lev` the heat
+      equation uses. A scheme that averaged K across the face would not fit and
+      would have needed a stacked ESD PR.
+    - **The infiltration limiter has a clean dt -> 0 limit that the Fortran
+      hides.** WRF writes infmax = px (ddt/(px + ddt))/dt with px and ddt both
+      proportional to dt; the limit is pcpdrp r/(pcpdrp + r) with
+      r = dd kdt/86400, and dd is a column integral of the storage deficit.
+    - **Dew is routed like rain** and is easy to miss: on the etp < 0 branch
+      NOPAC adds the dew to the precipitation BEFORE the canopy/throughfall
+      split, so a dew step has a positive canopy tendency with no rain at all.
+      Leaving it out left exactly that term unexplained.
+    - **The two-reference-dt discipline needed a third value, for a new
+      reason.** The infiltration terms cannot use an arbitrarily small step:
+      WRF reaches the limit through 1 - exp(-kdt dt/86400), which loses digits
+      to cancellation as dt falls, so the replay's accuracy is a V in dt with
+      its minimum near 1e-4 s (FORTRAN_BUGS N92). drip has the opposite
+      problem -- it is formed as (cmc + dt rhsct) - cmcmax and is destroyed by
+      cancellation at 1e-6 s -- so it is referenced at 1e-2 s. Tendencies stay
+      at 1e-2 s and the surface energy closure at 1e-6 s as before.
+    - **FORTRAN_BUGS N91**: FAC2MIT selects a branch by exact floating-point
+      equality against decimal literals, so a real64 build silently takes a
+      different threshold from WRF's real32 build. Inert here (the wettest
+      column is well below both thresholds) but not in general.
+    - **Still to do after this tranche:** the frozen-soil sink, the snow pack,
+      SSTEP's supersaturation redistribution (a post-step projection, reported
+      as the indicator `supersaturation_active`), the SMFLX predictor-corrector
+      (a finite-dt device whose two branches share the instantaneous
+      right-hand side), and the urban and `opt_thcnd = 2` branches. A
+      cold-season reference run is being produced separately for the first two.
     - **Kernel replays.** New real64 drivers `kernels/{ntiedtke,noah}_driver`.
       Noah agrees with WRF to real32 round-off. Tiedtke's in-model `rthcuten`
       is cancellation-limited at ~3e-7 K/s (N84), so the real64 replay is the
