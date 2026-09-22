@@ -489,6 +489,14 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       does not affect stage-1/stage-2 component references; it does mean a
       stage-3 EqWeather comparison must use the `chem_opt = 0`/`1` trajectory
       (bitwise identical to each other) or mount that scattering term.
+      **Decided 2026-09-22 (user): stage-3 EqWeather references the
+      `chem_opt = 0` trajectory.** The chemistry run is then a reference for
+      chemistry components and for a future aerosol-coupled EqAtmChem
+      assembly, never for a weather-only comparison. Mounting the Dudhia
+      aerosol scattering term is deferred until MOSAIC exists in .esm; when
+      it does, it is the coupling edge that lets a coupled model reproduce
+      this run, and it belongs in `couplings/lib/` beside the other pairwise
+      libraries.
     - **Emissions, wet scavenging, cloud chemistry and convective tracer
       transport stay off** (the last has no New Tiedtke path in WRF-Chem), so
       they remain stage-1 gaps, as they were for RADM2.
