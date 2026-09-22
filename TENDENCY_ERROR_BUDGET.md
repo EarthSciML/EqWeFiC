@@ -153,15 +153,84 @@ measured 4.318e-05 K/s, 91 % of it. **So the vapour and heating residuals of the
 microphysics are the operator split, in full, and are not an error in the scheme.**
 
 **4. `mp_dqi_dt` is the one that is not explained this way**, because the ice tendency
-also carries the fallout stage, and there the ESM and WRF use different discretisations
-of the same flux: the document's `mp_sed_dqi_dt` has column maximum **5.304e-08** kg/kg/s
-against WRF's own fallout increment **3.637e-08** at dtcld = 60 s (**3.4935e-08** as
-dtcld -> 0), a factor of 1.46-1.52. That is donor-cell against `nislfv_rain_plm`, the gap
-`sedimentation.esm` already documents about itself, and it is deliberately out of scope
-here. Note what the earlier note in this project got wrong about it: it compared the
-ESM's 5.30e-08 sedimentation tendency against WRF's *whole* ice tendency 2.17e-08 and
-called the ratio 2.4; the like-for-like ratio is 1.46, and WRF's fallout is the
-converging stage, not the divergent one.
+also carries the fallout stage. See the next section: that part is a real discretisation
+difference, measured like-for-like.
+
+## WSM6 ice sedimentation: the like-for-like comparison (2026-09-22)
+
+**Why it had to be redone.** The earlier numbers (5.304e-08 against 3.4935e-08) came from
+two different computations, and the component's own 65/65 was being taken as evidence
+that sedimentation was right. It is not evidence for ICE: `sedimentation.esm`'s own
+cirrus test says *"Cloud-ice fluxes have no kernel counterpart above the surface (fallc
+is dumped only at k = 1), so F_i and dqi_dt are checked against the same formulae
+evaluated by the filler on the input state -- a wiring check, not an independent
+reference."* The rain/snow/graupel fluxes ARE checked against the kernel's `fall`
+arrays, and that comparison is sound, but in this column those species are identically
+zero. So before today no one had compared the model's ice fallout with WRF's.
+
+**The comparison.** One scratch copy of `couplings/eqweather_scm.esm` carrying only the
+step-60 cirrus test, with `mp_sed_dqi_dt` -- the document's own ice sedimentation
+tendency, evaluated by the coupled model at that state -- asserted at zero tolerance
+against WRF's ice fallout tendency on the SAME column, the SAME 59 levels, the SAME
+quantity (kg kg⁻¹ s⁻¹): `(qi_rates - qi_in)/dtcld` from the real64 `kernels/wsm6_driver`
+replay of `scm_ref_120` at dtcld = 0.01 s. `qi_rates` is the state after the fallout and
+melting/freezing block and before the process rates; nothing melts or freezes in this
+column, so it is the fallout alone. That reference is converged: levels 50-57 are
+identical to five significant figures at dtcld = 0.01, 0.02 and 0.04 s.
+
+| level | model (donor-cell) | WRF, dtcld -> 0 | ratio |
+|---|---|---|---|
+| 50 | 3.567e-09 | 1.721e-09 | 2.07 |
+| 51 | 5.304e-08 | 3.493e-08 | 1.52 |
+| 52 | 7.335e-09 | 2.775e-08 | 0.26 |
+| 53 | -2.918e-08 | -1.751e-08 | 1.67 |
+| 54 | -1.835e-08 | -2.352e-08 | 0.78 |
+| 55 | -8.916e-09 | -1.292e-08 | 0.69 |
+| 56 | -2.606e-09 | -4.606e-09 | 0.57 |
+| 57 | -6.679e-10 | -1.551e-09 | 0.43 |
+| 58 | 0 | -1.884e-10 | (see B16) |
+
+**Linf difference 2.041e-08 against a WRF peak of 3.493e-08: 58 %.** The ratio runs from
+0.26 to 2.07, so it is not a constant factor and not a wiring error, and the disagreement
+survives. The model's column is what it says it is: recomputing the donor-cell divergence
+in float64 from WRF's own dumped `den`, `qi`, `delz` and WRF's own fall-speed formula
+(`xni` agreeing with the dump to 1e-7) gives 5.3045e-08 at level 51, against the model's
+5.3037e-08.
+
+**What WRF's fallout is, measured.** `nislfv_rain_plm` is a forward semi-Lagrangian remap,
+and its dt -> 0 limit is a second-order flux divergence with two ingredients donor-cell
+lacks. Transcribing both in float64 on the same state reproduces WRF at every level from
+50 to 57 **to five significant figures** (Linf 1.88e-10, 0.5 % of the peak, and all of it
+at level 58 -- FORTRAN_BUGS B16):
+
+- a THIRD-ORDER interface fall speed, `wi(k) = 9/16(ww(k)+ww(k-1)) - 1/16(ww(k+1)+ww(k-2))`,
+  on its own closing 37 % of the gap (Linf difference 58.6 % -> 37.2 %);
+- a monotone piecewise-linear donor-face value whose slope is the AVERAGE of the two
+  one-sided differences, zeroed at extrema and reset if either face value goes negative,
+  which closes the rest. A textbook minmod PLM does NOT do it: 31.6 % remains.
+
+The exact formulae are FORTRAN_BUGS **N77**. B16 is what this found on the way: the
+routine deletes the whole content of the topmost ice layers every sub-step,
+4.7542e-10 kg m⁻² at dtcld = 0.01, 0.02 and 0.04 alike, and none of it reaches the
+surface (`fallc(1) = 0`).
+
+**So the ESD rule IS warranted, and this is what it would have to be** (not authored):
+a new rule on the same face-flux structure as `sedimentation_upwind1_flux_D_lev`, i.e.
+lowering `-D(W m, lev)` for a layer-centred fall velocity W and mass density m, with the
+face flux `F(k) = w_face(k) m_face(k)` instead of `W(k) m(k)`:
+
+1. `w_face` by N77's third-order interpolation, with its end-face cases
+   (`wi(1) = ww(1)`, `wi(2) = (ww(2)+ww(1))/2`, `wi(N) = (ww(N)+ww(N-1))/2`,
+   `wi(N+1) = ww(N)`) and the "top of group" override `if ww(k) == 0 then wi(k) = ww(k-1)`;
+2. `m_face` = the donor cell's bottom-face value of N77's reconstruction, with slopes
+   formed over the NON-UNIFORM layer thicknesses (`dz(k-1)+dz(k)` and `dz(k)+dz(k+1)`
+   denominators), which the column grid already supplies;
+3. `F(N+1) = 0` at the lid, divergence over `dz(k)` as now.
+
+It is a five-point stencil in velocity and a three-point one in mass, and it is
+non-smooth (the extremum switch and the positivity reset). The finite-dt `decfl > 0.05`
+velocity clamp is NOT part of the dt -> 0 operator and should be left out. A generic PLM
+or PPM limiter from the literature would not reproduce WRF, as the minmod trial shows.
 
 **Consequence for the three `mp_*` assertions.** They keep WRF's dt = 60 s increment as
 their reference, because no dt -> 0 reference exists for a scheme containing `pigen`, and
@@ -202,8 +271,9 @@ in a horizontally homogeneous single column. `drw_w_damp` is also identically ze
 not an omission: `cu_physics = 0`, `SHCU_PHYSICS = 0`, `GWD_OPT = 0` (see the namelist
 section above).
 
-**WSM6 sedimentation is a discretisation difference, not an error.** See the WSM6 section:
-1.46x against WRF's own fallout stage, donor-cell against `nislfv_rain_plm`.
+**WSM6 sedimentation is a discretisation difference, not an error in the transcription** --
+but it IS a difference from WRF, 58 % Linf like-for-like, and the rule that closes it is
+specified above.
 
 ## So the actual state of the column
 
@@ -222,11 +292,23 @@ stable. The exceptions are named, measured and attributed:
 
 ## Next actions implied
 
-1. **A PLM-equivalent sedimentation flux rule in EarthSciDiscretizations**, or a reference
-   built from WRF's own stage increments, is the only remaining way to make `mp_dqi_dt`
-   non-vacuous. Everything needed to specify it is measured above.
-2. `dw_dt`'s tolerance is set by WRF's real32 arithmetic, not by the model. A float64
-   reference for p' would be needed to tighten it; N67 says what it would take.
+1. **The sedimentation flux rule specified above** (N77's interface velocity and
+   face reconstruction) in EarthSciDiscretizations. It is the only thing that makes
+   `mp_dqi_dt` non-vacuous, and the only known place where the SCM's tendencies differ
+   from WRF's dt -> 0 operator for a reason on the model side.
+2. `dw_dt`'s tolerance is set by WRF's real32 STATE, not by the model or by arithmetic,
+   and a real64 kernel replay does not escape it: `pg_buoy_w` takes p' as an input, and
+   replaying it in real64 on the dumped p' reproduces WRF (that is what
+   `vertical_momentum.esm` already asserts, at abs 5e-8 at steps 60, 900 and 1410);
+   replaying `calc_p_rho_phi` in real64 on the dumped state reproduces the MODEL's own p',
+   so comparing against it is circular. N70 shows the reference w tendency at step 1410
+   is almost entirely the real32 column's departure from hydrostatic balance (4.23e-4 ->
+   3.3e-11 on the balanced state). The measured chain closes: the coupled `p_p` residual
+   is 1.571e-2 Pa, inside N67's 1.2-1.6e-2 Pa band, and `dw_dt`'s is 3.04e-4, N67's
+   "up to 3.0e-4". Only a double-precision WRF MODEL run would help, and that changes the
+   reference for every assertion in the repo. The physics is already pinned three ways:
+   `dw_dt_nonpg` (abs 2-3e-10), `vertical_momentum.esm` (abs 5e-8), and
+   `eqweather_scm_dynamics.esm`'s hydrostatic-balance test (abs 1e-10).
 3. The four regimes are all from the same 59-hour em_scm_xy run and the same sounding. A
    genuinely different column (the em_quarter_ss supercell, already used by
    `microphysics_column*.esm` and `cal_cldfra`) would test what a diurnal cycle cannot.
