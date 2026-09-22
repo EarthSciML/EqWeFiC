@@ -375,6 +375,23 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     and the full SCM physics-suite assembly done 2026-09-07 (both below); the
     full-physics-sum assembly WITH microphysics in one document is blocked, not
     outstanding work — gap (m) below.
+1.4a GWDO reference run on real terrain (done 2026-09-22; details in
+    `data/eqwefic/notes/gwdo_real_reference_run.md`). GWDO does nothing on the
+    idealized SCM column, which has no sub-grid orography.
+    - **Run.** A real-data run supplies the reference: d01 of the Last Chance
+      Gulch WPS domain (8.1 km, 150 × 180 × 51, Colorado Rockies), 18 h from
+      2012-06-25 12Z, with `gwd_opt = 1`, `cu_physics = 16` and
+      `sf_surface_physics = 2` over the EqWeather suite. It uses a dmpar build
+      of WRF fork branch `earthsciml-instrumented-gwdo` (790bb4f).
+    - **Dumps.** New positional dump selection by step and global row/column
+      produced 140 GWDO rows, 140 New Tiedtke rows and 210 Noah `SFLX` points.
+    - **Kernel replay.** A real32 replay of `bl_gwdo_run` reproduces WRF bit for
+      bit on all 140 rows; the real64 driver is `kernels/gwdo_driver`.
+    - **`ELVMAX`.** WRF 4.8's GWDO needs it, and WPS 4.3 does not write it.
+      Without it the scheme is silently off everywhere (FORTRAN_BUGS B17). It
+      was supplied by WPS `util/compute_gwdo.py`.
+    - **Coarser grid.** A 12–30 km run needs fresh ERA5 intermediate files.
+      It would add regimes, not code paths.
 1.5 Stubs live on this repo's `main` under `components/<domain>/…` mirroring
     the EarthSciModels layout. They are *not* opened as EarthSciModels PRs
     until their tests pass (finding 9).
