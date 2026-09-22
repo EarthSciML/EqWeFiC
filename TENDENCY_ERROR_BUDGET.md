@@ -4,7 +4,8 @@
 day** after the changes this file asked for were made. EarthSciAST `main` at
 `be1fafe6d` (`./esm` built 2026-09-21; carries #439 and #440), `ESD_ROOT` = the pinned
 `EarthSciDiscretizations-column` worktree at `f80069a`. **The WSM6 sedimentation rows were re-measured 2026-09-22 after ESD PR #42 was
-mounted**, with `ESD_ROOT` = `EarthSciDiscretizations-integ` at `f15d4c0` (see the section "Mounted" below).
+mounted**, with `ESD_ROOT` = `EarthSciDiscretizations-integ` at `f15d4c0`, and the ice rows again the same day at `a4540d5`,
+after #42 gained its upwind switch (see the section "Mounted" below).
 
 ## Why this document exists
 
@@ -279,24 +280,31 @@ the tests' kernel-derived flux references; the top two layers take the rule's va
 `nislfv_rain_plm6` is the same operator per species (checked by diff). Zero-tolerance
 residuals, the component against WRF, as a fraction of each column's maximum:
 
-| test | rain | snow | graupel | ice | donor-cell was off by |
+| test | rain | snow | graupel | ice, #42 as opened -> with the upwind switch | donor-cell was off by |
 |---|---|---|---|---|---|
-| supercell step 250, col 24 (mature) | 8.8e-8 | 1.1e-7 | 1.1e-7 | 1.1e-6 | 36-45 % |
-| supercell step 250, col 25 (graupel) | 8.8e-8 | 1.1e-7 | 1.1e-7 | 2.7e-7 | 39-51 % |
-| supercell step 200, col 20 (early) | 1.1e-7 | 1.3e-7 | 1.3e-7 | 5.6e-6 | 16-112 % |
-| SCM cirrus, layers 20-59 | 0 | 0 | 0 | 5.9e-6 | 59 % |
+| supercell step 250, col 24 (mature) | 8.8e-8 | 1.1e-7 | 1.1e-7 | 1.1e-6 -> **2.3e-7** | 36-45 % |
+| supercell step 250, col 25 (graupel) | 8.8e-8 | 1.1e-7 | 1.1e-7 | 2.7e-7 -> **2.7e-7** | 39-51 % |
+| supercell step 200, col 20 (early) | 1.1e-7 | 1.3e-7 | 1.3e-7 | 5.6e-6 -> **4.6e-8** | 16-112 % |
+| SCM cirrus, layers 20-59 | 0 | 0 | 0 | 5.9e-6 -> **4.4e-8** | 59 % |
 
 Rain, snow and graupel sit at the real32 floor the flux assertions already had, and keep
 1e-6 of the column maximum. The cirrus reference also agrees with the whole-kernel
 Richardson extrapolation to 4.5e-7 of the peak.
 
-**3. Ice is 50x worse than the rest, and the cause is a branch #42 does not carry.** The
-third-order interface speed overshoots below zero at the edge of an ice layer (3-12 faces per
-column here). There WRF's remap draws the mass crossing the face from the TOP face value of
-the layer BELOW. The rule always takes the bottom face of the layer above. Adding that switch
-to the Python transcription takes the ice gap from 5.6e-7..6.4e-6 to 1.0e-8..3.9e-8. It is
-recorded as FORTRAN_BUGS N77(3). The ice tendency assertions carry 3e-5 of the column
-maximum until #42 adds the switch. **That is a correction owed to #42, not a property of WRF.**
+**3. Ice needed a branch #42 did not carry at first; it has it now.** The third-order
+interface speed overshoots below zero at the edge of an ice layer (3-12 faces per column
+here). There WRF's remap draws the mass crossing the face from the TOP face value of the
+layer BELOW; #42 as opened always took the bottom face of the layer above, and ice was 50x
+worse than the other species (the left-hand ice figures above; tolerance 3e-5). The switch
+was added to #42 on 2026-09-22 (ESD `14b5db5`, new stencil
+`sedimentation_jh2010_face_flux`; `-integ` moved to `a4540d5`). It takes a new synthetic
+column with two upward faces from 5.2e-4 to 4.4e-10 against WRF and leaves the other five
+byte-identical. **The ice assertions now carry the same 1e-6 of the column maximum as rain,
+snow and graupel**, and #42 as opened fails three of the four. The remaining ice residual
+(2.3e-7 and 2.7e-7 on the two storm columns) is not the operator: driven with the kernel's
+own fall speeds it matches WRF to 1.1e-8..4.3e-8 in all four columns. It is the component's
+ice fall flux `F_i`, which differs from the kernel's by 4e-8..6e-8 of its peak (the
+real32 floor the flux assertions already carry), amplified by the divergence at a layer edge.
 
 **In the coupled document** (4 regimes, zero tolerance, donor-cell -> jh2010; nothing else moved):
 
@@ -306,6 +314,12 @@ maximum until #42 adds the switch. **That is a correction owed to #42, not a pro
 | step 60 `mp_dqi_dt` | 2.81e-8 | **1.01e-8** | 2.17e-8 | 1e-7 -> **abs 2e-8** |
 | step 900 `mp_dqi_dt` | 3.34e-12 | 1.34e-12 | 1.24e-12 | 2e-11 (unchanged) |
 | step 300 `mp_dqi_dt` | 7.75e-10 | 1.17e-9 | 8.20e-11 | 5e-9 (unchanged) |
+
+**Re-measured after #42's upwind switch (`-integ` at `a4540d5`): every row above is
+bit-identical** (`mp_sed_dqi_dt` 7.7088e-11, step-60 `mp_dqi_dt` 1.00936e-8, step-300
+1.17069e-9, step-900 1.3351e-12, `mp_rate_dqi_dt` 2.15426e-8). The switch moves this
+column's ice fallout by ~2e-13 below the top two layers, and the 7.7e-11 residual is
+B16's top-two-layer mass, so no coupled tolerance can be tightened on its account.
 
 `mp_sed_dqi_dt` used to be a magnitude record against zero. It is now a comparison against
 WRF's converged ice fallout (the kernel extrapolation above, with the rule's value in the top
@@ -377,10 +391,9 @@ stable. The exceptions are named, measured and attributed:
 
 ## Next actions implied
 
-1. **DONE 2026-09-22: the sedimentation flux rule** (ESD PR #42), mounted. One
-   follow-up remains on #42 itself: the upwind switch at a negative interface speed
-   (FORTRAN_BUGS N77(3)), which would take the ice tendency tolerances from 3e-5 to
-   1e-6 of the column maximum.
+1. **DONE 2026-09-22: the sedimentation flux rule** (ESD PR #42), mounted, including
+   the upwind switch at a negative interface speed (FORTRAN_BUGS N77(3), ESD `14b5db5`),
+   which took the ice tendency tolerances from 3e-5 to 1e-6 of the column maximum.
 2. `dw_dt`'s tolerance is set by WRF's real32 STATE, not by the model or by arithmetic,
    and a real64 kernel replay does not escape it: `pg_buoy_w` takes p' as an input, and
    replaying it in real64 on the dumped p' reproduces WRF (that is what
