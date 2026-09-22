@@ -2,7 +2,7 @@
  "esm": "1.1.0",
  "metadata": {
   "name": "FireWindHinterpWRFFire",
-  "description": "The horizontal atmosphere-to-fire mapping of NCAR fire_behavior (share/interp_mod.F90 Interp_horizontal_bilinear, reached through io/coupling_mod.F90 Interp_horizontal and io/wrfdata_mod.F90 Interp_var2grid at hinterp_opt = 2, the default): the mid-flame winds that Calc_fire_wind produces PER ATMOSPHERE COLUMN are interpolated bilinearly onto the fire mesh, with nearest-neighbour extrapolation outside the atmosphere extent. The interpolation itself is the EarthSciDiscretizations regridding entry regridding/cartesian_bilinear_regrid (method:bilinear); this component supplies the geometry and the fields. WHY IT HAD TO EXIST. FireWindWRFFire is verified at rel 1e-5 but could not be MOUNTED in couplings/wildlandfire_behavior.esm, because its output lives on the atmosphere grid and the fire cell the coupled document is built on needs a fire-mesh value. The two are not the same number and no index mapping makes them so: the 80 x 80 fire mesh of test7 carries 5593 distinct uf values against 361 atmosphere columns, and the nearest column to fire cell (18, 64) differs from it by 2.2e-3 m/s, about 200 times that component's tolerance. This component is the missing link. THE FRACTIONAL COORDINATES ARE GEOMETRY, NOT A REFINEMENT RATIO, and that is the substantive finding here. The fire mesh is built by subdividing the atmosphere grid, so one expects the fractional source coordinate of fire cell i to be affine, i_real = (i - 1/2)/sr + 1/2. It is not: the mapping is proj%Calc_ij, the inverse Lambert conformal projection applied to each fire cell's latitude and longitude, and the projection's curvature over this small domain already breaks affineness. MEASURED on test7 step 20: with the dumped i_real/j_real the bilinear reproduces the Fortran to 1.08e-7 absolute, 1.2e-7 relative; with the best least-squares AFFINE fit to those same coordinates it is 1.07e-3, and with the textbook sr map 1.19e-3 -- both about 120 times the rel 1e-5 this component is held to. So i_real and j_real are consumer-supplied geometry, exactly as the column components take heights and pressures rather than deriving them, and sr_x/sr_y appear nowhere. A consumer that wants them from first principles composes EarthSciDiscretizations reprojection/lambert_conformal with the fire mesh's latitudes and longitudes; they are time-invariant, so in practice they are read once from geo_em. Reference: fire_behavior test7 standalone at step 20, real32, rel 1e-5, from the `hinterp` dump hook added in fork ctessum-claude/fire_behavior. COUPLING HOOKS: `i_coupled`/`j_coupled` with `u_src_in`/`v_src_in` replace ONE atmosphere column's wind with a coupling target, so a mounted FireWindWRFFire can drive it (0 disables, so a standalone run is unchanged); and `uf_cell`/`vf_cell` expose the interpolated wind at fire cell (`i_cell`, `j_cell`) as scalars, which is what a per-cell consumer such as ROSWRFFire needs.",
+  "description": "The horizontal atmosphere-to-fire mapping of NCAR fire_behavior (share/interp_mod.F90 Interp_horizontal_bilinear, reached through io/coupling_mod.F90 Interp_horizontal and io/wrfdata_mod.F90 Interp_var2grid at hinterp_opt = 2, the default): the mid-flame winds that Calc_fire_wind produces PER ATMOSPHERE COLUMN are interpolated bilinearly onto the fire mesh, with nearest-neighbour extrapolation outside the atmosphere extent. The interpolation itself is the EarthSciAST closed function interp.bilinear, called in SOURCE-INDEX space: the axes are the atmosphere grid's own index axes 1..GX_SRC and 1..GY_SRC (uniform integers, built from the index sets so the component follows its metaparameters), and every bit of projection curvature lives in the per-cell target coordinates i_real and j_real. WHY interp.bilinear AND NOT A REGRIDDING RULE, so nobody re-derives one: a hand-rolled EarthSciDiscretizations entry (regridding/cartesian_bilinear_regrid, method:bilinear, with _base/_offset/_apply stage templates) was written first and then withdrawn, because the engine primitive turned out to be the SAME FUNCTION. Measured, not assumed: the two agree to within 1e-15 at every one of the 6400 fire cells for both wind components; against the Fortran both give the identical full-field residuals uf 1.084e-7 and vf 4.353e-7; and at the two clamped corners both return the edge value exactly. interp.bilinear's documented clamp clamps the COORDINATE to the axis range, which for a bilinear interpolant yields exactly the edge value -- the same thing Fortran's clamp of the base index and the fractional offset does. It accepts a non-constant table, which the coupling hook below needs, and it vectorises inside an aggregate over the target grid with per-cell scalar coordinates. Nothing about the fire case needed a library entry; the only thing a rule would have added is an obligation to maintain a conformance fixture for a duplicate of an engine primitive. WHY IT HAD TO EXIST. FireWindWRFFire is verified at rel 1e-5 but could not be MOUNTED in couplings/wildlandfire_behavior.esm, because its output lives on the atmosphere grid and the fire cell the coupled document is built on needs a fire-mesh value. The two are not the same number and no index mapping makes them so: the 80 x 80 fire mesh of test7 carries 5593 distinct uf values against 361 atmosphere columns, and the nearest column to fire cell (18, 64) differs from it by 2.2e-3 m/s, about 200 times that component's tolerance. This component is the missing link. THE FRACTIONAL COORDINATES ARE GEOMETRY, NOT A REFINEMENT RATIO, and that is the substantive finding here. The fire mesh is built by subdividing the atmosphere grid, so one expects the fractional source coordinate of fire cell i to be affine, i_real = (i - 1/2)/sr + 1/2. It is not: the mapping is proj%Calc_ij, the inverse Lambert conformal projection applied to each fire cell's latitude and longitude, and the projection's curvature over this small domain already breaks affineness. MEASURED on test7 step 20: with the dumped i_real/j_real the bilinear reproduces the Fortran to 1.08e-7 absolute, 1.2e-7 relative; with the best least-squares AFFINE fit to those same coordinates it is 1.07e-3, and with the textbook sr map 1.19e-3 -- both about 120 times the rel 1e-5 this component is held to. So i_real and j_real are consumer-supplied geometry, exactly as the column components take heights and pressures rather than deriving them, and sr_x/sr_y appear nowhere. A consumer that wants them from first principles composes EarthSciDiscretizations reprojection/lambert_conformal with the fire mesh's latitudes and longitudes; they are time-invariant, so in practice they are read once from geo_em. Reference: fire_behavior test7 standalone at step 20, real32, rel 1e-5, from the `hinterp` dump hook added in fork ctessum-claude/fire_behavior@22d426e. COUPLING HOOKS: `i_coupled`/`j_coupled` with `u_src_in`/`v_src_in` replace ONE atmosphere column's wind with a coupling target, so a mounted FireWindWRFFire can drive it (0 disables, so a standalone run is unchanged); and `uf_cell`/`vf_cell` expose the interpolated wind at fire cell (`i_cell`, `j_cell`) as scalars, which is what a per-cell consumer such as ROSWRFFire needs.",
   "license": "MIT",
   "tags": [
    "wildland_fire",
@@ -46,13 +46,6 @@
      "bindings": {
       "NX": "NX",
       "NY": "NY"
-     }
-    },
-    {
-     "ref": "${ESD_ROOT}/regridding/cartesian_bilinear_regrid.esm",
-     "bindings": {
-      "GX_SRC": "GX_SRC",
-      "GY_SRC": "GY_SRC"
      }
     }
    ],
@@ -126,42 +119,6 @@
       "y"
      ],
      "description": "GEOMETRY, consumer-supplied through `input_j_real`: the fractional atmosphere-grid coordinate along the second axis."
-    },
-    "i0": {
-     "type": "unknown",
-     "units": "1",
-     "shape": [
-      "x",
-      "y"
-     ],
-     "description": "Clamped lower atmosphere-cell index containing each fire cell, max(1, min(GX_SRC - 1, floor(i_real)))."
-    },
-    "j0": {
-     "type": "unknown",
-     "units": "1",
-     "shape": [
-      "x",
-      "y"
-     ],
-     "description": "Clamped lower atmosphere-cell index along the second axis."
-    },
-    "di": {
-     "type": "unknown",
-     "units": "1",
-     "shape": [
-      "x",
-      "y"
-     ],
-     "description": "Clamped fractional offset within that cell, max(0, min(1, i_real - i0)). Saturates at 0 or 1 outside the atmosphere extent, which is the nearest-neighbour extrapolation."
-    },
-    "dj": {
-     "type": "unknown",
-     "units": "1",
-     "shape": [
-      "x",
-      "y"
-     ],
-     "description": "Clamped fractional offset along the second axis."
     },
     "uf": {
      "type": "unknown",
@@ -244,6 +201,22 @@
      "type": "unknown",
      "units": "m/s",
      "description": "Interpolated v wind at that fire cell."
+    },
+    "src_axis_x": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "src_x"
+     ],
+     "description": "The atmosphere grid's own index axis along x, 1, 2, ..., GX_SRC -- uniform integers, because the interpolation works in SOURCE-INDEX space. It is built from the index set rather than written as a constant so the component follows the GX_SRC metaparameter."
+    },
+    "src_axis_y": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "src_y"
+     ],
+     "description": "The atmosphere grid's own index axis along y, 1, 2, ..., GY_SRC -- uniform integers, because the interpolation works in SOURCE-INDEX space. It is built from the index set rather than written as a constant so the component follows the GY_SRC metaparameter."
     }
    },
    "equations": [
@@ -279,6 +252,38 @@
      "rhs": {
       "op": "input_v_src",
       "args": []
+     }
+    },
+    {
+     "lhs": "src_axis_y",
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "k"
+      ],
+      "ranges": {
+       "k": {
+        "from": "src_y"
+       }
+      },
+      "expr": "k"
+     }
+    },
+    {
+     "lhs": "src_axis_x",
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "k"
+      ],
+      "ranges": {
+       "k": {
+        "from": "src_x"
+       }
+      },
+      "expr": "k"
      }
     },
     {
@@ -416,168 +421,14 @@
      }
     },
     {
-     "lhs": "i0",
-     "rhs": {
-      "op": "faq",
-      "args": [],
-      "output_idx": [
-       "a",
-       "b"
-      ],
-      "ranges": {
-       "a": {
-        "from": "x"
-       },
-       "b": {
-        "from": "y"
-       }
-      },
-      "expr": {
-       "op": "apply_expression_template",
-       "args": [],
-       "name": "cartesian_bilinear_regrid_base",
-       "bindings": {
-        "ireal": {
-         "op": "index",
-         "args": [
-          "i_real",
-          "a",
-          "b"
-         ]
-        },
-        "N": "GX_SRC"
-       }
-      }
-     }
-    },
-    {
-     "lhs": "j0",
-     "rhs": {
-      "op": "faq",
-      "args": [],
-      "output_idx": [
-       "a",
-       "b"
-      ],
-      "ranges": {
-       "a": {
-        "from": "x"
-       },
-       "b": {
-        "from": "y"
-       }
-      },
-      "expr": {
-       "op": "apply_expression_template",
-       "args": [],
-       "name": "cartesian_bilinear_regrid_base",
-       "bindings": {
-        "ireal": {
-         "op": "index",
-         "args": [
-          "j_real",
-          "a",
-          "b"
-         ]
-        },
-        "N": "GY_SRC"
-       }
-      }
-     }
-    },
-    {
-     "lhs": "di",
-     "rhs": {
-      "op": "faq",
-      "args": [],
-      "output_idx": [
-       "a",
-       "b"
-      ],
-      "ranges": {
-       "a": {
-        "from": "x"
-       },
-       "b": {
-        "from": "y"
-       }
-      },
-      "expr": {
-       "op": "apply_expression_template",
-       "args": [],
-       "name": "cartesian_bilinear_regrid_offset",
-       "bindings": {
-        "ireal": {
-         "op": "index",
-         "args": [
-          "i_real",
-          "a",
-          "b"
-         ]
-        },
-        "i0": {
-         "op": "index",
-         "args": [
-          "i0",
-          "a",
-          "b"
-         ]
-        }
-       }
-      }
-     }
-    },
-    {
-     "lhs": "dj",
-     "rhs": {
-      "op": "faq",
-      "args": [],
-      "output_idx": [
-       "a",
-       "b"
-      ],
-      "ranges": {
-       "a": {
-        "from": "x"
-       },
-       "b": {
-        "from": "y"
-       }
-      },
-      "expr": {
-       "op": "apply_expression_template",
-       "args": [],
-       "name": "cartesian_bilinear_regrid_offset",
-       "bindings": {
-        "ireal": {
-         "op": "index",
-         "args": [
-          "j_real",
-          "a",
-          "b"
-         ]
-        },
-        "i0": {
-         "op": "index",
-         "args": [
-          "j0",
-          "a",
-          "b"
-         ]
-        }
-       }
-      }
-     }
-    },
-    {
      "lhs": "uf",
      "rhs": {
       "op": "faq",
-      "args": [],
       "output_idx": [
        "a",
        "b"
       ],
+      "args": [],
       "ranges": {
        "a": {
         "from": "x"
@@ -587,44 +438,29 @@
        }
       },
       "expr": {
-       "op": "apply_expression_template",
-       "args": [],
-       "name": "cartesian_bilinear_regrid_apply",
-       "bindings": {
-        "F_src": "u_src_eff",
-        "i0": {
+       "op": "fn",
+       "name": "interp.bilinear",
+       "args": [
+        "u_src_eff",
+        "src_axis_x",
+        "src_axis_y",
+        {
          "op": "index",
          "args": [
-          "i0",
+          "i_real",
           "a",
           "b"
          ]
         },
-        "j0": {
+        {
          "op": "index",
          "args": [
-          "j0",
-          "a",
-          "b"
-         ]
-        },
-        "di": {
-         "op": "index",
-         "args": [
-          "di",
-          "a",
-          "b"
-         ]
-        },
-        "dj": {
-         "op": "index",
-         "args": [
-          "dj",
+          "j_real",
           "a",
           "b"
          ]
         }
-       }
+       ]
       }
      }
     },
@@ -632,11 +468,11 @@
      "lhs": "vf",
      "rhs": {
       "op": "faq",
-      "args": [],
       "output_idx": [
        "a",
        "b"
       ],
+      "args": [],
       "ranges": {
        "a": {
         "from": "x"
@@ -646,44 +482,29 @@
        }
       },
       "expr": {
-       "op": "apply_expression_template",
-       "args": [],
-       "name": "cartesian_bilinear_regrid_apply",
-       "bindings": {
-        "F_src": "v_src_eff",
-        "i0": {
+       "op": "fn",
+       "name": "interp.bilinear",
+       "args": [
+        "v_src_eff",
+        "src_axis_x",
+        "src_axis_y",
+        {
          "op": "index",
          "args": [
-          "i0",
+          "i_real",
           "a",
           "b"
          ]
         },
-        "j0": {
+        {
          "op": "index",
          "args": [
-          "j0",
-          "a",
-          "b"
-         ]
-        },
-        "di": {
-         "op": "index",
-         "args": [
-          "di",
-          "a",
-          "b"
-         ]
-        },
-        "dj": {
-         "op": "index",
-         "args": [
-          "dj",
+          "j_real",
           "a",
           "b"
          ]
         }
-       }
+       ]
       }
      }
     },
@@ -713,7 +534,7 @@
    "tests": [
     {
      "id": "hinterp_step20",
-     "description": "The whole 80 x 80 fire mesh at step 20 of the fire_behavior test7 standalone run, from the 19 x 19 atmosphere-grid winds of the same call. Reference: the `hinterp` dump hook on Interp_horizontal_bilinear (fork ctessum-claude/fire_behavior), calls 55 (ua) and 56 (va); call 55's data_out reproduces the uf field of esm_dump_ls_tend_58 with Linf exactly 0, which is how the call indices were confirmed. Single precision: rel 1e-5 pointwise, and a whole-field Linf at abs 1e-6 -- the measured residual over all 6400 cells is 1.08e-7, so the field agreement is not a matter of the seven cells that carry pointwise assertions. THE CELLS ARE CHOSEN FOR THE BRANCHES: (18,64) is the fire-front cell couplings/wildlandfire_behavior.esm is built on and sits in the interior with di = 0.88, dj = 0.37; (17,57), (21,59), (40,40) and (20,66) are other interior cells; (1,1) and (80,80) are the two CLAMPED corners, where i_real = 0.625 < 1 and 20.39 > 19 put the target outside the atmosphere extent and the clamps on i0 and di collapse the stencil onto the edge value -- di is exactly 0 and exactly 1 there respectively, which is the nearest-neighbour extrapolation and the only part of the operator that is not bilinear.",
+     "description": "The whole 80 x 80 fire mesh at step 20 of the fire_behavior test7 standalone run, from the 19 x 19 atmosphere-grid winds of the same call. Reference: the `hinterp` dump hook on Interp_horizontal_bilinear (fork ctessum-claude/fire_behavior@22d426e), calls 55 (ua) and 56 (va); call 55's data_out reproduces the uf field of esm_dump_ls_tend_58 with Linf exactly 0, which is how the call indices were confirmed. Single precision: rel 1e-5 pointwise, and a whole-field Linf at abs 1e-6. MEASURED residuals over all 6400 cells: uf 1.084e-7, vf 4.353e-7 (1.3e-7 relative against ~3.3 m/s) -- real32 rounding in the reference, not interpolation error. (18,64) is the fire-front cell couplings/wildlandfire_behavior.esm is built on; (17,57), (21,59), (40,40) and (20,66) are other interior cells; (1,1) and (80,80) are the two CLAMPED corners, where i_real = 0.625 < 1 and 20.39 > 19 put the target outside the atmosphere extent. At those two the result is the atmosphere edge value itself and matches the Fortran EXACTLY (residual below 1e-15), because clamping produces a stored real32 number with no arithmetic on it.",
      "expression_template_imports": [
       {
        "ref": "./tests/hinterp_step20_inputs.esm"
@@ -897,180 +718,6 @@
        "expected": 3.372856616973877,
        "tolerance": {
         "rel": 1e-05
-       }
-      },
-      {
-       "variable": "i0",
-       "time": 0.0,
-       "coords": {
-        "x": 18,
-        "y": 64
-       },
-       "expected": 4.0,
-       "tolerance": {
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "j0",
-       "time": 0.0,
-       "coords": {
-        "x": 18,
-        "y": 64
-       },
-       "expected": 16.0,
-       "tolerance": {
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "i0",
-       "time": 0.0,
-       "coords": {
-        "x": 1,
-        "y": 1
-       },
-       "expected": 1.0,
-       "tolerance": {
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "j0",
-       "time": 0.0,
-       "coords": {
-        "x": 1,
-        "y": 1
-       },
-       "expected": 1.0,
-       "tolerance": {
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "i0",
-       "time": 0.0,
-       "coords": {
-        "x": 80,
-        "y": 80
-       },
-       "expected": 18.0,
-       "tolerance": {
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "j0",
-       "time": 0.0,
-       "coords": {
-        "x": 80,
-        "y": 80
-       },
-       "expected": 18.0,
-       "tolerance": {
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "i0",
-       "time": 0.0,
-       "coords": {
-        "x": 40,
-        "y": 40
-       },
-       "expected": 10.0,
-       "tolerance": {
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "j0",
-       "time": 0.0,
-       "coords": {
-        "x": 40,
-        "y": 40
-       },
-       "expected": 10.0,
-       "tolerance": {
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "di",
-       "time": 0.0,
-       "coords": {
-        "x": 18,
-        "y": 64
-       },
-       "expected": 0.882420539855957,
-       "tolerance": {
-        "rel": 1e-05,
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "dj",
-       "time": 0.0,
-       "coords": {
-        "x": 18,
-        "y": 64
-       },
-       "expected": 0.3671875,
-       "tolerance": {
-        "rel": 1e-05,
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "di",
-       "time": 0.0,
-       "coords": {
-        "x": 1,
-        "y": 1
-       },
-       "expected": 0.0,
-       "tolerance": {
-        "rel": 1e-05,
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "dj",
-       "time": 0.0,
-       "coords": {
-        "x": 1,
-        "y": 1
-       },
-       "expected": 0.0,
-       "tolerance": {
-        "rel": 1e-05,
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "di",
-       "time": 0.0,
-       "coords": {
-        "x": 80,
-        "y": 80
-       },
-       "expected": 1.0,
-       "tolerance": {
-        "rel": 1e-05,
-        "abs": 1e-09
-       }
-      },
-      {
-       "variable": "dj",
-       "time": 0.0,
-       "coords": {
-        "x": 80,
-        "y": 80
-       },
-       "expected": 1.0,
-       "tolerance": {
-        "rel": 1e-05,
-        "abs": 1e-09
        }
       },
       {
@@ -14272,6 +13919,16 @@
      ]
     }
    ]
+  }
+ },
+ "index_sets": {
+  "src_x": {
+   "kind": "interval",
+   "size": "GX_SRC"
+  },
+  "src_y": {
+   "kind": "interval",
+   "size": "GY_SRC"
   }
  }
 }
