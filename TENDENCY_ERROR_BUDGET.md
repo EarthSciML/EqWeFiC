@@ -214,7 +214,32 @@ routine deletes the whole content of the topmost ice layers every sub-step,
 4.7542e-10 kg m⁻² at dtcld = 0.01, 0.02 and 0.04 alike, and none of it reaches the
 surface (`fallc(1) = 0`).
 
-**So the ESD rule IS warranted, and this is what it would have to be** (not authored):
+**AUTHORED 2026-09-22: EarthSciDiscretizations PR #42** (`sedimentation_jh2010_flux_D_lev`,
+stacked on #36). The rule was checked against WRF's own `nislfv_rain_plm`, extracted
+verbatim and Richardson-extrapolated to dt -> 0, on five synthetic columns. The relative
+Linf differences were 2.4e-9 to 1.1e-7, against 32-278 % for donor-cell. On the WRF
+cirrus column the like-for-like numbers are:
+
+| comparison | donor-cell | this rule |
+|---|---|---|
+| component, dumped state, 40-layer window (Linf / peak) | 2.05e-8 (58.6 %) | **2.07e-13 (5.9e-6)** |
+| coupled `mp_sed_dqi_dt`, below the top two layers | 2.04e-8 (58 %) | **7.7e-11 (0.22 %)** |
+| coupled `mp_dqi_dt`, whole microphysics against WRF's dt = 60 s | 2.81e-8 | **1.01e-8** |
+
+- **Only the ice tendency distinguishes the two rules.** Swapping the rule changes exactly
+  one assertion; the flux assertions do not depend on the rule.
+- **The top two layers are excluded, and why.** `nislfv_rain_plm` empties the top two
+  layers of the column on every call (B16, re-characterised: the top two layers of the
+  column, not of the hydrometeor layer). The rule keeps them conservative.
+- **The 0.22 % left in the coupled column** is the coupled state's own geometry offset.
+- **What is left of `mp_dqi_dt` is the operator split.** 1.01e-8 is the same pidep
+  sequencing difference that makes up `mp_dqv_dt`'s 1.145e-8.
+- **Not yet tightened.** The committed document still mounts the donor-cell rule, because
+  no pinned ESD_ROOT carries #42 yet. Once it does, 1.01e-8 against a 2.17e-8 amplitude
+  allows at best `abs 2e-8` (0.92 of the amplitude). The 4x convention (4e-8) would still
+  be vacuous. Do not tighten before the rule is mounted.
+
+**So the ESD rule IS warranted, and this is what it would have to be** (as authored in #42):
 a new rule on the same face-flux structure as `sedimentation_upwind1_flux_D_lev`, i.e.
 lowering `-D(W m, lev)` for a layer-centred fall velocity W and mass density m, with the
 face flux `F(k) = w_face(k) m_face(k)` instead of `W(k) m(k)`:
