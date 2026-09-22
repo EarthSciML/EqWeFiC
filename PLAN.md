@@ -415,7 +415,7 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       + 48 h, dt = 60 s, 59 levels to 20 km, dx = 20 km, with New Tiedtke
       (`cu_physics = 16`) and Noah (`sf_surface_physics = 2`). The existing
       CASES-99 profile is stable and dry and never triggers convection.
-      WRF fork branch `earthsciml-instrumented-chem170` (ac6d4cc); the
+      WRF fork branch `earthsciml-instrumented-chem170` (eae782d); the
       unchanged `wrf-chem-build.sif` already compiles every KPP mechanism.
     - **Dumps.** 16 steps × 13 schemes (`data/eqwefic/dumps/chem170_wrf`),
       including five new hooks: `ntiedtke`, `noah`, `cbmz_kpp`, `mosaic` (the
@@ -475,6 +475,20 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       Noah agrees with WRF to real32 round-off. Tiedtke's in-model `rthcuten`
       is cancellation-limited at ~3e-7 K/s (N84), so the real64 replay is the
       reference and the in-model dump only a cross-check.
+    - **Kernel replays for the chemistry (added 2026-09-22).** `cbmz_driver`
+      reproduces the KPP CBM-Z rate coefficients and integrated step EXACTLY,
+      and supplies `Fun` — the instantaneous rates, 4x to 35x the finite-step
+      increment by day, which is what a reaction-system component must be
+      referenced against. `mosaic_drydep_driver` agrees to real32 round-off.
+      `mosaic_subproc_driver` (nucleation, coagulation) reproduces WRF bit for
+      bit in its real32 build; its real64 build is an open item, so the real64
+      reference for those two stages is still owed (FORTRAN_BUGS N87).
+    - **The chem-on / chem-off divergence is explained (N86):** Dudhia
+      shortwave adds the chem PM2.5 mass to its layer scattering whatever
+      `aer_ra_feedback` says, so this run's meteorology is aerosol-coupled. It
+      does not affect stage-1/stage-2 component references; it does mean a
+      stage-3 EqWeather comparison must use the `chem_opt = 0`/`1` trajectory
+      (bitwise identical to each other) or mount that scattering term.
     - **Emissions, wet scavenging, cloud chemistry and convective tracer
       transport stay off** (the last has no New Tiedtke path in WRF-Chem), so
       they remain stage-1 gaps, as they were for RADM2.

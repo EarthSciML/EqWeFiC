@@ -14,7 +14,7 @@ which also carries real-terrain Tiedtke and Noah dumps.
 
 | what | where |
 |---|---|
-| WRF source | fork `ctessum-claude/WRF`, branch `earthsciml-instrumented-chem170` @ `ac6d4cc` (off `earthsciml-instrumented-chem` @ cc541d4); worktree `data/eqwefic/wrf-chem170` |
+| WRF source | fork `ctessum-claude/WRF`, branch `earthsciml-instrumented-chem170` @ `eae782d` (off `earthsciml-instrumented-chem` @ cc541d4); worktree `data/eqwefic/wrf-chem170` |
 | build | `WRF_CHEM=1 WRF_KPP=1 ./compile -j 8 em_scm_xy` inside the existing `apptainer/wrf-chem-build.sif` (recipe unchanged — every KPP mechanism, `cbmz_mosaic` included, is already compiled by that build), 11–16 min per pass |
 | run directory | `data/eqwefic/chem170_scm` (sounding, soil, tables, namelist) and its `main/` (`wrfout_d01_1997-06-20_12:00:00`, logs) |
 | launcher | `data/eqwefic/chem170_scm/run.sh` (`MODE=probe` for the step-selection pass, `MODE=main` for the dumped run) |
@@ -88,7 +88,7 @@ Madronich (`photmad`) has 12 dumps, not 16: `photolysis_driver` is not called at
 four night steps (918, 1080, 2400 and 2521). The corresponding
 `cbmz_kpp` dumps have `jv = 0` throughout, so the dark chemistry is still covered.
 
-## Instrumentation (branch `earthsciml-instrumented-chem170` @ `ac6d4cc`)
+## Instrumentation (branch `earthsciml-instrumented-chem170` @ `eae782d`)
 
 Five new dump schemes, all driven by `ESM_DUMP` / `ESM_DUMP_CALLS` / `ESM_DUMP_DIR`:
 
@@ -153,21 +153,100 @@ Replay agreement against the in-model real32 dumps (all 16 steps, `replay_summar
   for `cbmz_mosaic` is so4, no3, cl, co3, nh4, na, ca, oin, oc, bc — index 9 is `oc`,
   which is zero in that mode, so the dust mode starts with no hysteresis water.
 - **N84**: the real32 cancellation in `rthcuten` described above.
-- **The chemistry changes the meteorology.** Running the identical case with
-  `chem_opt = 0` gives a bitwise-identical step 1 but diverges by step 60 (0.04 K,
-  0.17 W m⁻² in `hfx`) and by hours 2.2 K, enough to move which convection type fires.
-  `aer_ra_feedback = 0`, and the `mosaic` dumps show `moist` unchanged across the
-  aerosol driver, so it is not aerosol–radiation or water-uptake feedback; it is most
-  likely a scalar-array-dependent path in the dynamics amplified by a convecting
-  column. **Consequence for this reference set: every dumped step, including the step
-  selection, comes from the chemistry run itself**, and the physics-only probe was used
-  only to shortlist candidates (all of which were re-classified against the chemistry
-  run's own dumps).
+- **The chemistry changes the meteorology — resolved 2026-09-22, and it is legitimate
+  physics.** Running the identical case with `chem_opt = 0` is bitwise identical at step 1
+  but diverges by step 60 (0.04 K, 0.17 W m⁻² in `hfx`) and by ~2 K within hours, enough
+  to change which convection type fires. The cause is **Dudhia shortwave aerosol
+  scattering**, which `aer_ra_feedback = 0` does not switch off (FORTRAN_BUGS N86): when
+  `pm2_5_dry`/`pm2_5_water` are PRESENT — i.e. in any WRF-Chem run with an aerosol package
+  — `module_ra_sw.F:465` adds them to the layer scattering `XSCA`, and `sum_pm_driver`
+  refills them every step. See "Bisecting the divergence" below.
+
 - The run prints `Warning: refi is larger than lookup table range ... SW band 1`
   repeatedly. It comes from the optical driver, does not touch radiation at
   `aer_ra_feedback = 0`, and is not investigated here.
 - In the container, `wrf.exe` segfaults in OpenSSL cleanup *after* printing
   `SUCCESS COMPLETE WRF`; `run.sh` therefore checks the log rather than the exit code.
+
+
+
+## Kernel replays of the chemistry (2026-09-22)
+
+Four real64 drivers now exist beside the two weather ones; all are built by
+`wrf-chem170/kernels/Makefile` (`make` for real64, `make PREC= B=build32` for real32).
+
+| driver | what it replays | agreement with the in-model dump |
+|---|---|---|
+| `cbmz_driver` | the whole KPP CBM-Z interface: `Update_RCONST` from the dumped T, C_M, C_H2O and j values; `Fun` (the instantaneous production-minus-loss rates); and the Rosenbrock step | **exact (Linf = 0)** for both `RCONST` and `var_out`, at all 16 dumped steps. WRF's KPP is already double precision, so this is an independent replay of the same arithmetic rather than a precision upgrade |
+| `mosaic_drydep_driver` | `mosaic_drydep_1clm` + `aerosol_depvel_2`, extracted verbatim at build time | per-bin deposition velocities within **2.3e-7 to 1.6e-6 relative** over the 16 steps, i.e. real32 round-off |
+| `mosaic_subproc_driver` | `mosaic_newnuc_1clm` and `mosaic_coag_1clm`, WRF's own modules compiled standalone | **real32 build: bit for bit** (nucleation exactly 0; coagulation 1e-22..1e-20, the decimal round-off of the dump itself) at all tested steps. See the caveat below |
+| `ntiedtke_driver`, `noah_driver` | as before | see above |
+
+**What this buys stage 2.** CBM-Z can be pinned as tightly as the .esm evaluation allows,
+like RADM2. The MOSAIC deposition velocities support `rel 1e-5`. And the replay settles
+what the *instantaneous* rates are: at the dumped daytime steps `Fun(var_in)` reaches
+1.1e6 to 3.6e7 molec cm⁻³ s⁻¹ while the finite-step increment `(var_out - var_in)/60 s`
+reaches only 2.7e5 to 8.0e6 — a factor of 4 to 35. A reaction-system component asserting
+instantaneous rates must be referenced against `Fun`, not against the KPP step. At night
+the two agree, because the chemistry is then slow.
+
+**The MOSAIC stage increments are cancellation-limited in the dumps** (FORTRAN_BUGS N87).
+Measured as (|rsub_before| + |rsub_after|)·2⁻²⁴ / |increment| over six steps:
+coagulation has a **median of 0.04-0.09** (one to two significant digits survive) with
+worst entries at 2 (the increment is below the representable resolution); gas-particle
+transfer 5e-5 to 3e-4; nucleation 6e-8 to 1e-4. So the stage dumps cannot be used
+directly as references for coagulation.
+
+**Open item: the real64 build of `mosaic_subproc_driver` is not yet trustworthy.** Its
+real32 build reproduces WRF exactly, so the dumped state is complete and the driver's
+wiring is right, but the real64 build returns *no nucleation at all* and a different
+coagulation state. Every module variable was verified correct at the call site
+(`rsub(ktemp)`, `rsub0`, `cairclm`, `relhumclm`, `afracsubarea`, `nsubareas` and the row
+indices all print correctly immediately before the call), the symbol table shows one
+shared copy of each data module, and the behaviour is identical at -O0 and -O2 and with
+`-fdefault-double-8` added. Inside the routine the same reads come back zero or shifted.
+That points at the `-fdefault-real-8` promotion of the MOSAIC data modules rather than at
+the physics, and it must be resolved before real64 references for nucleation and
+coagulation can be produced. Until then the honest stage-2 position is: deposition and
+CBM-Z are ready, the two aerosol dynamics stages are not.
+
+## Bisecting the chem-on / chem-off divergence
+
+One binary (`wrf-chem170/main/wrf.exe`), one namelist switch at a time
+(`chem170_scm/bisect.sh`, dumps in `dumps/chem170_bisect`), comparing the New Tiedtke
+driver inputs (which carry `t3d`, `qv3d`, `qc3d`, `hfx`, `qfx`) and every other scheme's
+dump at steps 1-5:
+
+| variant | vs `chem_opt = 0` |
+|---|---|
+| `chem_opt = 1` (RADM2 through the hand-coded path, **no aerosol package**) | **bitwise identical** on every dumped field at steps 1-5 |
+| `chem_opt = 170` with gas chemistry, aerosol chemistry, photolysis, dry deposition and vertical mixing **all off** (only the aerosol initial condition present) | differs from the first radiation call onwards |
+| `chem_opt = 170` full | same, slightly larger |
+
+So it is not the chem arrays in advection, not a heap-layout or uninitialised-memory
+effect (which would not spare `chem_opt = 1`), and not compile flags (one binary).
+
+Tracing it through the dumps: the first differing quantity is Dudhia's own output at the
+model's second radiation call, with **identical inputs** (`t3d`, `qv3d`, `qc3d`, `qi3d`,
+`albedo`, `coszen` all bitwise equal) — layer scattering `xsca` 1.21x the clear-sky value
+at the surface rising to 3.11x at the model top, `sdown` differing by 17 W m⁻² and net
+surface shortwave `gsw` 13.13 -> 8.49 W m⁻². The extra scattering is the PM2.5 term in
+`XSCA`. Everything after that is the SCM responding to a different surface energy budget,
+amplified by convection.
+
+Two consequences worth stating plainly:
+
+- **It does not threaten the stage-1/stage-2 use of this run.** Every dump is a
+  self-contained kernel call: the inputs and outputs of one scheme at one step. A
+  component test replays that call and never depends on the trajectory that produced it.
+- **It does constrain stage 3.** This run's meteorology is aerosol-coupled, so an
+  EqWeather-only model cannot reproduce its trajectory. A stage-3 weather comparison must
+  either use a `chem_opt = 0`/`1` run (which are the same trajectory, as shown above) or
+  mount the Dudhia PM2.5 scattering term in the coupled model.
+- The initial aerosol is a **constant mass mixing ratio through the whole 20 km column**
+  (`mosaic_init_wrf_mixrats_opt1`, `iiprof_nsm = 1`), so there is aerosol in the
+  stratosphere and the scattering enhancement grows with height. That is an artefact of
+  the initial-condition path, not of MOSAIC.
 
 ## Cost
 
