@@ -206,3 +206,49 @@ uninitialised value — the class of mistake that cost the MOSAIC driver a day.
   `xice = 0` and these cases use a land vegetation type.
 - Melt here is driven by prescribed large-scale warm advection, which is how an SCM
   represents a warm air mass, not by resolved advection.
+
+## Per-quantity replay agreement (what stage-2 tolerances can be set from)
+
+Worst over **all 84 dumps of all four cases**, driver minus in-model dump.  `rel` is
+normalised by the maximum magnitude of the in-model field, not per cell (a per-cell
+relative bound is meaningless for a field that passes through zero -- the same
+conclusion the GWDO and WSM6 work reached).
+
+| quantity | r32 abs | r32 rel | r64 abs | r64 rel |
+|---|---|---|---|---|
+| `sneqv_out` | **0** | **0** | 3.452e-09 | 1.314e-05 |
+| `snowh_out` | **0** | **0** | 4.473e-08 | 1.298e-05 |
+| `sncovr` | **0** | **0** | 6.394e-08 | 2.238e-05 |
+| `snomlt` | **0** | **0** | 1.545e-10 | 5.026e-04 |
+| `esnow` | **0** | **0** | 8.317e-05 | 4.458e-05 |
+| `albedo_out` | **0** | **0** | 4.078e-08 | 9.804e-08 |
+| `flx1` | **0** | **0** | 2.535e-07 | 8.263e-08 |
+| `flx2` | **0** | **0** | 7.196e-07 | 5.749e-09 |
+| `flx3` | **0** | **0** | 8.590e-04 | 5.027e-04 |
+| `t1_out` | **0** | **0** | 4.336e-05 | 1.631e-07 |
+| `ssoil` | **0** | **0** | 2.943e-04 | 1.482e-04 |
+| `sheat` | **0** | **0** | 6.819e-04 | 3.745e-04 |
+| `eta` | **0** | **0** | 8.672e-05 | 4.456e-05 |
+| `etp` | **0** | **0** | 1.075e-04 | 4.452e-05 |
+| `beta` | **0** | **0** | 9.091e-08 | 1.115e-06 |
+| `stc_out` (Linf over the column) | **0** | **0** | 5.610e-05 | 2.055e-07 |
+| `smc_out` | **0** | **0** | 2.238e-08 | 7.322e-08 |
+| `sh2o_out` | **0** | **0** | 2.451e-07 | 1.226e-06 |
+| `et` | **0** | **0** | 2.697e-05 | 4.357e-05 |
+
+Read this the way the warm Noah work reads its own table: the **real32 column being
+identically zero** is the statement that the dumps are complete and the driver is
+wired correctly on the cold paths; the **real64 column is the precision floor**, so a
+component referenced against the real64 replay cannot honestly be pinned tighter than
+it.  `snomlt` and `flx3` are the loosest in relative terms (5e-4) because both are
+differences taken across the melting threshold; `sheat` and `ssoil` follow at ~4e-4 and
+~1.5e-4.  The snow state itself (`sneqv_out`, `snowh_out`, `sncovr`) sits at ~1-2e-5,
+and `albedo_out`, `flx1`, `flx2` and `beta` are at 1e-6 or better.
+
+## Case D: the pack actually disappearing
+
+Confirmed in the dumped steps rather than only in the probe scan.  Step **553** carries
+a pack in (`sneqv` = 1.252e-06 m) and none out (`sneqv_out` = 0), with `snomlt` =
+1.25e-06 -- SNOPAC's `ESD - ESNOW2 <= ESDMIN` branch.  Of case D's 23 dumped steps, 7
+have a pack (3 sub-freezing, 4 melt) and **16 are bare ground over frozen soil**, which
+is the `NOPAC`-with-a-frozen-sink regime that no other case supplies in quantity.
