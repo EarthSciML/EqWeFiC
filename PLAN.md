@@ -96,7 +96,9 @@ k-distribution tables) and Noah-MP (25k lines) are deferred; both are
 inventory rows. MYNN is deferred for the same reason.
 
 WRF-Chem (EqAtmChem): `chem_opt=1` (RADM2 gas phase, no aerosol) first, then
-`chem_opt=300` (GOCART simple aerosols). Components: anthropogenic emissions
+**`chem_opt=170` (CBMZ_MOSAIC_KPP: CBM-Z gas phase + 8-bin MOSAIC aerosol)**
+— revised 2026-09-22, replacing `chem_opt=300` (GOCART), because WRF-Chem has
+no RADM2 + MOSAIC pairing; see section 1.4b. Components: anthropogenic emissions
 (`emissions_driver.F`), biogenic emissions, dry deposition
 (`dry_dep_driver.F`, Wesely: reuse EarthSciModels), photolysis
 (`module_phot_mad.F`, Madronich -- the SCM runs `phot_opt = 1`; Fast-JX is NOT
@@ -392,6 +394,42 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       was supplied by WPS `util/compute_gwdo.py`.
     - **Coarser grid.** A 12–30 km run needs fresh ERA5 intermediate files.
       It would add regimes, not code paths.
+1.4b chem_opt = 170 reference run on the idealized SCM column (done 2026-09-22;
+    details in `data/eqwefic/notes/chem170_scm_reference_run.md`). This is the
+    stage-1 data for the chemistry model's new target and for the two newly
+    required weather schemes on the column where they belong.
+    - **Decision (2026-09-22).** EqAtmChem targets **`chem_opt = 170`,
+      `CBMZ_MOSAIC_KPP`** — CBM-Z gas phase through KPP plus 8-bin MOSAIC —
+      instead of the GOCART plan in section 1 (`chem_opt = 300`). WRF-Chem has
+      **no RADM2 + MOSAIC option**: `Registry/registry.chem` pairs MOSAIC only
+      with CBM-Z, SAPRC-99, MOZART and CRI, and pairs RADM2 only with SORGAM
+      (2, 11, 41, 106) or GOCART (303). 170 keeps the KPP route the RADM2 work
+      already uses, so Madronich photolysis, Wesely deposition and the chem
+      vertical mixing carry over unchanged and only the reaction list is new.
+      The finished RADM2 components stay as they are; they are simply not the
+      mechanism the aerosol model runs on.
+    - **Cumulus, GWDO and Noah are now required, not optional.** They stay out
+      of the EqWeather SCM reference suite, which has them off, but the model
+      cannot run at coarse resolution or over real terrain without them.
+    - **Run.** `em_scm_xy`, Weisman-Klemp sounding, Kansas, 1997-06-20 12 UTC
+      + 48 h, dt = 60 s, 59 levels to 20 km, dx = 20 km, with New Tiedtke
+      (`cu_physics = 16`) and Noah (`sf_surface_physics = 2`). The existing
+      CASES-99 profile is stable and dry and never triggers convection.
+      WRF fork branch `earthsciml-instrumented-chem170` (ac6d4cc); the
+      unchanged `wrf-chem-build.sif` already compiles every KPP mechanism.
+    - **Dumps.** 16 steps × 13 schemes (`data/eqwefic/dumps/chem170_wrf`),
+      including five new hooks: `ntiedtke`, `noah`, `cbmz_kpp`, `mosaic` (the
+      column state after EACH of gas-particle transfer, nucleation and
+      coagulation, separately) and `mosaic_drydep`. All three Tiedtke
+      convection types plus the inactive branch, Noah day and night, and all
+      three MOSAIC sub-processes are covered.
+    - **Kernel replays.** New real64 drivers `kernels/{ntiedtke,noah}_driver`.
+      Noah agrees with WRF to real32 round-off. Tiedtke's in-model `rthcuten`
+      is cancellation-limited at ~3e-7 K/s (N84), so the real64 replay is the
+      reference and the in-model dump only a cross-check.
+    - **Emissions, wet scavenging, cloud chemistry and convective tracer
+      transport stay off** (the last has no New Tiedtke path in WRF-Chem), so
+      they remain stage-1 gaps, as they were for RADM2.
 1.5 Stubs live on this repo's `main` under `components/<domain>/…` mirroring
     the EarthSciModels layout. They are *not* opened as EarthSciModels PRs
     until their tests pass (finding 9).
