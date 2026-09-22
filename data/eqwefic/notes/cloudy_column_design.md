@@ -151,3 +151,73 @@ it.
 
 **One thing is settled either way:** the clear-column chain is unaffected, and
 `nlevel = 70` is not a simplification there — it is what WRF does when there is no cloud.
+
+---
+
+## 6. Decision, and the residual closed (2026-09-21, later)
+
+**The user chose Option A** — the fixed maximum grid with zero-thickness padding. Recorded
+here so it is not re-litigated. The deciding points were that the padding is *exact* rather
+than approximate, and that A is the only option that can reproduce WRF under cloud, which is
+what every test in this project asserts.
+
+### 6.1 The 2.5e-4 residual is explained, and it was not where I guessed
+
+§4's caveat said my float64 reconstruction of the inserted grid sat at 2.5e-4 (and 7.1e-2 at
+the model top) against the clear column's 8.9e-6, and that it had to be chased before A was
+built. It has been. My `vcld` hypothesis was **wrong**, and so was reading the 7.1e-2 as a
+boundary case. In order:
+
+1. **The regridding is exact.** Every quantity `subgrid` produces — `z`, `zmid`, `vt`, `vair`,
+   `vo3`, `vaer`, `vcld`, `cvo2` — matches the dump to **8e-7 or better**, worst case a
+   relative 7.8e-7 in `vcld`. Not one entry exceeds 1e-6. The grid and its layer means are
+   reconstructed correctly.
+2. **The level mapping is exact.** All 60 model levels are present in the 77-level RT grid to
+   better than 1e-5 km, so picking the nearest RT level is not an approximation.
+3. **The problem is well conditioned.** Perturbing every layer optical input by one real32 ulp
+   moves the fluxes by **2e-8**, while the difference from WRF is 1.4e-4 to 2.8e-4 — a ratio
+   of 8 000 to 18 000. So it is not input sensitivity.
+4. **It is WRF's own real32 arithmetic.** Re-running the identical algorithm in emulated
+   float32 moves my own answer by **1.8e-4 (clear) and 5.8e-4 (cloudy)** — *larger* than my
+   disagreement with WRF. Carried through to j-values: clear column, mine-vs-WRF **6–8.5e-6**
+   against a real32 envelope of **1.0–1.6e-5**; cloudy column levels 1–40, mine-vs-WRF
+   **2.54e-4** against an envelope of **5.7e-4**. In both cases the agreement is *better than
+   the reference is determined*.
+5. **The 4.6e-2 / 7.1e-2 at cloudy levels was my comparison harness, not the physics** — and
+   chasing it turned up a real Fortran bug. See below. With it fixed, **every level of the
+   cloudy column collapses to a uniform 2.55e-4**, flat from the surface to the model top, and
+   inside the real32 envelope.
+
+**So: the residual is an irreducible real32 artefact of the reference, established with
+numbers.** The cloudy column is intrinsically noisier than the clear one (5.7e-4 vs 1.6e-5)
+because the optically thick layers make the 138-unknown tridiagonal solve less well determined
+in single precision — the *inputs* are well conditioned, the *arithmetic* is not. A cloudy test
+should therefore assert at about **1e-3**, and a tighter tolerance would be asserting the
+reference's rounding rather than the physics.
+
+### 6.2 What the chase turned up: FORTRAN_BUGS B11
+
+At `chem/module_phot_mad.F:2245`, `:2274` and `:2304`, the log-linear air interpolation onto
+inserted levels computes
+
+```fortran
+hlocal = 1./alog(air(i-1)/air(i))
+x0     = (z(lev)-zz(i-1))/(zz(i)+zz(i-1))     ! <-- SUM, should be a difference
+zair(lev) = air(i-1)*exp(-x0/hlocal)
+```
+
+`hlocal` is a *normalized* scale height, so `x0` must be the normalized offset
+`(z−zz(i−1))/(zz(i)−zz(i−1))`. With the sum it is not a fraction at all and is not scale-free.
+Consequently `zair` **does not return `air(i)` at `z = zz(i)`**: on the reference column, at
+inserted-grid levels that coincide *exactly* with model levels, the air density is wrong by
+**4.9 % at model level 55 rising to 8.9 % at level 60**, growing with altitude exactly as a
+sum-denominator would. It feeds every pressure-quenched quantum yield, so it biases
+`j_ch2om`, `j_ch3cho`, `j_ch3coch3`, `j_ch3coc2h5`, `j_hcocho`, `j_ch3cocho` and `j_hcochob`
+inside cloud by up to ~8 %. `j_hcocho` was the worst channel at every cloudy level, which is
+the fingerprint.
+
+Clear columns are untouched: the clear branch assigns `zair(lev) = air(i)` directly.
+
+**It must be reproduced, not corrected**, for the cloudy grid to match WRF — and it is exactly
+the kind of thing that would have been silently baked into the padded grid had the residual not
+been chased first.
