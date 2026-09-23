@@ -307,6 +307,35 @@ consistent, and each dumped call is still self-contained.
 `dumps/chem170_wrf_stockB20` the stock cross-check. Nothing else in the configuration
 changed between them.
 
+
+## Stage 2 begins: the nucleation component (2026-09-22)
+
+`components/aerosol/mosaic/nucleation_wexler.esm` (with
+`mosaic_nucleation_parameters.esm`) transcribes `wexler_nuc_mosaic_1box`, **72/72**
+(`./esm test components/aerosol/mosaic`, Rust CLI built 2026-09-21 13:32, load average
+16.7 on 20 cores — the figure quoted in commit 1d95f33's message, 0.2, is wrong and this
+is the measured one).
+
+It is exposed as an **increment per call**, not a rate, because with B20 fixed the scheme
+is a projection: the same increment at dtnuc = 60, 6 and 0.6 s. A consumer adds it once
+per MOSAIC sub-step under the operator-split convention.
+
+Nine regimes from the corrected run, NH4/SO4 of the new particles from 0.0007 to 1.37,
+covering both composition branches and the NH3 cap. Measured tolerances:
+
+| assertion group | measured residual | bound |
+|---|---|---|
+| `dens_part` | 2.7e-8 | rel 1e-7 |
+| `dq_nh3`, `dq_nh4a` | ≤ 4.5e-8 | rel 1e-7 |
+| `q_crit` | ≤ 1.3e-6 | rel 2e-6 |
+| `nh4_per_so4`, `dq_h2so4`, `dq_so4a`, `dq_num` | ≤ 5.5e-5 | rel 1e-4 |
+
+The last group is **cancellation-limited, not a transcription gap**: WRF evaluates
+`0.1*T − 3.5*RH − 27.7` in real32, where `0.1*T − 27.7` is itself a difference of nearly
+equal numbers, so `q_crit` carries about 1e-6; the excess `q_h2so4 − q_crit` then
+amplifies it by `q_h2so4/(q_h2so4 − q_crit)`, which runs from 1.2× to 187× over these
+cases. Each test records its own factor.
+
 ## Bisecting the chem-on / chem-off divergence
 
 One binary (`wrf-chem170/main/wrf.exe`), one namelist switch at a time
