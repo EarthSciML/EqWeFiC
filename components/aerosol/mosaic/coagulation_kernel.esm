@@ -1,0 +1,1374 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "MosaicCoagulationKernel",
+    "description": "The Brownian coagulation kernel MOSAIC uses, for ONE pair of size bins: SUBROUTINE coagsolv of chem/module_mosaic_coag.F (WRF v4.8.0), loops 145 and 155, which is Fuchs's transition-regime form as Jacobson's coagsolv codes it. Pairs are independent, so a consumer maps this over its bin pairs rather than the component owning the pair indices.\n\nWHAT THIS IS AND IS NOT. The kernel is the rate COEFFICIENT per particle pair. The stage's own quantity -- the rate of change of each bin's number and volume -- is a weighted sum over pairs of this coefficient times the concentrations, assembled in coagsolv's production and loss loops with the bin-splitting tables (jbinik, fink, floss). That assembly is not transcribed here and is the next piece.\n\nWHY THE KERNEL, AND NOT A DIFFERENCE OF STATES. MOSAIC applies coagulation as an in-place semi-implicit update of a real32 column state, and differencing two such states leaves only one to two significant digits for a typical species-level (EqWeFiC FORTRAN_BUGS N87: the median entry has resolution/|increment| of 0.04-0.09, and at every dumped step 90-113 of 472 number entries have an increment at or below the representable resolution). The instrumented model therefore records the rates where they form, evaluated at the INPUT distribution, which is what makes them well defined; and the kernel itself, which no assembled rate can be inverted for, is recorded directly. This component is referenced against that recorded kernel.\n\nThe per-bin block -- diffusivity, thermal speed and the Fuchs delta -- is factored into mosaic_coagulation_templates.esm and applied to both partners, because coagsolv evaluates it once per bin and then pairs the results.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-09-23T00:00:00Z",
+    "tags": [
+      "mosaic",
+      "aerosol",
+      "coagulation",
+      "wrf-chem",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "Fuchs, N. A. (1964). The Mechanics of Aerosols. Pergamon Press."
+      },
+      {
+        "citation": "Jacobson, M. Z. (2005). Fundamentals of Atmospheric Modeling, 2nd ed., Cambridge University Press."
+      },
+      {
+        "citation": "Zaveri, R. A., Easter, R. C., Fast, J. D. and Peters, L. K. (2008). Model for Simulating Aerosol Interactions and Chemistry (MOSAIC). J. Geophys. Res. 113, D13204."
+      }
+    ]
+  },
+  "models": {
+    "MosaicCoagulationKernel": {
+      "expression_template_imports": [
+        {
+          "ref": "./mosaic_coagulation_templates.esm"
+        }
+      ],
+      "subsystems": {
+        "par": {
+          "ref": "./mosaic_coagulation_parameters.esm"
+        }
+      },
+      "variables": {
+        "tk": {
+          "type": "parameter",
+          "units": "K",
+          "default": 306.7,
+          "description": "Cell temperature, coagsolv's `tkelvin`."
+        },
+        "patm": {
+          "type": "parameter",
+          "units": "atm",
+          "default": 0.965,
+          "description": "Cell pressure in atmospheres, coagsolv's `patm`."
+        },
+        "dp_wet_i": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 7.71e-06,
+          "description": "Wet diameter of the first bin, `dpwet_inp(i)`."
+        },
+        "dens_wet_i": {
+          "type": "parameter",
+          "units": "g/cm^3",
+          "default": 1.8,
+          "description": "Wet density of the first bin, `denswet_inp(i)`."
+        },
+        "dp_wet_j": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 5.3e-05,
+          "description": "Wet diameter of the second bin, `dpwet_inp(j)`."
+        },
+        "dens_wet_j": {
+          "type": "parameter",
+          "units": "g/cm^3",
+          "default": 1.8,
+          "description": "Wet density of the second bin, `denswet_inp(j)`."
+        },
+        "amu": {
+          "type": "unknown",
+          "units": "g/(cm*s)",
+          "description": "Dynamic viscosity of air, coagsolv's Sutherland form."
+        },
+        "rho_air": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "Air mass density from the ideal gas law with MOSAIC's own gas constant in atm units."
+        },
+        "viscosk": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Kinematic viscosity of air."
+        },
+        "vthermg": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Mean thermal speed of an air molecule."
+        },
+        "gmfp": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Mean free path of an air molecule, 2*viscosk/vthermg."
+        },
+        "radwet_i": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Wet radius of the first bin."
+        },
+        "radwet_j": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Wet radius of the second bin."
+        },
+        "volwet_i": {
+          "type": "unknown",
+          "units": "cm^3",
+          "description": "Wet volume of one particle in the first bin."
+        },
+        "volwet_j": {
+          "type": "unknown",
+          "units": "cm^3",
+          "description": "Wet volume of one particle in the second bin."
+        },
+        "difcof_i": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Brownian diffusivity of a first-bin particle."
+        },
+        "difcof_j": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Brownian diffusivity of a second-bin particle."
+        },
+        "vthermp_i": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Thermal speed of a first-bin particle."
+        },
+        "vthermp_j": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Thermal speed of a second-bin particle."
+        },
+        "sumdp_i": {
+          "type": "unknown",
+          "units": "cm^2",
+          "description": "Fuchs delta squared for the first bin."
+        },
+        "sumdp_j": {
+          "type": "unknown",
+          "units": "cm^2",
+          "description": "Fuchs delta squared for the second bin."
+        },
+        "rsuma": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Sum of the two wet radii."
+        },
+        "sumdc": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Sum of the two diffusivities."
+        },
+        "ggr": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Root-sum-square of the two particle thermal speeds."
+        },
+        "deltr": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Root-sum-square of the two Fuchs deltas."
+        },
+        "term1": {
+          "type": "unknown",
+          "units": "1",
+          "description": "The continuum-limit factor rsuma/(rsuma + deltr)."
+        },
+        "term2": {
+          "type": "unknown",
+          "units": "1",
+          "description": "The free-molecular factor 4*sumdc/(rsuma*ggr)."
+        },
+        "cbr": {
+          "type": "unknown",
+          "units": "cm^3/s",
+          "description": "Brownian coagulation kernel for this pair of bins, 4*pi*rsuma*sumdc/(term1 + term2) -- the rate coefficient per particle pair."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "amu",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  "par.consmu",
+                  {
+                    "op": "+",
+                    "args": [
+                      "tk",
+                      "par.sutherland_offset"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "^",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "tk",
+                      "par.sutherland_tref"
+                    ]
+                  },
+                  1.5
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "rho_air",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "patm",
+                  "par.mw_air",
+                  "par.g_per_kg"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.rgas_atm",
+                  "tk"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "viscosk",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "amu",
+              "rho_air"
+            ]
+          }
+        },
+        {
+          "lhs": "vthermg",
+          "rhs": {
+            "op": "^",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      8.0,
+                      "par.boltg",
+                      "tk",
+                      "par.avogadro"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "par.pi",
+                      "par.mw_air"
+                    ]
+                  }
+                ]
+              },
+              0.5
+            ]
+          }
+        },
+        {
+          "lhs": "gmfp",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  2.0,
+                  "viscosk"
+                ]
+              },
+              "vthermg"
+            ]
+          }
+        },
+        {
+          "lhs": "radwet_i",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "dp_wet_i",
+              0.5
+            ]
+          }
+        },
+        {
+          "lhs": "radwet_j",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "dp_wet_j",
+              0.5
+            ]
+          }
+        },
+        {
+          "lhs": "volwet_i",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      4.0,
+                      "par.pi"
+                    ]
+                  },
+                  3.0
+                ]
+              },
+              "radwet_i",
+              "radwet_i",
+              "radwet_i"
+            ]
+          }
+        },
+        {
+          "lhs": "volwet_j",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      4.0,
+                      "par.pi"
+                    ]
+                  },
+                  3.0
+                ]
+              },
+              "radwet_j",
+              "radwet_j",
+              "radwet_j"
+            ]
+          }
+        },
+        {
+          "lhs": "difcof_i",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "particle_diffusivity",
+            "bindings": {
+              "radwet": "radwet_i",
+              "gmfp": "gmfp",
+              "tk": "tk",
+              "amu": "amu",
+              "boltg": "par.boltg",
+              "onepi": "par.pi"
+            }
+          }
+        },
+        {
+          "lhs": "vthermp_i",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "particle_thermal_speed",
+            "bindings": {
+              "radwet": "radwet_i",
+              "denav": "dens_wet_i",
+              "volwet": "volwet_i",
+              "tk": "tk",
+              "boltg": "par.boltg",
+              "onepi": "par.pi"
+            }
+          }
+        },
+        {
+          "lhs": "sumdp_i",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "particle_delta",
+            "bindings": {
+              "radwet": "radwet_i",
+              "difcof": "difcof_i",
+              "vthermp": "vthermp_i",
+              "onepi": "par.pi"
+            }
+          }
+        },
+        {
+          "lhs": "difcof_j",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "particle_diffusivity",
+            "bindings": {
+              "radwet": "radwet_j",
+              "gmfp": "gmfp",
+              "tk": "tk",
+              "amu": "amu",
+              "boltg": "par.boltg",
+              "onepi": "par.pi"
+            }
+          }
+        },
+        {
+          "lhs": "vthermp_j",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "particle_thermal_speed",
+            "bindings": {
+              "radwet": "radwet_j",
+              "denav": "dens_wet_j",
+              "volwet": "volwet_j",
+              "tk": "tk",
+              "boltg": "par.boltg",
+              "onepi": "par.pi"
+            }
+          }
+        },
+        {
+          "lhs": "sumdp_j",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "particle_delta",
+            "bindings": {
+              "radwet": "radwet_j",
+              "difcof": "difcof_j",
+              "vthermp": "vthermp_j",
+              "onepi": "par.pi"
+            }
+          }
+        },
+        {
+          "lhs": "rsuma",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "radwet_i",
+              "radwet_j"
+            ]
+          }
+        },
+        {
+          "lhs": "sumdc",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "difcof_i",
+              "difcof_j"
+            ]
+          }
+        },
+        {
+          "lhs": "ggr",
+          "rhs": {
+            "op": "^",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "vthermp_i",
+                      "vthermp_i"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "vthermp_j",
+                      "vthermp_j"
+                    ]
+                  }
+                ]
+              },
+              0.5
+            ]
+          }
+        },
+        {
+          "lhs": "deltr",
+          "rhs": {
+            "op": "^",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  "sumdp_i",
+                  "sumdp_j"
+                ]
+              },
+              0.5
+            ]
+          }
+        },
+        {
+          "lhs": "term1",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "rsuma",
+              {
+                "op": "+",
+                "args": [
+                  "rsuma",
+                  "deltr"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "term2",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  4.0,
+                  "sumdc"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "rsuma",
+                  "ggr"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "cbr",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  4.0,
+                  "par.pi",
+                  "rsuma",
+                  "sumdc"
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  "term1",
+                  "term2"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "chem170_step1_lev1_bins11",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 1, for the bin pair (1, 1) of 8. Regime: T = 306.17 K, p = 0.9835 atm, wet diameters 6.153e-06 and 6.153e-06 cm, wet densities 1.341 and 1.341 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 7 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.1650695800781,
+            "patm": 0.9835473299026489,
+            "dp_wet_i": 6.153463800728787e-06,
+            "dens_wet_i": 1.3409100770950317,
+            "dp_wet_j": 6.153463800728787e-06,
+            "dens_wet_j": 1.3409100770950317
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 1.864703724763217e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bins14",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 1, for the bin pair (1, 4) of 8. Regime: T = 306.17 K, p = 0.9835 atm, wet diameters 6.153e-06 and 4.915e-05 cm, wet densities 1.341 and 1.342 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 66 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.1650695800781,
+            "patm": 0.9835473299026489,
+            "dp_wet_i": 6.153463800728787e-06,
+            "dens_wet_i": 1.3409100770950317,
+            "dp_wet_j": 4.915197132504545e-05,
+            "dens_wet_j": 1.3416768312454224
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 5.8895404109193805e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bins18",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 1, for the bin pair (1, 8) of 8. Regime: T = 306.17 K, p = 0.9835 atm, wet diameters 6.153e-06 and 0.0007065 cm, wet densities 1.341 and 2.460 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 246 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.1650695800781,
+            "patm": 0.9835473299026489,
+            "dp_wet_i": 6.153463800728787e-06,
+            "dens_wet_i": 1.3409100770950317,
+            "dp_wet_j": 0.0007064583478495479,
+            "dens_wet_j": 2.4601552486419678
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 7.75305082356681e-08
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bins44",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 1, for the bin pair (4, 4) of 8. Regime: T = 306.17 K, p = 0.9835 atm, wet diameters 4.915e-05 and 4.915e-05 cm, wet densities 1.342 and 1.342 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 66 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.1650695800781,
+            "patm": 0.9835473299026489,
+            "dp_wet_i": 4.915197132504545e-05,
+            "dens_wet_i": 1.3416768312454224,
+            "dp_wet_j": 4.915197132504545e-05,
+            "dens_wet_j": 1.3416768312454224
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 7.800959322956658e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bins48",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 1, for the bin pair (4, 8) of 8. Regime: T = 306.17 K, p = 0.9835 atm, wet diameters 4.915e-05 and 0.0007065 cm, wet densities 1.342 and 2.460 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 246 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.1650695800781,
+            "patm": 0.9835473299026489,
+            "dp_wet_i": 4.915197132504545e-05,
+            "dens_wet_i": 1.3416768312454224,
+            "dp_wet_j": 0.0007064583478495479,
+            "dens_wet_j": 2.4601552486419678
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 3.303593842929331e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bins88",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 1, for the bin pair (8, 8) of 8. Regime: T = 306.17 K, p = 0.9835 atm, wet diameters 0.0007065 and 0.0007065 cm, wet densities 2.460 and 2.460 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 246 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.1650695800781,
+            "patm": 0.9835473299026489,
+            "dp_wet_i": 0.0007064583478495479,
+            "dens_wet_i": 2.4601552486419678,
+            "dp_wet_j": 0.0007064583478495479,
+            "dens_wet_j": 2.4601552486419678
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 6.067566449274864e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bins11",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 25, for the bin pair (1, 1) of 8. Regime: T = 286.62 K, p = 0.7519 atm, wet diameters 5.57e-06 and 5.57e-06 cm, wet densities 1.279 and 1.279 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 5 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 286.6180725097656,
+            "patm": 0.7518726587295532,
+            "dp_wet_i": 5.5703544603602495e-06,
+            "dens_wet_i": 1.2791635990142822,
+            "dp_wet_j": 5.5703544603602495e-06,
+            "dens_wet_j": 1.2791635990142822
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 2.1210933009996324e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bins14",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 25, for the bin pair (1, 4) of 8. Regime: T = 286.62 K, p = 0.7519 atm, wet diameters 5.57e-06 and 5.452e-05 cm, wet densities 1.279 and 1.250 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 69 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 286.6180725097656,
+            "patm": 0.7518726587295532,
+            "dp_wet_i": 5.5703544603602495e-06,
+            "dens_wet_i": 1.2791635990142822,
+            "dp_wet_j": 5.4517004173249006e-05,
+            "dens_wet_j": 1.2504013776779175
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 8.731844580722736e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bins18",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 25, for the bin pair (1, 8) of 8. Regime: T = 286.62 K, p = 0.7519 atm, wet diameters 5.57e-06 and 0.0007068 cm, wet densities 1.279 and 2.459 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 241 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 286.6180725097656,
+            "patm": 0.7518726587295532,
+            "dp_wet_i": 5.5703544603602495e-06,
+            "dens_wet_i": 1.2791635990142822,
+            "dp_wet_j": 0.0007067573606036603,
+            "dens_wet_j": 2.459470510482788
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 1.0754961010661646e-07
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bins44",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 25, for the bin pair (4, 4) of 8. Regime: T = 286.62 K, p = 0.7519 atm, wet diameters 5.452e-05 and 5.452e-05 cm, wet densities 1.250 and 1.250 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 69 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 286.6180725097656,
+            "patm": 0.7518726587295532,
+            "dp_wet_i": 5.4517004173249006e-05,
+            "dens_wet_i": 1.2504013776779175,
+            "dp_wet_j": 5.4517004173249006e-05,
+            "dens_wet_j": 1.2504013776779175
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 7.883478869707972e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bins48",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 25, for the bin pair (4, 8) of 8. Regime: T = 286.62 K, p = 0.7519 atm, wet diameters 5.452e-05 and 0.0007068 cm, wet densities 1.250 and 2.459 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 241 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 286.6180725097656,
+            "patm": 0.7518726587295532,
+            "dp_wet_i": 5.4517004173249006e-05,
+            "dens_wet_i": 1.2504013776779175,
+            "dp_wet_j": 0.0007067573606036603,
+            "dens_wet_j": 2.459470510482788
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 3.039422713513318e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bins88",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 1, level 25, for the bin pair (8, 8) of 8. Regime: T = 286.62 K, p = 0.7519 atm, wet diameters 0.0007068 and 0.0007068 cm, wet densities 2.459 and 2.459 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 241 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 286.6180725097656,
+            "patm": 0.7518726587295532,
+            "dp_wet_i": 0.0007067573606036603,
+            "dens_wet_i": 2.459470510482788,
+            "dp_wet_j": 0.0007067573606036603,
+            "dens_wet_j": 2.459470510482788
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 6.010927311450587e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bins11",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 1, for the bin pair (1, 1) of 8. Regime: T = 306.70 K, p = 0.9831 atm, wet diameters 7.713e-06 and 7.713e-06 cm, wet densities 1.294 and 1.294 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 10 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.6976318359375,
+            "patm": 0.9831036925315857,
+            "dp_wet_i": 7.712911610724404e-06,
+            "dens_wet_i": 1.2944204807281494,
+            "dp_wet_j": 7.712911610724404e-06,
+            "dens_wet_j": 1.2944204807281494
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 1.6946684056051708e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bins14",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 1, for the bin pair (1, 4) of 8. Regime: T = 306.70 K, p = 0.9831 atm, wet diameters 7.713e-06 and 5.305e-05 cm, wet densities 1.294 and 1.315 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 71 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.6976318359375,
+            "patm": 0.9831036925315857,
+            "dp_wet_i": 7.712911610724404e-06,
+            "dens_wet_i": 1.2944204807281494,
+            "dp_wet_j": 5.304900696501136e-05,
+            "dens_wet_j": 1.3154345750808716
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 4.397807451539393e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bins18",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 1, for the bin pair (1, 8) of 8. Regime: T = 306.70 K, p = 0.9831 atm, wet diameters 7.713e-06 and 0.0007076 cm, wet densities 1.294 and 2.455 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 247 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.6976318359375,
+            "patm": 0.9831036925315857,
+            "dp_wet_i": 7.712911610724404e-06,
+            "dens_wet_i": 1.2944204807281494,
+            "dp_wet_j": 0.0007075820467434824,
+            "dens_wet_j": 2.455138921737671
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 5.1804754264139774e-08
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bins44",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 1, for the bin pair (4, 4) of 8. Regime: T = 306.70 K, p = 0.9831 atm, wet diameters 5.305e-05 and 5.305e-05 cm, wet densities 1.315 and 1.315 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 71 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.6976318359375,
+            "patm": 0.9831036925315857,
+            "dp_wet_i": 5.304900696501136e-05,
+            "dens_wet_i": 1.3154345750808716,
+            "dp_wet_j": 5.304900696501136e-05,
+            "dens_wet_j": 1.3154345750808716
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 7.675523550076946e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bins48",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 1, for the bin pair (4, 8) of 8. Regime: T = 306.70 K, p = 0.9831 atm, wet diameters 5.305e-05 and 0.0007076 cm, wet densities 1.315 and 2.455 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 247 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.6976318359375,
+            "patm": 0.9831036925315857,
+            "dp_wet_i": 5.304900696501136e-05,
+            "dens_wet_i": 1.3154345750808716,
+            "dp_wet_j": 0.0007075820467434824,
+            "dens_wet_j": 2.455138921737671
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 3.0375757464895514e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bins88",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 1, for the bin pair (8, 8) of 8. Regime: T = 306.70 K, p = 0.9831 atm, wet diameters 0.0007076 and 0.0007076 cm, wet densities 2.455 and 2.455 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 247 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 306.6976318359375,
+            "patm": 0.9831036925315857,
+            "dp_wet_i": 0.0007075820467434824,
+            "dens_wet_i": 2.455138921737671,
+            "dp_wet_j": 0.0007075820467434824,
+            "dens_wet_j": 2.455138921737671
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 6.070203784069861e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bins11",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 45, for the bin pair (1, 1) of 8. Regime: T = 257.02 K, p = 0.4216 atm, wet diameters 5.755e-06 and 5.755e-06 cm, wet densities 1.270 and 1.270 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 4 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 257.01629638671875,
+            "patm": 0.42162802815437317,
+            "dp_wet_i": 5.7553761507733725e-06,
+            "dens_wet_i": 1.2702248096466064,
+            "dp_wet_j": 5.7553761507733725e-06,
+            "dens_wet_j": 1.2702248096466064
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 2.5267785641602813e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bins14",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 45, for the bin pair (1, 4) of 8. Regime: T = 257.02 K, p = 0.4216 atm, wet diameters 5.755e-06 and 4.502e-05 cm, wet densities 1.270 and 1.447 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 45 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 257.01629638671875,
+            "patm": 0.42162802815437317,
+            "dp_wet_i": 5.7553761507733725e-06,
+            "dens_wet_i": 1.2702248096466064,
+            "dp_wet_j": 4.5017062802799046e-05,
+            "dens_wet_j": 1.4470845460891724
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 9.611968110334601e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bins18",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 45, for the bin pair (1, 8) of 8. Regime: T = 257.02 K, p = 0.4216 atm, wet diameters 5.755e-06 and 0.0007071 cm, wet densities 1.270 and 2.457 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 229 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 257.01629638671875,
+            "patm": 0.42162802815437317,
+            "dp_wet_i": 5.7553761507733725e-06,
+            "dens_wet_i": 1.2702248096466064,
+            "dp_wet_j": 0.0007071226136758924,
+            "dens_wet_j": 2.45694637298584
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 1.4626722588673147e-07
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bins44",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 45, for the bin pair (4, 4) of 8. Regime: T = 257.02 K, p = 0.4216 atm, wet diameters 4.502e-05 and 4.502e-05 cm, wet densities 1.447 and 1.447 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 45 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 257.01629638671875,
+            "patm": 0.42162802815437317,
+            "dp_wet_i": 4.5017062802799046e-05,
+            "dens_wet_i": 1.4470845460891724,
+            "dp_wet_j": 4.5017062802799046e-05,
+            "dens_wet_j": 1.4470845460891724
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 9.56000500984544e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bins48",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 45, for the bin pair (4, 8) of 8. Regime: T = 257.02 K, p = 0.4216 atm, wet diameters 4.502e-05 and 0.0007071 cm, wet densities 1.447 and 2.457 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 229 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 257.01629638671875,
+            "patm": 0.42162802815437317,
+            "dp_wet_i": 4.5017062802799046e-05,
+            "dens_wet_i": 1.4470845460891724,
+            "dp_wet_j": 0.0007071226136758924,
+            "dens_wet_j": 2.45694637298584
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 4.424022481686052e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bins88",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 601, level 45, for the bin pair (8, 8) of 8. Regime: T = 257.02 K, p = 0.4216 atm, wet diameters 0.0007071 and 0.0007071 cm, wet densities 2.457 and 2.457 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 229 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 257.01629638671875,
+            "patm": 0.42162802815437317,
+            "dp_wet_i": 0.0007071226136758924,
+            "dens_wet_i": 2.45694637298584,
+            "dp_wet_j": 0.0007071226136758924,
+            "dens_wet_j": 2.45694637298584
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 5.975351879961011e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bins11",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 2101, level 10, for the bin pair (1, 1) of 8. Regime: T = 302.42 K, p = 0.9120 atm, wet diameters 7.763e-06 and 7.763e-06 cm, wet densities 1.304 and 1.304 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 9 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 302.4187927246094,
+            "patm": 0.9120062589645386,
+            "dp_wet_i": 7.762865607219283e-06,
+            "dens_wet_i": 1.3044655323028564,
+            "dp_wet_j": 7.762865607219283e-06,
+            "dens_wet_j": 1.3044655323028564
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 1.7399535146012113e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bins14",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 2101, level 10, for the bin pair (1, 4) of 8. Regime: T = 302.42 K, p = 0.9120 atm, wet diameters 7.763e-06 and 5.476e-05 cm, wet densities 1.304 and 1.286 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 72 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 302.4187927246094,
+            "patm": 0.9120062589645386,
+            "dp_wet_i": 7.762865607219283e-06,
+            "dens_wet_i": 1.3044655323028564,
+            "dp_wet_j": 5.4762906074756756e-05,
+            "dens_wet_j": 1.28592848777771
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 4.649172158366355e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bins18",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 2101, level 10, for the bin pair (1, 8) of 8. Regime: T = 302.42 K, p = 0.9120 atm, wet diameters 7.763e-06 and 0.0007095 cm, wet densities 1.304 and 2.447 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 246 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 302.4187927246094,
+            "patm": 0.9120062589645386,
+            "dp_wet_i": 7.762865607219283e-06,
+            "dens_wet_i": 1.3044655323028564,
+            "dp_wet_j": 0.0007094916072674096,
+            "dens_wet_j": 2.4470252990722656
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 5.3568875557630236e-08
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bins44",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 2101, level 10, for the bin pair (4, 4) of 8. Regime: T = 302.42 K, p = 0.9120 atm, wet diameters 5.476e-05 and 5.476e-05 cm, wet densities 1.286 and 1.286 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 72 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 302.4187927246094,
+            "patm": 0.9120062589645386,
+            "dp_wet_i": 5.4762906074756756e-05,
+            "dens_wet_i": 1.28592848777771,
+            "dp_wet_j": 5.4762906074756756e-05,
+            "dens_wet_j": 1.28592848777771
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 7.707594562589293e-10
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bins48",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 2101, level 10, for the bin pair (4, 8) of 8. Regime: T = 302.42 K, p = 0.9120 atm, wet diameters 5.476e-05 and 0.0007095 cm, wet densities 1.286 and 2.447 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 246 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 302.4187927246094,
+            "patm": 0.9120062589645386,
+            "dp_wet_i": 5.4762906074756756e-05,
+            "dens_wet_i": 1.28592848777771,
+            "dp_wet_j": 0.0007094916072674096,
+            "dens_wet_j": 2.4470252990722656
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 2.9705515824929307e-09
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bins88",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped inside coagsolv at model step 2101, level 10, for the bin pair (8, 8) of 8. Regime: T = 302.42 K, p = 0.9120 atm, wet diameters 0.0007095 and 0.0007095 cm, wet densities 2.447 and 2.447 g/cm3. Tolerance measured, not assumed: over the thirty pairs the kernel agrees with WRF to 1.2e-6 median and 6.5e-6 worst in a zero-tolerance run, and the bound is 2e-5. The residual is CANCELLATION in Fuchs's transition length: delta = (1/(6 r pmfp))*((2r + pmfp)^3 - (4r^2 + pmfp^2)^(3/2)) - 2r subtracts two nearly equal terms, by a factor of 246 here, so the single-precision storage of the dumped wet diameter and density (about 6e-8) reaches 1e-5 at the worst pair -- which is what bounds this component, not the arithmetic.",
+          "parameter_overrides": {
+            "tk": 302.4187927246094,
+            "patm": 0.9120062589645386,
+            "dp_wet_i": 0.0007094916072674096,
+            "dens_wet_i": 2.4470252990722656,
+            "dp_wet_j": 0.0007094916072674096,
+            "dens_wet_j": 2.4470252990722656
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-05
+          },
+          "assertions": [
+            {
+              "variable": "cbr",
+              "time": 0.0,
+              "expected": 6.059746593400916e-10
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
