@@ -459,7 +459,12 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       1e-10 relative; the soil-temperature tendency must use ESM_DT = 0.01 s,
       because at 1e-6 s the increment of two ~300 K temperatures is lost to
       cancellation. WRF's own dt = 60 s increment is off the dt -> 0 limit by
-      up to 2.7e-7 K/s -- the implicit solve, not the physics.
+      up to 2.7e-7 K/s -- the implicit solve, not the physics. BOTH of these
+      are cancellation-floor cases in the sense of section 6 and N99: each
+      quantity is recovered by differencing states, so its accuracy is a V in
+      dt and the step is chosen by finding the minimum. That is NOT a general
+      preference for small steps -- see 1.4i for the first Noah quantity with
+      no floor, whose step had to be taken UP to WRF's own 60 s.
     - **Instrumentation added.** `df1`, `yy`, `zz1` and the pre-step ground
       heat flux are not Registry variables. `kernels/noah_esm_{state,penman,
       nopac}.inc` are spliced by `kernels/Makefile` into a BUILD-TIME COPY of
@@ -510,7 +515,9 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       its minimum near 1e-4 s (FORTRAN_BUGS N92). drip has the opposite
       problem -- it is formed as (cmc + dt rhsct) - cmcmax and is destroyed by
       cancellation at 1e-6 s -- so it is referenced at 1e-2 s. Tendencies stay
-      at 1e-2 s and the surface energy closure at 1e-6 s as before.
+      at 1e-2 s and the surface energy closure at 1e-6 s as before. All four
+      values are minima of a V, i.e. floor cases; the rule that decides which
+      case a quantity is in is in section 6.
     - **FORTRAN_BUGS N91**: FAC2MIT selects a branch by exact floating-point
       equality against decimal literals, so a real64 build silently takes a
       different threshold from WRF's real32 build. Inert here (the wettest
@@ -2324,7 +2331,30 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
 
 - Tendencies are observeds; assert at `time: 0.0`. Trajectory assertions only
   for genuinely in-place steps.
-- Implicit-solve schemes: reference tendency at small `dt`; document it.
+- **Choosing a reference step: ask whether there is a cancellation floor
+  (FORTRAN_BUGS N99).** A reference step is squeezed from above by truncation
+  (the finite-step answer is not the dt -> 0 one) and from below by
+  cancellation (the quantity is recovered from a difference of nearly equal
+  stored numbers). **Cancellation is a property of how a quantity is RECOVERED,
+  not of the physics**, so the two cases are:
+    - *A floor exists* -- the quantity can only be had by differencing states.
+      Accuracy is then a V in dt with an interior minimum, and the step is
+      chosen by finding it. Noah's is non-monotonic and per quantity: surface
+      closure 1e-6 s, tendencies 1e-2 s, runoff 1e-4 s (N92: `1 - exp(-kdt
+      dt/86400)` loses digits as dt falls), canopy drip 1e-2 s. Implicit-solve
+      schemes (e.g. PBL tridiagonal diffusion) sit here too: use a small `dt`
+      so the implicit increment approximates the instantaneous derivative.
+    - *No floor* -- the quantity is published where it forms, or can be written
+      as an exact rearrangement in which nothing cancels. Then the error is
+      monotone in dt and **the best step is the LARGEST the truncation budget
+      allows**, because a signal proportional to dt occupies more of a fixed
+      relative tolerance at a larger step. Noah's snow compaction is the first
+      of these: WRF's own 60 s, not 1e-6 s (section 1.4i).
+  So write the component cancellation-free, or add the publisher, BEFORE
+  choosing the step -- the choice follows from that decision, not the other way
+  round. N97's sink and N98's melt rate both moved from the first case to the
+  second the moment they were published rather than differenced. State the
+  choice and its reason in every test `description`.
 - Column components shaped over `lev`; geometry supplied by the consumer.
 - Constants only from `lib/wrf_constants.esm`.
 - Tolerances: `rel 1e-9` for real64 kernel references, `rel 1e-5` for real32.
