@@ -220,7 +220,7 @@ the driver switches it on for the dumped column). What each one records:
 
 | process | what is recorded | is it a true rate? |
 |---|---|---|
-| nucleation | `wexler_nuc_mosaic_1box` evaluated in the **dt → 0 limit** (`rate_newnuc`), and the increment WRF applies divided by `dtnuc` (`rate_newnuc_finitedt`) | a rate exists, but WRF's applied increment is a **projection, not that rate** — see below |
+| nucleation | the projection increment itself (`rate_newnuc`, mol/mol-air per call), the same divided by `dtnuc` (`rate_newnuc_finitedt`), and the composition and thresholds B20 corrupted (`newnuc_composition`) | **no rate exists**: with B20 fixed the scheme relaxes the vapour to critical in one call, the same increment whatever `dtnuc` is |
 | coagulation | the same production and loss sums `coagsolv` uses, evaluated with the **input** distribution and divided by `deltat` (`rate_coag_num`, `rate_coag_vol`) | yes |
 | gas-particle transfer, non-volatile | `gas(iv)*kg(iv,ibin)` per bin — the **exact** dt → 0 limit of ASTEM's analytical exponential decay (`rate_cond_nonvol`) | yes, exactly |
 | gas-particle transfer, semi-volatile | `flux_s + flux_l` on ASTEM's **first sub-step**, i.e. kg·(gas − surface value) at the input state (`rate_cond_semivol`) | yes |
@@ -251,7 +251,8 @@ the driver switches it on for the dumped column). What each one records:
 | CBM-Z rate coefficients and integrated step | `cbmz_driver`, exact | as tight as the .esm arithmetic allows (RADM2 uses `rel 1e-9`) |
 | CBM-Z instantaneous rates | `Fun` from the same driver | same |
 | MOSAIC aerosol deposition velocities | `mosaic_drydep_driver`, real64 | `rel 1e-5` (real32 round-off, measured 2.3e-7–1.6e-6) |
-| MOSAIC coagulation, condensation, nucleation rates | the in-model rate hooks, real32 | `rel 1e-5`; the rates are single-precision values from the model, so the bound is WRF's own precision, not the differencing noise |
+| MOSAIC coagulation and condensation rates | the in-model rate hooks, real32 | `rel 1e-5`; the rates are single-precision values from the model, so the bound is WRF's own precision, not the differencing noise |
+| MOSAIC nucleation | the in-model projection increment (B20-corrected) | `rel 1e-5`, and asserted as an increment per call, not a rate |
 | MOSAIC stage increments | the stage states | **not usable for coagulation** (N87) and not a tendency for NH3 or nucleation |
 
 `tools/mosaic_rate_check.py` prints the comparison for any dumped column; the run over
@@ -261,6 +262,50 @@ all 16 steps is in `chem170_scm/replay/rate_summary.txt`.
 computed inside the model in its own precision, so nucleation and coagulation no longer
 need the real64 replay whose build was unresolved. That driver's real32 build still
 reproduces WRF bit for bit and stays as a cross-check.
+
+
+## The nucleation bug (B20) is fixed in the fork, and the reference recaptured
+
+`wexler_nuc_mosaic_1box` multiplied an excess mixing ratio by the time step and then used
+the product as a mixing ratio. The fix is one line, `qh2so4_avail = qh2so4_cur -
+qh2so4_crit`, which is what **WRF's own newer copy of the routine already has**
+(`chem/module_mosaic_newnucb.F:1668`). The other nucleation route in the same file (the
+ternary/Napari one at `:612-626`, unreachable because `newnuc_method = 2`) is correct:
+`ratenuclt*dtnuc*mass_part` is a genuine rate times a step, and its composition partition
+divides by `qh2so4_cur`, a mixing ratio.
+
+**The clamp analysis was verified against the stock dumps before anything was changed.**
+At step 1 all 46 firing levels have `|qh2so4_del| = 0.9999*qh2so4_cur` exactly, and the
+measured rate/increment ratio matches `60*(1 - qh2so4_crit/qh2so4_cur)` to 1e-4 across
+5.1x-59.6x. The three later single-level events sit 0.5-0.9 % above critical — inside the
+~1.7 % band where the clamp does not bind — and there the increment is `(qcur -
+qcrit)*dtnuc`, the other half of the same bug.
+
+**What the fix changes, on identical input columns** (same column through both schemes,
+`kernels/mosaic_subproc_driver`; `chem170_scm/replay/b20_kernel_compare.txt`):
+
+| quantity | stock WRF | fixed |
+|---|---|---|
+| H2SO4 vapour left / vapour in, step 1 | 1.0e-4 | 0.063 (= the critical concentration) |
+| same, at the three near-critical events | 0.44-0.68 | 0.991-0.995 |
+| (mole NH4)/(mole SO4) of the new particles | 0.0009-0.0055 | 0.054-0.33 |
+| particle number made | — | -4.5 % at step 1; 20x-60x fewer at the near-critical events |
+| levels the guard lets through | 46 / 1 / 0 | 46 / 1 / 0 — unchanged on identical inputs |
+
+**The corrected scheme is exactly dt-independent.** Replayed at dtnuc = 60, 6 and 0.6 s it
+returns bit-identical increments (`b20_dt_independence.txt`), which is what a projection
+should do. That is why the instrumentation now records the projection increment itself and
+does not manufacture a rate for it.
+
+**It moves the meteorology**, through the N86 path (aerosol mass feeds Dudhia's
+scattering): identical at step 1, 0.0013 K by step 60, and up to 1.9 K, 2.6e-3 kg/kg in
+q_v and 24 W/m2 in `hfx` by step 601 (`b20_met_impact.txt`). The recaptured reference is
+therefore a slightly different trajectory from the stock one; both are internally
+consistent, and each dumped call is still self-contained.
+
+**Both dump sets are kept**: `dumps/chem170_wrf` is the corrected reference,
+`dumps/chem170_wrf_stockB20` the stock cross-check. Nothing else in the configuration
+changed between them.
 
 ## Bisecting the chem-on / chem-off divergence
 
