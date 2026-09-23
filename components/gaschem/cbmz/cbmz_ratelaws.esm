@@ -1,0 +1,714 @@
+{
+  "esm": "1.0.0",
+  "metadata": {
+    "name": "cbmz_ratelaws",
+    "description": "Rate-coefficient forms of the WRF-Chem CBM-Z mechanism (chem_opt = 170, CBMZ_MOSAIC_KPP) as pure expression templates, transcribed from the #INLINE F90_RATES block of chem/KPP/mechanisms/cbmz_mosaic/cbmz_mosaic.def (ARR3, ARR3MS, TROEMS, TROEEMS, RK_HO_HNO3, RK_2HO2, RK_2HO2_H2O, RK_CO_HO, peroxy) of WRF v4.8.0. Every template returns a rate coefficient in the KPP units (molec/cm^3 concentrations, seconds); the numeric coefficients of each CBM-Z reaction are bound where the templates are applied (components/gaschem/cbmz/cbmz_rate_constants.esm), so the mechanism's numbers live in one place. Temperature-power forms take the reference temperature T_ref (300 K in WRF) as a bound quantity so that the power base is dimensionless. CBM-Z's ARR3 is the same simplified Arrhenius as RADM2's ARR2, but the rest of the family differs -- the Troe forms use (T/T_ref)^n with negative exponents rather than RADM2's (T_ref/T)^n, and RK_HO_HNO3 / RK_2HO2 write their exponents positive -- so these are separate templates rather than imports of radm2_ratelaws.esm.",
+    "license": "MIT",
+    "tags": [
+      "gaschem",
+      "rate-laws",
+      "wrf-chem",
+      "cbmz",
+      "kpp"
+    ],
+    "references": [
+      {
+        "citation": "Zaveri, R. A. and Peters, L. K. (1999), A new lumped structure photochemical mechanism for large-scale applications, J. Geophys. Res., 104, 30387-30415",
+        "doi": "10.1029/1999JD900876"
+      }
+    ]
+  },
+  "expression_templates": {
+    "cbmz_arr3": {
+      "params": [
+        "A",
+        "B",
+        "T"
+      ],
+      "description": "Arrhenius as CBM-Z writes it (cbmz_mosaic.def F90_RATES ARR3): k = A exp(-B/T), with B the activation temperature in K. A negative B is the .eqn's spelling of a positive temperature dependence.",
+      "body": {
+        "op": "*",
+        "args": [
+          "A",
+          {
+            "op": "exp",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "neg",
+                    "args": [
+                      "B"
+                    ]
+                  },
+                  "T"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_arr3_tpower": {
+      "params": [
+        "p",
+        "A",
+        "B",
+        "T"
+      ],
+      "description": "A power of temperature multiplying an Arrhenius coefficient, k = T^p A exp(-B/T). The three CBM-Z reactions written this way in cbmz_mosaic.eqn are OH+CH4 (p = 0.667), C2H6+OH and AONE+OH (p = 2). T carries its unit, so p is applied to the numerical value of T in K exactly as the Fortran does.",
+      "body": {
+        "op": "*",
+        "args": [
+          {
+            "op": "^",
+            "args": [
+              "T",
+              "p"
+            ]
+          },
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": "A",
+              "B": "B",
+              "T": "T"
+            }
+          }
+        ]
+      }
+    },
+    "cbmz_two_channel_arr3": {
+      "params": [
+        "f1",
+        "A1",
+        "B1",
+        "f2",
+        "A2",
+        "B2",
+        "T"
+      ],
+      "description": "A volume-fraction-weighted sum of two Arrhenius channels, k = f1 A1 exp(-B1/T) + f2 A2 exp(-B2/T). CBM-Z uses it for the quenching of O(1D) by air (cbmz_mosaic.eqn {021:001}), where the two channels are N2 (f1 = .79) and O2 (f2 = .21); both fractions are single-precision literals of the .eqn.",
+      "body": {
+        "op": "+",
+        "args": [
+          {
+            "op": "*",
+            "args": [
+              "f1",
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "cbmz_arr3",
+                "bindings": {
+                  "A": "A1",
+                  "B": "B1",
+                  "T": "T"
+                }
+              }
+            ]
+          },
+          {
+            "op": "*",
+            "args": [
+              "f2",
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "cbmz_arr3",
+                "bindings": {
+                  "A": "A2",
+                  "B": "B2",
+                  "T": "T"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_arr3ms": {
+      "params": [
+        "f",
+        "a",
+        "n",
+        "T",
+        "T_ref",
+        "M"
+      ],
+      "description": "The termolecular form of cbmz_mosaic.def, ARR3MS scaled by a volume fraction: k = f M a (T/T_ref)^(-n). CBM-Z applies it only to O(3P) + O2 + M -> O3 ({023:003}) with f = .21 the O2 fraction, so the coefficient already carries one factor of M and mass action on the fixed species M supplies the second: the reaction is quadratic in air density, as a termolecular reaction must be.",
+      "body": {
+        "op": "*",
+        "args": [
+          "f",
+          "M",
+          "a",
+          {
+            "op": "^",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  "T",
+                  "T_ref"
+                ]
+              },
+              {
+                "op": "neg",
+                "args": [
+                  "n"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_troe_low": {
+      "params": [
+        "k0_300",
+        "n",
+        "T",
+        "T_ref",
+        "M"
+      ],
+      "description": "Low-pressure (termolecular) limit of the CBM-Z Troe forms, k0 = k0_300 (T/T_ref)^n M (cbmz_mosaic.def TROEMS). Note the sign convention: the .eqn passes NEGATIVE exponents, so k0 falls with temperature.",
+      "body": {
+        "op": "*",
+        "args": [
+          "k0_300",
+          {
+            "op": "^",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  "T",
+                  "T_ref"
+                ]
+              },
+              "n"
+            ]
+          },
+          "M"
+        ]
+      }
+    },
+    "cbmz_troe_high": {
+      "params": [
+        "kinf_300",
+        "m",
+        "T",
+        "T_ref"
+      ],
+      "description": "High-pressure (bimolecular) limit of the CBM-Z Troe forms, kinf = kinf_300 (T/T_ref)^m (cbmz_mosaic.def TROEMS).",
+      "body": {
+        "op": "*",
+        "args": [
+          "kinf_300",
+          {
+            "op": "^",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  "T",
+                  "T_ref"
+                ]
+              },
+              "m"
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_troe_ratio": {
+      "params": [
+        "k0_300",
+        "n",
+        "kinf_300",
+        "m",
+        "T",
+        "T_ref",
+        "M"
+      ],
+      "description": "The falloff ratio k0/kinf of the CBM-Z Troe forms, factored out because TROEMS reads it three times (once in the branching fraction and twice in the broadening exponent).",
+      "body": {
+        "op": "/",
+        "args": [
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troe_low",
+            "bindings": {
+              "k0_300": "k0_300",
+              "n": "n",
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M"
+            }
+          },
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troe_high",
+            "bindings": {
+              "kinf_300": "kinf_300",
+              "m": "m",
+              "T": "T",
+              "T_ref": "T_ref"
+            }
+          }
+        ]
+      }
+    },
+    "cbmz_troems": {
+      "params": [
+        "k0_300",
+        "n",
+        "kinf_300",
+        "m",
+        "T",
+        "T_ref",
+        "M"
+      ],
+      "description": "Troe falloff of the CBM-Z mechanism (cbmz_mosaic.def TROEMS): with r = k0/kinf, k = k0/(1 + r) F^(1/(1 + log10(r)^2)) and the broadening factor F = 0.6 fixed by the scheme. This is the same Troe expression the WRFUserRateLaws TROE uses for other mechanisms, but with the (T/T_ref)^n sign convention of cbmz_mosaic.def rather than (T_ref/T)^n -- the .eqn's exponents are negative to compensate.",
+      "body": {
+        "op": "*",
+        "args": [
+          {
+            "op": "/",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "cbmz_troe_low",
+                "bindings": {
+                  "k0_300": "k0_300",
+                  "n": "n",
+                  "T": "T",
+                  "T_ref": "T_ref",
+                  "M": "M"
+                }
+              },
+              {
+                "op": "+",
+                "args": [
+                  1,
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "cbmz_troe_ratio",
+                    "bindings": {
+                      "k0_300": "k0_300",
+                      "n": "n",
+                      "kinf_300": "kinf_300",
+                      "m": "m",
+                      "T": "T",
+                      "T_ref": "T_ref",
+                      "M": "M"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "^",
+            "args": [
+              0.6,
+              {
+                "op": "/",
+                "args": [
+                  1,
+                  {
+                    "op": "+",
+                    "args": [
+                      1,
+                      {
+                        "op": "^",
+                        "args": [
+                          {
+                            "op": "log10",
+                            "args": [
+                              {
+                                "op": "apply_expression_template",
+                                "args": [],
+                                "name": "cbmz_troe_ratio",
+                                "bindings": {
+                                  "k0_300": "k0_300",
+                                  "n": "n",
+                                  "kinf_300": "kinf_300",
+                                  "m": "m",
+                                  "T": "T",
+                                  "T_ref": "T_ref",
+                                  "M": "M"
+                                }
+                              }
+                            ]
+                          },
+                          2
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_troeems": {
+      "params": [
+        "A",
+        "B",
+        "k0_300",
+        "n",
+        "kinf_300",
+        "m",
+        "T",
+        "T_ref",
+        "M"
+      ],
+      "description": "Thermal decomposition of a Troe adduct (cbmz_mosaic.def TROEEMS): the association coefficient divided by the equilibrium constant, written k = A exp(-B/T) k_troe(k0_300, n, kinf_300, m). CBM-Z uses it for HNO4, N2O5 and PAN, each time with the association reaction's own four Troe coefficients, so the forward and reverse rates stay tied.",
+      "body": {
+        "op": "*",
+        "args": [
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": "A",
+              "B": "B",
+              "T": "T"
+            }
+          },
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": "k0_300",
+              "n": "n",
+              "kinf_300": "kinf_300",
+              "m": "m",
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M"
+            }
+          }
+        ]
+      }
+    },
+    "cbmz_oh_hno3": {
+      "params": [
+        "a1",
+        "b1",
+        "a2",
+        "b2",
+        "a3",
+        "b3",
+        "T",
+        "M"
+      ],
+      "description": "OH + HNO3 (cbmz_mosaic.def RK_HO_HNO3, the JPL form): a pressure-independent channel plus a termolecular channel that saturates at its own high-pressure limit, k = a1 e^(b1/T) + M a2 e^(b2/T) / (1 + M a2 e^(b2/T) / (a3 e^(b3/T))). The exponents are POSITIVE here, as the Fortran writes them, not negated as in ARR3.",
+      "body": {
+        "op": "+",
+        "args": [
+          {
+            "op": "*",
+            "args": [
+              "a1",
+              {
+                "op": "exp",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "b1",
+                      "T"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "M",
+                  "a2",
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          "b2",
+                          "T"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  1,
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "M",
+                          "a2",
+                          {
+                            "op": "exp",
+                            "args": [
+                              {
+                                "op": "/",
+                                "args": [
+                                  "b2",
+                                  "T"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          "a3",
+                          {
+                            "op": "exp",
+                            "args": [
+                              {
+                                "op": "/",
+                                "args": [
+                                  "b3",
+                                  "T"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_ho2_self": {
+      "params": [
+        "a1",
+        "b1",
+        "a2",
+        "b2",
+        "T",
+        "M"
+      ],
+      "description": "HO2 + HO2 -> H2O2 (cbmz_mosaic.def RK_2HO2): the bimolecular channel plus a termolecular one, k = a1 e^(b1/T) + M a2 e^(b2/T). Positive exponents, as written in the Fortran.",
+      "body": {
+        "op": "+",
+        "args": [
+          {
+            "op": "*",
+            "args": [
+              "a1",
+              {
+                "op": "exp",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "b1",
+                      "T"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "*",
+            "args": [
+              "M",
+              "a2",
+              {
+                "op": "exp",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "b2",
+                      "T"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_ho2_self_h2o": {
+      "params": [
+        "a1",
+        "b1",
+        "a2",
+        "b2",
+        "a3",
+        "b3",
+        "T",
+        "M"
+      ],
+      "description": "The water-enhanced HO2 self-reaction (cbmz_mosaic.def RK_2HO2_H2O): the dry coefficient multiplied by the water enhancement a3 e^(b3/T), which the .eqn then applies to [HO2]^2 [H2O] by mass action, so the coefficient is termolecular.",
+      "body": {
+        "op": "*",
+        "args": [
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_ho2_self",
+            "bindings": {
+              "a1": "a1",
+              "b1": "b1",
+              "a2": "a2",
+              "b2": "b2",
+              "T": "T",
+              "M": "M"
+            }
+          },
+          {
+            "op": "*",
+            "args": [
+              "a3",
+              {
+                "op": "exp",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "b3",
+                      "T"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_co_oh": {
+      "params": [
+        "a",
+        "b",
+        "T",
+        "M"
+      ],
+      "description": "CO + OH (cbmz_mosaic.def RK_CO_HO): k = a (1 + b T M), the low-pressure limit rising linearly with air density. Both a and b are single-precision literals of the Fortran (they carry no _dp), so they are bound here as the binary64 values of their float32 roundings.",
+      "body": {
+        "op": "*",
+        "args": [
+          "a",
+          {
+            "op": "+",
+            "args": [
+              1,
+              {
+                "op": "*",
+                "args": [
+                  "b",
+                  "T",
+                  "M"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_peroxy_weight": {
+      "params": [
+        "a",
+        "b",
+        "T"
+      ],
+      "description": "Half-rate weight of one peroxy radical in CBM-Z's lumped peroxy-peroxy parameterization (cbmz_mosaic.def peroxy): g = sqrt(a) exp(b/(2T)), where a and b are the radical's own self-reaction coefficients. The scheme builds its 10x10 cross coefficient matrix from the diagonal by A_ij = 2 sqrt(A_ii A_jj) and B_ij = (B_ii + B_jj)/2, which is exactly A_ij e^(B_ij/T) = 2 g_i g_j for i /= j and g_i^2 for i = j -- so the whole matrix is carried by these ten numbers and never has to be written out.",
+      "body": {
+        "op": "*",
+        "args": [
+          {
+            "op": "sqrt",
+            "args": [
+              "a"
+            ]
+          },
+          {
+            "op": "exp",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  "b",
+                  {
+                    "op": "*",
+                    "args": [
+                      2,
+                      "T"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "cbmz_peroxy_rate": {
+      "params": [
+        "g",
+        "S",
+        "x"
+      ],
+      "description": "The pseudo-first-order coefficient CBM-Z assigns to one peroxy radical's lumped reaction with the whole peroxy pool: k_i = sum_j A_ij e^(B_ij/T) x_j = 2 g_i S - g_i^2 x_i, where S = sum_j g_j x_j is the pool's weighted concentration and the subtraction removes the double count of the self term (the cross rule carries a factor 2 that the diagonal does not). This is the exact algebraic value of the Fortran's 10x10 double loop, written as a single sum over the pool.",
+      "body": {
+        "op": "-",
+        "args": [
+          {
+            "op": "*",
+            "args": [
+              2,
+              "g",
+              "S"
+            ]
+          },
+          {
+            "op": "*",
+            "args": [
+              "g",
+              "g",
+              "x"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,5680 @@
+{
+  "esm": "1.0.0",
+  "metadata": {
+    "name": "cbmz_rate_constants",
+    "description": "Every rate coefficient of the WRF-Chem CBM-Z gas-phase mechanism (chem_opt = 170, CBMZ_MOSAIC_KPP: CBM-Z through KPP, paired with 8-bin MOSAIC), evaluated from the state KPP's Update_RCONST is given. The model CBMZRateConstants exposes RCONST(1:142) of chem/KPP/mechanisms/cbmz_mosaic of WRF v4.8.0 as 142 observeds k_R001..k_R142, each built from the hand-authored rate-law templates of cbmz_ratelaws.esm with that reaction's coefficients bound at the call site, so the mechanism's numbers appear exactly once. It is the first of the three CBM-Z documents: the reaction system (cbmz.esm) references these coefficients by scoped name, and the species tendencies follow from it.\n\nInputs. Temperature, air number density and eleven photolysis frequencies are the ordinary environmental inputs. The ten peroxy-radical concentrations are inputs too, and that is not an accident of this component's boundary: CBM-Z's peroxy-peroxy reactions {127:107}..{136:116} are written pseudo-first-order, so ten of its 142 rate COEFFICIENTS depend on the state. Standalone they are parameters, which is what makes every coefficient assertable pointwise; a consumer that integrates the mechanism drives them from the reaction system's own species.\n\nThe peroxy pool is written as a sum, not as the Fortran's 10x10 double loop. cbmz_mosaic.def's peroxy() builds its cross coefficients from the diagonal by A_ij = 2 sqrt(A_ii A_jj) and B_ij = (B_ii + B_jj)/2, which is exactly A_ij e^(B_ij/T) = 2 g_i g_j with g_i = sqrt(A_ii) e^(B_ii/2T); the diagonal is g_i^2. So the whole matrix collapses to k_i = 2 g_i S - g_i^2 c_i with one pool sum S = sum_j g_j c_j, and the 100 matrix entries never have to be written down. The scheme overrides exactly one pair (CH3O2 <-> RO2) rather than deriving it, and that override enters as a single correction term on k_R127 and k_R129. Measured cost of the rewrite against the Fortran's own loop: 1.1e-15 relative, worst over 16 steps x 59 levels.\n\nSingle-precision literals. WRF's KPP runs in real64, but a Fortran literal written without a _dp or D exponent is default real, so the value the mechanism actually evaluates is its float32 rounding. In CBM-Z that reaches thirteen numbers: the photolysis scalings 0.7, 9.64, 9.04 and 0.025; the .79/.21 branching of O(1D) quenching and the .21 of O(3P) + O2 + M; the 0.667 exponent of OH + CH4; the two constants of RK_CO_HO; and the Aperox diagonal plus the 1.3e-12 CH3O2/RO2 override of peroxy(). Each is bound here as the binary64 value of its float32 rounding, as radm2.esm already does for RADM2, because that is the number the reference evaluates -- transcribing the decimal instead leaves errors of up to 5.1e-8 (FORTRAN_BUGS N101). With them, the transcription reproduces the dumped RCONST to 1.1e-15 relative at every one of the 16 x 59 x 142 dumped coefficients.",
+    "license": "MIT",
+    "tags": [
+      "gaschem",
+      "wrf-chem",
+      "cbmz",
+      "kpp",
+      "rate-constants"
+    ],
+    "references": [
+      {
+        "citation": "Zaveri, R. A. and Peters, L. K. (1999), A new lumped structure photochemical mechanism for large-scale applications, J. Geophys. Res., 104, 30387-30415",
+        "doi": "10.1029/1999JD900876"
+      },
+      {
+        "citation": "Fast, J. D. et al. (2006), Evolution of ozone, particulates, and aerosol direct radiative forcing in the vicinity of Houston using a fully coupled meteorology-chemistry-aerosol model, J. Geophys. Res., 111, D21305",
+        "doi": "10.1029/2005JD006721"
+      }
+    ]
+  },
+  "models": {
+    "CBMZRateConstants": {
+      "reference": {
+        "notes": "WRF v4.8.0 chem/KPP/mechanisms/cbmz_mosaic: cbmz_mosaic.eqn (142 reactions), cbmz_mosaic.def (#INLINE F90_RATES), and the KPP-generated cbmz_mosaic_Update_Rconst.f90 that assembles RCONST from them."
+      },
+      "expression_template_imports": [
+        {
+          "ref": "./cbmz_ratelaws.esm"
+        }
+      ],
+      "variables": {
+        "T": {
+          "type": "parameter",
+          "units": "K",
+          "default": 298.0,
+          "description": "Air temperature (KPP TEMP)."
+        },
+        "T_ref": {
+          "type": "parameter",
+          "units": "K",
+          "default": 300.0,
+          "description": "Reference temperature of the (T/300)^n forms (the literal 300._dp of cbmz_mosaic.def)."
+        },
+        "M_air": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 2.4623522626293244e+19,
+          "description": "Air number density (KPP C_M = dens2con_a rho, chem_driver.F). Named M_air, not M, because the CBM-Z reaction system has a constant species M."
+        },
+        "j_o31d": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of O3 + hv -> O(1D) (ph_o31d), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_o31d), index 1 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_o33p": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of O3 + hv -> O(3P) (ph_o33p), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_o33p), index 2 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_no2": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of NO2 + hv -> NO + O(3P) (ph_no2), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_no2), index 3 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_no3o": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of NO3 + hv (ph_no3o), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_no3o), index 5 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_hno2": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of HONO + hv (ph_hno2), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_hno2), index 6 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_hno3": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of HNO3 + hv (ph_hno3), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_hno3), index 7 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_hno4": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of HNO4 + hv (ph_hno4), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_hno4), index 8 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_h2o2": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of H2O2 + hv (ph_h2o2), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_h2o2), index 9 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_ch2or": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of HCHO + hv -> 2 HO2 + CO, the radical channel (ph_ch2or), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_ch2or), index 10 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_ch2om": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of HCHO + hv -> CO, the molecular channel (ph_ch2om), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_ch2om), index 11 of the 52-long jv vector). Default 0 = night."
+        },
+        "j_n2o5": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Photolysis frequency of N2O5 + hv (ph_n2o5), WRF Registry ph_* in min^-1 divided by 60 (KPP interface jv(Pj_n2o5), index 23 of the 52-long jv vector). Default 0 = night."
+        },
+        "c_ch3o2": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical CH3O2, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own CH3O2; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_ethp": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical ETHP, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own ETHP; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_ro2": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical RO2, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own RO2; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_c2o3": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical C2O3, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own C2O3; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_ano2": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical ANO2, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own ANO2; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_nap": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical NAP, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own NAP; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_isopp": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical ISOPP, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own ISOPP; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_isopn": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical ISOPN, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own ISOPN; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_isopo2": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical ISOPO2, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own ISOPO2; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "c_xo2": {
+          "type": "parameter",
+          "units": "molec/cm^3",
+          "default": 0.0,
+          "description": "Concentration of the peroxy radical XO2, one of the ten members of CBM-Z's lumped peroxy-peroxy pool. A consumer that integrates the mechanism drives this from the reaction system's own XO2; standalone it is a parameter, which is what makes the rate coefficients testable pointwise."
+        },
+        "g_ch3o2": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of CH3O2 in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 2.499999990010493e-13, B = 190.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_ethp": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of ETHP in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 6.8000001517219e-14, B = 0.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_ro2": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of RO2 in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 2.899999901675998e-12, B = 500.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_c2o3": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of C2O3 in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 7.999999968033578e-12, B = 0.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_ano2": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of ANO2 in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 9.999999960041972e-13, B = 0.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_nap": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of NAP in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 5.300000029813629e-16, B = 1980.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_isopp": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of ISOPP in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 3.099999979481495e-14, B = 1000.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_isopn": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of ISOPN in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 3.099999979481495e-14, B = 1000.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_isopo2": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of ISOPO2 in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 3.099999979481495e-14, B = 1000.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "g_xo2": {
+          "type": "unknown",
+          "units": "cm^1.5/molec^0.5/s^0.5",
+          "description": "Half-rate weight of XO2 in the peroxy pool, sqrt(A) exp(B/2T) with the self-reaction coefficients A = 3.099999979481495e-14, B = 1000.0 of cbmz_mosaic.def's Aperox/Bperox diagonal (A is a single-precision literal there, so it is bound as the binary64 value of its float32 rounding)."
+        },
+        "s_perox": {
+          "type": "unknown",
+          "units": "molec^0.5/cm^1.5/s^0.5",
+          "description": "Weighted concentration of the whole peroxy pool, S = sum_j g_j c_j. Every one of the ten lumped peroxy-peroxy rate coefficients is 2 g_i S minus its own self-term correction, so the pool is summed once."
+        },
+        "dk_perox_cross_ch3o2_ro2": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Correction to the CH3O2 <-> RO2 cross coefficient. cbmz_mosaic.def's peroxy() builds every off-diagonal pair from the diagonal by A_ij = 2 sqrt(A_ii A_jj), B_ij = (B_ii + B_jj)/2, then OVERRIDES this one pair with A = 1.3000000381735433e-12 (a single-precision literal), B = 640.0. This is the difference between the override and the combination rule, added to k_R127 and k_R129 with the partner's concentration."
+        },
+        "k_R001": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 1 {001:J01} NO2 + hv = NO + O3P (cbmz_mosaic.eqn: j(Pj_no2))."
+        },
+        "k_R002": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 2 {002:J02} NO3 + hv = .89 NO2 + .89 O3P + .11 NO (cbmz_mosaic.eqn: j(Pj_no3o))."
+        },
+        "k_R003": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 3 {003:J03} HONO + hv = OH + NO (cbmz_mosaic.eqn: j(Pj_hno2))."
+        },
+        "k_R004": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 4 {004:J04} HNO3 + hv = OH + NO2 (cbmz_mosaic.eqn: j(Pj_hno3))."
+        },
+        "k_R005": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 5 {005:J05} HNO4 + hv = HO2 + NO2 (cbmz_mosaic.eqn: j(Pj_hno4))."
+        },
+        "k_R006": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 6 {006:J06} N2O5 + hv = NO2 + NO3 (cbmz_mosaic.eqn: j(Pj_n2o5))."
+        },
+        "k_R007": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 7 {007:J07} O3 + hv = O3P (cbmz_mosaic.eqn: j(Pj_o33p))."
+        },
+        "k_R008": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 8 {008:J08} O3 + hv = O1D (cbmz_mosaic.eqn: j(Pj_o31d))."
+        },
+        "k_R009": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 9 {009:J09} H2O2 + hv = 2 OH (cbmz_mosaic.eqn: j(Pj_h2o2))."
+        },
+        "k_R010": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 10 {010:J10} HCHO + hv = 2 HO2 + CO (cbmz_mosaic.eqn: j(Pj_ch2or))."
+        },
+        "k_R011": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 11 {011:J11} HCHO + hv = CO (cbmz_mosaic.eqn: j(Pj_ch2om))."
+        },
+        "k_R012": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 12 {012:J12} CH3OOH + hv = HCHO + HO2 + OH (cbmz_mosaic.eqn: 0.7 * j(Pj_h2o2))."
+        },
+        "k_R013": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 13 {013:J13} ETHOOH + hv = ALD2 + HO2 + OH (cbmz_mosaic.eqn: 0.7 * j(Pj_h2o2))."
+        },
+        "k_R014": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 14 {014:J14} ALD2 + hv = CH3O2 + HO2 + CO (cbmz_mosaic.eqn: 4.6D-4 * j(Pj_no2))."
+        },
+        "k_R015": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 15 {015:J15} AONE + hv = C2O3 + CH3O2 (cbmz_mosaic.eqn: 7.8D-5 * j(Pj_no2))."
+        },
+        "k_R016": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 16 {016:J16} MGLY + hv = C2O3 + CO + HO2 (cbmz_mosaic.eqn: 9.64 * j(Pj_ch2or))."
+        },
+        "k_R017": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 17 {017:J17} OPEN + hv = C2O3 + CO + HO2 (cbmz_mosaic.eqn: 9.04 * j(Pj_ch2or))."
+        },
+        "k_R018": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 18 {018:J18} ROOH + hv = OH + 0.4 XO2 + 0.74 AONE + 0.3 ALD2 + 0.1 ETHP + 0.9 HO2 + 1.98 XPAR (cbmz_mosaic.eqn: 0.7 * j(Pj_h2o2))."
+        },
+        "k_R019": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 19 {019:J19} ONIT + hv = NO2 + 0.41 XO2 + 0.74 AONE + 0.3 ALD2 + 0.1 ETHP + 0.9 HO2+ 1.98 XPAR (cbmz_mosaic.eqn: 1.0D-4 * j(Pj_no2))."
+        },
+        "k_R020": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 20 {020:J20} ISOPRD + hv = 0.97 C2O3 + 0.33 HO2 + 0.33 CO + 0.7 CH3O2 + 0.2 HCHO + 0.07 ALD2 + 0.03 AONE (cbmz_mosaic.eqn: 0.025 * j(Pj_ch2om))."
+        },
+        "k_R021": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 21 {021:001} O1D+M=O3P (cbmz_mosaic.eqn: .79*ARR3(1.8D-11,-110.0_dp,TEMP)+.21*ARR3(3.2D-11,-70.0_dp,TEMP))."
+        },
+        "k_R022": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 22 {022:002} O1D+H2O = 2 OH (cbmz_mosaic.eqn: 2.2D-10)."
+        },
+        "k_R023": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 23 {023:003} O3P+M = O3 (cbmz_mosaic.eqn: .21*ARR3MS(6.0D-34,2.3_dp,TEMP,C_M))."
+        },
+        "k_R024": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 24 {024:004} O3P + O3 =0.42M (cbmz_mosaic.eqn: ARR3(8.0D-12,2060._dp,TEMP))."
+        },
+        "k_R025": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 25 {025:005} O3P + NO2 = NO (cbmz_mosaic.eqn: ARR3(6.5D-12,-120._dp,TEMP))."
+        },
+        "k_R026": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 26 {026:006} O3P + NO2 = NO3 (cbmz_mosaic.eqn: TROEMS(9.0D-32,-2.0_dp,2.2D-11,0.0_dp,TEMP,C_M))."
+        },
+        "k_R027": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 27 {027:007} O3P + NO = NO2 (cbmz_mosaic.eqn: TROEMS(9.0D-32,-1.5_dp,3.0D-11,0.0_dp,TEMP,C_M))."
+        },
+        "k_R028": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 28 {028:008} O3 + NO = NO2 (cbmz_mosaic.eqn: ARR3(2.0D-12,1400._dp,TEMP))."
+        },
+        "k_R029": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 29 {029:009} O3 + NO2 = NO3 (cbmz_mosaic.eqn: ARR3(1.2D-13,2450._dp,TEMP))."
+        },
+        "k_R030": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 30 {030:010} O3 + OH = HO2 (cbmz_mosaic.eqn: ARR3(1.6D-12,940._dp,TEMP))."
+        },
+        "k_R031": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 31 {031:011} O3 + HO2 = OH (cbmz_mosaic.eqn: ARR3(1.1D-14,500._dp,TEMP))."
+        },
+        "k_R032": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 32 {032:012} OH+M = HO2+H2O (cbmz_mosaic.eqn: 5.8D-7*ARR3(5.5D-12,2000._dp,TEMP))."
+        },
+        "k_R033": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 33 {033:013} OH + NO = HONO (cbmz_mosaic.eqn: TROEMS(7.0D-31,-2.6_dp,3.6D-11,-0.1_dp,TEMP,C_M))."
+        },
+        "k_R034": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 34 {034:014} OH + NO2 = HNO3 (cbmz_mosaic.eqn: TROEMS(2.5D-30,-4.4_dp,1.6D-11,-1.7_dp,TEMP,C_M))."
+        },
+        "k_R035": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 35 {035:015} OH + NO3 = HO2 + NO2 (cbmz_mosaic.eqn: 2.2D-11)."
+        },
+        "k_R036": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 36 {036:016} OH + HONO = NO2 (cbmz_mosaic.eqn: ARR3(1.8D-11,390._dp,TEMP))."
+        },
+        "k_R037": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 37 {037:017} OH + HNO3 = NO3 (cbmz_mosaic.eqn: RK_HO_HNO3(TEMP,C_M))."
+        },
+        "k_R038": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 38 {038:018} OH + HNO4 = NO2 (cbmz_mosaic.eqn: ARR3(1.3D-12,-380._dp,TEMP))."
+        },
+        "k_R039": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 39 {039:019} OH + HO2 = H2O +0.21M (cbmz_mosaic.eqn: ARR3(4.8D-11,-250._dp,TEMP))."
+        },
+        "k_R040": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 40 {040:020} OH + H2O2 = HO2 (cbmz_mosaic.eqn: ARR3(2.9D-12,160._dp,TEMP))."
+        },
+        "k_R041": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 41 {041:021} HO2 + HO2 = H2O2 (cbmz_mosaic.eqn: RK_2HO2(TEMP,C_M))."
+        },
+        "k_R042": {
+          "type": "unknown",
+          "units": "cm^6/molec^2/s",
+          "description": "Rate coefficient of CBM-Z reaction 42 {042:022} HO2 + HO2 + H2O = H2O2 (cbmz_mosaic.eqn: RK_2HO2_H2O(TEMP,C_M))."
+        },
+        "k_R043": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 43 {043:023} HO2 + NO = OH + NO2 (cbmz_mosaic.eqn: ARR3(3.5D-12,-250._dp,TEMP))."
+        },
+        "k_R044": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 44 {044:024} HO2 + NO2 = HNO4 (cbmz_mosaic.eqn: TROEMS(1.8D-31,-3.2_dp,4.7D-12,-1.4_dp,TEMP,C_M))."
+        },
+        "k_R045": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 45 {045:025} HO2 + NO2 = HONO (cbmz_mosaic.eqn: 5.0D-16)."
+        },
+        "k_R046": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 46 {046:026} HNO4 = HO2 + NO2 (cbmz_mosaic.eqn: TROEEMS(4.8D+26,10900._dp,1.8D-31,-3.2_dp,4.7D-12,-1.4_dp,TEMP,C_M))."
+        },
+        "k_R047": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 47 {047:027} NO3 + NO = NO2 + NO2 (cbmz_mosaic.eqn: ARR3(1.5D-11,-170._dp,TEMP))."
+        },
+        "k_R048": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 48 {048:028} NO3 + NO2 = NO + NO2 (cbmz_mosaic.eqn: ARR3(4.5D-14,1260._dp,TEMP))."
+        },
+        "k_R049": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 49 {049:029} NO3 + NO2 = N2O5 (cbmz_mosaic.eqn: TROEMS(2.2D-30,-3.9_dp,1.5D-12,-0.7_dp,TEMP,C_M))."
+        },
+        "k_R050": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 50 {050:030} NO3 + NO3 = 2.0 NO2 (cbmz_mosaic.eqn: ARR3(8.5D-13,2450._dp,TEMP))."
+        },
+        "k_R051": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 51 {051:031} NO3 + HO2 = 0.3 HNO3 + .7 NO2 + .7 OH (cbmz_mosaic.eqn: 3.5D-12)."
+        },
+        "k_R052": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 52 {052:032} N2O5+H2O = 2.0 HNO3 (cbmz_mosaic.eqn: 2.0D-21)."
+        },
+        "k_R053": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 53 {053:033} N2O5 = NO3 + NO2 (cbmz_mosaic.eqn: TROEEMS(3.7D+26,11000._dp,2.2D-30,-3.9_dp,1.5D-12,-0.7_dp,TEMP,C_M))."
+        },
+        "k_R054": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 54 {054:034} CO + OH = HO2 (cbmz_mosaic.eqn: RK_CO_HO(TEMP,C_M))."
+        },
+        "k_R055": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 55 {055:035} SO2 + OH = H2SO4 + HO2 (cbmz_mosaic.eqn: TROEMS(3.0D-31,-3.3_dp,1.5D-12,0.0_dp,TEMP,C_M))."
+        },
+        "k_R056": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 56 {056:036} OH+CH4 = CH3O2 (cbmz_mosaic.eqn: TEMP**0.667*ARR3(2.8D-14,1575._dp,TEMP))."
+        },
+        "k_R057": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 57 {057:037} C2H6 + OH = ETHP (cbmz_mosaic.eqn: TEMP**2*ARR3(1.5D-17,492._dp,TEMP))."
+        },
+        "k_R058": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 58 {058:038} PAR + OH = RO2 + .012 ALK1 (cbmz_mosaic.eqn: 8.1D-13)."
+        },
+        "k_R059": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 59 {059:039} HCHO + OH = HO2 + CO (cbmz_mosaic.eqn: 1.0D-11)."
+        },
+        "k_R060": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 60 {060:040} HCHO + NO3 = HNO3 + HO2 + CO (cbmz_mosaic.eqn: ARR3(3.4D-13,1900._dp,TEMP))."
+        },
+        "k_R061": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 61 {061:041} ALD2 + OH = C2O3 (cbmz_mosaic.eqn: ARR3(5.6D-12,-270._dp,TEMP))."
+        },
+        "k_R062": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 62 {062:042} ALD2 + NO3 = C2O3 + HNO3 (cbmz_mosaic.eqn: ARR3(1.4D-12,1900._dp,TEMP))."
+        },
+        "k_R063": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 63 {063:043} AONE + OH = ANO2 (cbmz_mosaic.eqn: TEMP**2*ARR3(5.3D-18,230._dp,TEMP))."
+        },
+        "k_R064": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 64 {064:044} MGLY + OH = XO2 + C2O3 (cbmz_mosaic.eqn: 1.7D-11)."
+        },
+        "k_R065": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 65 {065:045} MGLY + NO3 = HNO3 + C2O3 + CO (cbmz_mosaic.eqn: ARR3(1.4D-12,1900._dp,TEMP))."
+        },
+        "k_R066": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 66 {066:046} C2H4 + O3 = HCHO + .22 HO2 + .12 OH + .24 CO + .52 HCOOH (cbmz_mosaic.eqn: ARR3(1.2D-14,2630._dp,TEMP))."
+        },
+        "k_R067": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 67 {067:047} C2H4 + OH = XO2 + 1.56 HCHO + HO2 + .22 ALD2 (cbmz_mosaic.eqn: TROEMS(1.0D-28,-0.8_dp,8.8D-12,0.0_dp,TEMP,C_M))."
+        },
+        "k_R068": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 68 {068:048} OLET + O3 = .57 HCHO + .47 ALD2 + .33 OH + .26 HO2 + .07 CH3O2 + .06 ETHP + .03 RO2 + .13 C2O3 + .04 MGLY + .03 CH3OH + .06CH4 + .01C2H6 + .31 CO + .22 HCOOH + .09RCOOH +1.06 XPAR + .008 OLE1 (cbmz_mosaic.eqn: ARR3(4.2D-15,1800._dp,TEMP))."
+        },
+        "k_R069": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 69 {069:049} OLEI + O3 = 1.03 ALD2 +.07 AONE + .6 OH + .22 HO2 + .1 CH3O2 + .05 ETHP + .09 RO2 + .11 ANO2 + .19 C2O3 + .07 MGLY + .04 CH3OH + .08 CH4 + .01C2H6 + .3 CO + .16 RCOOH + 2.26 XPAR + .008 OLE1 (cbmz_mosaic.eqn: ARR3(8.9D-16,392._dp,TEMP))."
+        },
+        "k_R070": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 70 {070:050} OLET + OH = XO2 + HO2 + HCHO + ALD2 + XPAR + .008 OLE1 (cbmz_mosaic.eqn: ARR3(5.8D-12,-478._dp,TEMP))."
+        },
+        "k_R071": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 71 {071:051} OLEI + OH = XO2 + HO2 + .23 AONE + 1.77 ALD2 + 2.23 XPAR + .008 OLE1 (cbmz_mosaic.eqn: ARR3(2.9D-11,-255._dp,TEMP))."
+        },
+        "k_R072": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 72 {072:052} OLET + NO3 = NAP + .008 OLE1 (cbmz_mosaic.eqn: ARR3(3.1D-13,1010._dp,TEMP))."
+        },
+        "k_R073": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 73 {073:053} OLEI + NO3 = NAP + .008 OLE1 (cbmz_mosaic.eqn: 2.5D-12)."
+        },
+        "k_R074": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 74 {074:054} TOL + OH = .08 XO2 + .12 CRES + .2 HO2 + .8 TO2 + .039 ARO1 +.108 ARO2 (cbmz_mosaic.eqn: ARR3(2.1D-12,-322._dp,TEMP))."
+        },
+        "k_R075": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 75 {075:055} XYL + OH = .5 XO2 + .55 HO2 + .05 CRES + .8 MGLY + 1.1 PAR + .45 TO2 + .039 ARO1 +.108 ARO2 (cbmz_mosaic.eqn: ARR3(1.7D-11,-116._dp,TEMP))."
+        },
+        "k_R076": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 76 {076:056} TO2 + NO = .95 NO2 + .95 OPEN + .95 HO2 + .05 ONIT (cbmz_mosaic.eqn: 8.1D-12)."
+        },
+        "k_R077": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 77 {077:057} CRES + OH = .4 CRO + .6 XO2 + .6 HO2 + .3 OPEN + .039 ARO1 +.108 ARO2 (cbmz_mosaic.eqn: 4.1D-11)."
+        },
+        "k_R078": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 78 {078:058} CRES + NO3 = CRO + HNO3 + .039 ARO1 +.108 ARO2 (cbmz_mosaic.eqn: 2.2D-11)."
+        },
+        "k_R079": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 79 {079:059} CRO + NO2 = ONIT (cbmz_mosaic.eqn: 1.4D-11)."
+        },
+        "k_R080": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 80 {080:060} OPEN + OH = XO2 + C2O3 + 2 CO + 2 HO2 + HCHO (cbmz_mosaic.eqn: 3.0D-11)."
+        },
+        "k_R081": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 81 {081:061} OPEN + O3 = .03 ALD2 + .62 C2O3 + .7 HCHO + .69 CO + .08 OH + .03 XO2 + .76 HO2 + .2 MGLY (cbmz_mosaic.eqn: ARR3(5.4D-17,500._dp,TEMP))."
+        },
+        "k_R082": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 82 {082:062} ISOP + OH = ISOPP + .08 XO2 (cbmz_mosaic.eqn: ARR3(2.6D-11,-409._dp,TEMP))."
+        },
+        "k_R083": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 83 {083:063} ISOP + O3 = .6 HCHO + .65 ISOPRD + .27 OH + .07 CO + .39 RCOOH + .07 HO2 + .15 ALD2 + .2 XO2 + .2 C2O3 (cbmz_mosaic.eqn: ARR3(1.2D-14,2013._dp,TEMP))."
+        },
+        "k_R084": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 84 {084:064} ISOP + NO3 = ISOPN (cbmz_mosaic.eqn: ARR3(3.0D-12,446._dp,TEMP))."
+        },
+        "k_R085": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 85 {085:065} ISOPRD + OH = .5 C2O3 + .5 ISOPO2 + .2 XO2 (cbmz_mosaic.eqn: 3.3D-11)."
+        },
+        "k_R086": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 86 {086:066} ISOPRD + O3 = .27 OH + .1 HO2 + .11 C2O3 + .07 XO2 + .05 CH3O2 + .16 CO + .15 HCHO + .02 ALD2 + .09 AONE + .85 MGLY + .46 RCOOH (cbmz_mosaic.eqn: 7.0D-18)."
+        },
+        "k_R087": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 87 {087:067} ISOPRD + NO3 = .07 C2O3 + .07 HNO3 + .64 CO + .28 HCHO + .93 ONIT + .28 ALD2 + .93 HO2 + .93 XO2 + 1.86 PAR (cbmz_mosaic.eqn: 1.0D-15)."
+        },
+        "k_R088": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 88 {088:068} ISOPP + NO = .09 ONIT + .91 NO2 + .91 HO2 + .63 HCHO + .91 ISOPRD + 0.18 PAR (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R089": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 89 {089:069} ISOPN + NO = 1.2 NO2 + .8 ONIT + .8 ALD2 + .8 HO2 + .2 ISOPRD + 1.6 PAR (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R090": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 90 {090:070} ISOPO2 + NO = NO2 + HO2 + .59 CO + .55 ALD2 + .25 HCHO + .34 MGLY + .63 AONE (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R091": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 91 {091:071} ISOPP + HO2 = ROOH (cbmz_mosaic.eqn: ARR3(1.7D-13,-1300._dp,TEMP))."
+        },
+        "k_R092": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 92 {092:072} ISOPN + HO2 = ONIT + 2 PAR (cbmz_mosaic.eqn: ARR3(1.7D-13,-1300._dp,TEMP))."
+        },
+        "k_R093": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 93 {093:073} ISOPO2 + HO2 = ROOH (cbmz_mosaic.eqn: ARR3(1.7D-13,-1300._dp,TEMP))."
+        },
+        "k_R094": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 94 {094:074} CH3OOH + OH = .7 CH3O2 + .3 HCHO + .3 OH (cbmz_mosaic.eqn: ARR3(3.8D-12,-200._dp,TEMP))."
+        },
+        "k_R095": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 95 {095:075} ETHOOH + OH = .7 ETHP + .3 ALD2 + .3 OH (cbmz_mosaic.eqn: ARR3(3.8D-12,-200._dp,TEMP))."
+        },
+        "k_R096": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 96 {096:076} ROOH + OH = .77 RO2 + .19 MGLY + .04 ALD2 + .23 OH + .42 XPAR (cbmz_mosaic.eqn: ARR3(3.8D-12,-200._dp,TEMP))."
+        },
+        "k_R097": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 97 {097:077} ONIT + OH = NAP (cbmz_mosaic.eqn: ARR3(1.6D-11,540._dp,TEMP))."
+        },
+        "k_R098": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 98 {098:078} C2O3 + NO2 = PAN (cbmz_mosaic.eqn: TROEMS(9.7D-29,-5.6_dp,9.3D-12,-1.5_dp,TEMP,C_M))."
+        },
+        "k_R099": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 99 {099:079} PAN = C2O3 + NO2 (cbmz_mosaic.eqn: TROEEMS(1.1D+28,14000._dp,9.7D-29,-5.6_dp,9.3D-12,-1.5_dp,TEMP,C_M))."
+        },
+        "k_R100": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 100 {100:080} CH3OH + OH = HCHO + HO2 (cbmz_mosaic.eqn: ARR3(6.7D-12,600._dp,TEMP))."
+        },
+        "k_R101": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 101 {101:081} CH3O2 + NO = HCHO + HO2 + NO2 (cbmz_mosaic.eqn: ARR3(3.0D-12,-280._dp,TEMP))."
+        },
+        "k_R102": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 102 {102:082} ETHP + NO = ALD2 + HO2 + NO2 (cbmz_mosaic.eqn: ARR3(2.6D-12,-365._dp,TEMP))."
+        },
+        "k_R103": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 103 {103:083} RO2 + NO = .16 ONIT + .84 NO2 + .34 XO2 + .62 AONE + .25 ALD2 + .08 ETHP + .76 HO2 + 1.68 XPAR (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R104": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 104 {104:084} C2O3 + NO = NO2 + CH3O2 (cbmz_mosaic.eqn: ARR3(5.3D-12,-360._dp,TEMP))."
+        },
+        "k_R105": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 105 {105:085} ANO2 + NO = NO2 + C2O3 + HCHO (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R106": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 106 {106:086} NAP + NO = 1.5 NO2 + .5 HCHO + .5 ALD2 + .5 ONIT + .5 HO2 + XPAR (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R107": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 107 {107:087} XO2 + NO = NO2 (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R108": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 108 {108:088} CH3O2 + NO3 = HCHO + HO2 + NO2 (cbmz_mosaic.eqn: 1.1D-12)."
+        },
+        "k_R109": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 109 {109:089} ETHP + NO3 = ALD2 + HO2 + NO2 (cbmz_mosaic.eqn: 2.5D-12)."
+        },
+        "k_R110": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 110 {110:090} RO2 + NO3 = NO2 + .4 XO2 + .74 AONE + .3 ALD2 + .1 ETHP + .9 HO2 + 1.98 XPAR (cbmz_mosaic.eqn: 2.5D-12)."
+        },
+        "k_R111": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 111 {111:091} C2O3 + NO3 = NO2 + CH3O2 (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R112": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 112 {112:092} ANO2 + NO3 = NO2 + C2O3 + HCHO (cbmz_mosaic.eqn: 1.2D-12)."
+        },
+        "k_R113": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 113 {113:093} NAP + NO3 = 1.5 NO2 + .5 HCHO + .5 ALD2 + .5 ONIT + .5 HO2 + XPAR (cbmz_mosaic.eqn: 4.0D-12)."
+        },
+        "k_R114": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 114 {114:094} XO2 + NO3 = NO2 (cbmz_mosaic.eqn: 2.5D-12)."
+        },
+        "k_R115": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 115 {115:095} CH3O2 + HO2 = CH3OOH (cbmz_mosaic.eqn: ARR3(3.8D-13,-800._dp,TEMP))."
+        },
+        "k_R116": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 116 {116:096} ETHP + HO2 = ETHOOH (cbmz_mosaic.eqn: ARR3(7.5D-13,-700._dp,TEMP))."
+        },
+        "k_R117": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 117 {117:097} RO2 + HO2 = ROOH (cbmz_mosaic.eqn: ARR3(1.7D-13,-1300._dp,TEMP))."
+        },
+        "k_R118": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 118 {118:098} C2O3 + HO2 = .4 RCOOH + .4 O3 (cbmz_mosaic.eqn: ARR3(4.5D-13,-1000._dp,TEMP))."
+        },
+        "k_R119": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 119 {119:099} ANO2 + HO2 = ROOH (cbmz_mosaic.eqn: ARR3(1.2D-13,-1300._dp,TEMP))."
+        },
+        "k_R120": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 120 {120:100} NAP + HO2 = ONIT (cbmz_mosaic.eqn: ARR3(1.7D-13,-1300._dp,TEMP))."
+        },
+        "k_R121": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 121 {121:101} XO2 + HO2 = PROD (cbmz_mosaic.eqn: ARR3(1.7D-13,-1300._dp,TEMP))."
+        },
+        "k_R122": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 122 {122:102} ANOL + OH = ALD2 + HO2 (cbmz_mosaic.eqn: ARR3(7.0D-12,235._dp,TEMP))."
+        },
+        "k_R123": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 123 {123:103} PAR + XPAR = PROD (cbmz_mosaic.eqn: 1.0D-11)."
+        },
+        "k_R124": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 124 {124:104} HCl = HCl (cbmz_mosaic.eqn: 1.0). This reaction is the identity X = X: KPP eliminates it from the derived tendencies and so does the companion reaction system, but the coefficient is kept here so that all 142 entries of the dumped RCONST can be asserted."
+        },
+        "k_R125": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 125 {125:105} NH3 = NH3 (cbmz_mosaic.eqn: 1.0). This reaction is the identity X = X: KPP eliminates it from the derived tendencies and so does the companion reaction system, but the coefficient is kept here so that all 142 entries of the dumped RCONST can be asserted."
+        },
+        "k_R126": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 126 {126:106} H2SO4 = H2SO4 (cbmz_mosaic.eqn: 1.0). This reaction is the identity X = X: KPP eliminates it from the derived tendencies and so does the companion reaction system, but the coefficient is kept here so that all 142 entries of the dumped RCONST can be asserted."
+        },
+        "k_R127": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 127 {127:107} CH3O2 = .66 HCHO + .32 HO2 + .34 CH3OH (cbmz_mosaic.eqn: peroxy(1,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R128": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 128 {128:108} ETHP = .8 ALD2 + .6 HO2 + .2 C2H6 (cbmz_mosaic.eqn: peroxy(2,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R129": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 129 {129:109} RO2 = .24 XO2 + .21 ALD2 + .57 AONE + .06 ETHP + .54 HO2 + 1.25 XPAR (cbmz_mosaic.eqn: peroxy(3,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R130": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 130 {130:110} C2O3 = CH3O2 (cbmz_mosaic.eqn: peroxy(4,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R131": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 131 {131:111} ANO2 = .7 C2O3 + .7 HCHO + .15 MGLY + .15 AONE (cbmz_mosaic.eqn: peroxy(5,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R132": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 132 {132:112} NAP = .5 NO2 + .5 HCHO + .5 ALD2 + .5 ONIT + XPAR (cbmz_mosaic.eqn: peroxy(6,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R133": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 133 {133:113} ISOPP = ISOPRD (cbmz_mosaic.eqn: peroxy(7,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R134": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 134 {134:114} ISOPN = ALD2 + ONIT + 2 PAR (cbmz_mosaic.eqn: peroxy(8,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R135": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 135 {135:115} ISOPO2 = .5 ALD2 + .5 AONE (cbmz_mosaic.eqn: peroxy(9,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R136": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Rate coefficient of CBM-Z reaction 136 {136:116} XO2 = PROD (cbmz_mosaic.eqn: peroxy(10,CH3O2,ETHP,RO2,C2O3,ANO2,NAP,ISOPP,ISOPN,ISOPO2,XO2,TEMP,C_M))."
+        },
+        "k_R137": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 137 {137:117} API + OH = .0064 API1 + .055 API2 (cbmz_mosaic.eqn: ARR3(12.1D-12,-444._dp,TEMP))."
+        },
+        "k_R138": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 138 {138:118} API + NO3 = .0 API1 + .0 API2 (cbmz_mosaic.eqn: ARR3(1.01D-15,732._dp,TEMP))."
+        },
+        "k_R139": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 139 {139:119} API + O3 = .022 API1 + .19 API2 (cbmz_mosaic.eqn: ARR3(1.19D-12,-490._dp,TEMP))."
+        },
+        "k_R140": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 140 {140:120} LIM + OH = .037 LIM1 + .056 LIM2 (cbmz_mosaic.eqn: 1.71D-10)."
+        },
+        "k_R141": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 141 {141:121} LIM + NO3 = .0 LIM1 + .0 LIM2 (cbmz_mosaic.eqn: 2.0D-16)."
+        },
+        "k_R142": {
+          "type": "unknown",
+          "units": "cm^3/molec/s",
+          "description": "Rate coefficient of CBM-Z reaction 142 {142:122} LIM + O3 = .13 LIM1 + .19 LIM2 (cbmz_mosaic.eqn: 1.22D-11)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "g_ch3o2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 2.499999990010493e-13,
+              "b": 190.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_ethp",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 6.8000001517219e-14,
+              "b": 0.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_ro2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 2.899999901675998e-12,
+              "b": 500.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_c2o3",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 7.999999968033578e-12,
+              "b": 0.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_ano2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 9.999999960041972e-13,
+              "b": 0.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_nap",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 5.300000029813629e-16,
+              "b": 1980.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_isopp",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 3.099999979481495e-14,
+              "b": 1000.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_isopn",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 3.099999979481495e-14,
+              "b": 1000.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_isopo2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 3.099999979481495e-14,
+              "b": 1000.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "g_xo2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_weight",
+            "bindings": {
+              "a": 3.099999979481495e-14,
+              "b": 1000.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "s_perox",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "g_ch3o2",
+                  "c_ch3o2"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_ethp",
+                  "c_ethp"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_ro2",
+                  "c_ro2"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_c2o3",
+                  "c_c2o3"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_ano2",
+                  "c_ano2"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_nap",
+                  "c_nap"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_isopp",
+                  "c_isopp"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_isopn",
+                  "c_isopn"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_isopo2",
+                  "c_isopo2"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "g_xo2",
+                  "c_xo2"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "dk_perox_cross_ch3o2_ro2",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  1.3000000381735433e-12,
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          640.0,
+                          "T"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  2,
+                  "g_ch3o2",
+                  "g_ro2"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "k_R001",
+          "rhs": "j_no2"
+        },
+        {
+          "lhs": "k_R002",
+          "rhs": "j_no3o"
+        },
+        {
+          "lhs": "k_R003",
+          "rhs": "j_hno2"
+        },
+        {
+          "lhs": "k_R004",
+          "rhs": "j_hno3"
+        },
+        {
+          "lhs": "k_R005",
+          "rhs": "j_hno4"
+        },
+        {
+          "lhs": "k_R006",
+          "rhs": "j_n2o5"
+        },
+        {
+          "lhs": "k_R007",
+          "rhs": "j_o33p"
+        },
+        {
+          "lhs": "k_R008",
+          "rhs": "j_o31d"
+        },
+        {
+          "lhs": "k_R009",
+          "rhs": "j_h2o2"
+        },
+        {
+          "lhs": "k_R010",
+          "rhs": "j_ch2or"
+        },
+        {
+          "lhs": "k_R011",
+          "rhs": "j_ch2om"
+        },
+        {
+          "lhs": "k_R012",
+          "rhs": {
+            "op": "*",
+            "args": [
+              0.699999988079071,
+              "j_h2o2"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R013",
+          "rhs": {
+            "op": "*",
+            "args": [
+              0.699999988079071,
+              "j_h2o2"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R014",
+          "rhs": {
+            "op": "*",
+            "args": [
+              0.00046,
+              "j_no2"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R015",
+          "rhs": {
+            "op": "*",
+            "args": [
+              7.8e-05,
+              "j_no2"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R016",
+          "rhs": {
+            "op": "*",
+            "args": [
+              9.640000343322754,
+              "j_ch2or"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R017",
+          "rhs": {
+            "op": "*",
+            "args": [
+              9.039999961853027,
+              "j_ch2or"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R018",
+          "rhs": {
+            "op": "*",
+            "args": [
+              0.699999988079071,
+              "j_h2o2"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R019",
+          "rhs": {
+            "op": "*",
+            "args": [
+              0.0001,
+              "j_no2"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R020",
+          "rhs": {
+            "op": "*",
+            "args": [
+              0.02500000037252903,
+              "j_ch2om"
+            ]
+          }
+        },
+        {
+          "lhs": "k_R021",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_two_channel_arr3",
+            "bindings": {
+              "f1": 0.7900000214576721,
+              "A1": 1.8e-11,
+              "B1": -110.0,
+              "f2": 0.20999999344348907,
+              "A2": 3.2e-11,
+              "B2": -70.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R022",
+          "rhs": 2.2e-10
+        },
+        {
+          "lhs": "k_R023",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3ms",
+            "bindings": {
+              "f": 0.20999999344348907,
+              "a": 6e-34,
+              "n": 2.3,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R024",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 8e-12,
+              "B": 2060.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R025",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 6.5e-12,
+              "B": -120.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R026",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 9e-32,
+              "n": -2.0,
+              "kinf_300": 2.2e-11,
+              "m": 0.0,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R027",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 9e-32,
+              "n": -1.5,
+              "kinf_300": 3e-11,
+              "m": 0.0,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R028",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 2e-12,
+              "B": 1400.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R029",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.2e-13,
+              "B": 2450.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R030",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.6e-12,
+              "B": 940.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R031",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.1e-14,
+              "B": 500.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R032",
+          "rhs": {
+            "op": "*",
+            "args": [
+              5.8e-07,
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "cbmz_arr3",
+                "bindings": {
+                  "A": 5.5e-12,
+                  "B": 2000.0,
+                  "T": "T"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "k_R033",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 7e-31,
+              "n": -2.6,
+              "kinf_300": 3.6e-11,
+              "m": -0.1,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R034",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 2.5e-30,
+              "n": -4.4,
+              "kinf_300": 1.6e-11,
+              "m": -1.7,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R035",
+          "rhs": 2.2e-11
+        },
+        {
+          "lhs": "k_R036",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.8e-11,
+              "B": 390.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R037",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_oh_hno3",
+            "bindings": {
+              "a1": 7.2e-15,
+              "b1": 785.0,
+              "a2": 1.9e-33,
+              "b2": 725.0,
+              "a3": 4.1e-16,
+              "b3": 1440.0,
+              "T": "T",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R038",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.3e-12,
+              "B": -380.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R039",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 4.8e-11,
+              "B": -250.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R040",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 2.9e-12,
+              "B": 160.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R041",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_ho2_self",
+            "bindings": {
+              "a1": 2.3e-13,
+              "b1": 600.0,
+              "a2": 1.7e-33,
+              "b2": 1000.0,
+              "T": "T",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R042",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_ho2_self_h2o",
+            "bindings": {
+              "a1": 2.3e-13,
+              "b1": 600.0,
+              "a2": 1.7e-33,
+              "b2": 1000.0,
+              "a3": 1.4e-21,
+              "b3": 2200.0,
+              "T": "T",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R043",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3.5e-12,
+              "B": -250.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R044",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 1.8e-31,
+              "n": -3.2,
+              "kinf_300": 4.7e-12,
+              "m": -1.4,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R045",
+          "rhs": 5e-16
+        },
+        {
+          "lhs": "k_R046",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troeems",
+            "bindings": {
+              "A": 4.8e+26,
+              "B": 10900.0,
+              "k0_300": 1.8e-31,
+              "n": -3.2,
+              "kinf_300": 4.7e-12,
+              "m": -1.4,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R047",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.5e-11,
+              "B": -170.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R048",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 4.5e-14,
+              "B": 1260.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R049",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 2.2e-30,
+              "n": -3.9,
+              "kinf_300": 1.5e-12,
+              "m": -0.7,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R050",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 8.5e-13,
+              "B": 2450.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R051",
+          "rhs": 3.5e-12
+        },
+        {
+          "lhs": "k_R052",
+          "rhs": 2e-21
+        },
+        {
+          "lhs": "k_R053",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troeems",
+            "bindings": {
+              "A": 3.7e+26,
+              "B": 11000.0,
+              "k0_300": 2.2e-30,
+              "n": -3.9,
+              "kinf_300": 1.5e-12,
+              "m": -0.7,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R054",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_co_oh",
+            "bindings": {
+              "a": 1.4999999397961872e-13,
+              "b": 8.179999755558104e-23,
+              "T": "T",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R055",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 3e-31,
+              "n": -3.3,
+              "kinf_300": 1.5e-12,
+              "m": 0.0,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R056",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3_tpower",
+            "bindings": {
+              "p": 0.6669999957084656,
+              "A": 2.8e-14,
+              "B": 1575.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R057",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3_tpower",
+            "bindings": {
+              "p": 2,
+              "A": 1.5e-17,
+              "B": 492.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R058",
+          "rhs": 8.1e-13
+        },
+        {
+          "lhs": "k_R059",
+          "rhs": 1e-11
+        },
+        {
+          "lhs": "k_R060",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3.4e-13,
+              "B": 1900.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R061",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 5.6e-12,
+              "B": -270.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R062",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.4e-12,
+              "B": 1900.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R063",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3_tpower",
+            "bindings": {
+              "p": 2,
+              "A": 5.3e-18,
+              "B": 230.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R064",
+          "rhs": 1.7e-11
+        },
+        {
+          "lhs": "k_R065",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.4e-12,
+              "B": 1900.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R066",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.2e-14,
+              "B": 2630.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R067",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 1e-28,
+              "n": -0.8,
+              "kinf_300": 8.8e-12,
+              "m": 0.0,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R068",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 4.2e-15,
+              "B": 1800.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R069",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 8.9e-16,
+              "B": 392.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R070",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 5.8e-12,
+              "B": -478.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R071",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 2.9e-11,
+              "B": -255.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R072",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3.1e-13,
+              "B": 1010.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R073",
+          "rhs": 2.5e-12
+        },
+        {
+          "lhs": "k_R074",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 2.1e-12,
+              "B": -322.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R075",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.7e-11,
+              "B": -116.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R076",
+          "rhs": 8.1e-12
+        },
+        {
+          "lhs": "k_R077",
+          "rhs": 4.1e-11
+        },
+        {
+          "lhs": "k_R078",
+          "rhs": 2.2e-11
+        },
+        {
+          "lhs": "k_R079",
+          "rhs": 1.4e-11
+        },
+        {
+          "lhs": "k_R080",
+          "rhs": 3e-11
+        },
+        {
+          "lhs": "k_R081",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 5.4e-17,
+              "B": 500.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R082",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 2.6e-11,
+              "B": -409.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R083",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.2e-14,
+              "B": 2013.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R084",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3e-12,
+              "B": 446.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R085",
+          "rhs": 3.3e-11
+        },
+        {
+          "lhs": "k_R086",
+          "rhs": 7e-18
+        },
+        {
+          "lhs": "k_R087",
+          "rhs": 1e-15
+        },
+        {
+          "lhs": "k_R088",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R089",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R090",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R091",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.7e-13,
+              "B": -1300.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R092",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.7e-13,
+              "B": -1300.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R093",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.7e-13,
+              "B": -1300.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R094",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3.8e-12,
+              "B": -200.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R095",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3.8e-12,
+              "B": -200.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R096",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3.8e-12,
+              "B": -200.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R097",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.6e-11,
+              "B": 540.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R098",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troems",
+            "bindings": {
+              "k0_300": 9.7e-29,
+              "n": -5.6,
+              "kinf_300": 9.3e-12,
+              "m": -1.5,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R099",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_troeems",
+            "bindings": {
+              "A": 1.1e+28,
+              "B": 14000.0,
+              "k0_300": 9.7e-29,
+              "n": -5.6,
+              "kinf_300": 9.3e-12,
+              "m": -1.5,
+              "T": "T",
+              "T_ref": "T_ref",
+              "M": "M_air"
+            }
+          }
+        },
+        {
+          "lhs": "k_R100",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 6.7e-12,
+              "B": 600.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R101",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3e-12,
+              "B": -280.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R102",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 2.6e-12,
+              "B": -365.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R103",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R104",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 5.3e-12,
+              "B": -360.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R105",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R106",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R107",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R108",
+          "rhs": 1.1e-12
+        },
+        {
+          "lhs": "k_R109",
+          "rhs": 2.5e-12
+        },
+        {
+          "lhs": "k_R110",
+          "rhs": 2.5e-12
+        },
+        {
+          "lhs": "k_R111",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R112",
+          "rhs": 1.2e-12
+        },
+        {
+          "lhs": "k_R113",
+          "rhs": 4e-12
+        },
+        {
+          "lhs": "k_R114",
+          "rhs": 2.5e-12
+        },
+        {
+          "lhs": "k_R115",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 3.8e-13,
+              "B": -800.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R116",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 7.5e-13,
+              "B": -700.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R117",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.7e-13,
+              "B": -1300.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R118",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 4.5e-13,
+              "B": -1000.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R119",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.2e-13,
+              "B": -1300.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R120",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.7e-13,
+              "B": -1300.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R121",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.7e-13,
+              "B": -1300.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R122",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 7e-12,
+              "B": 235.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R123",
+          "rhs": 1e-11
+        },
+        {
+          "lhs": "k_R124",
+          "rhs": 1
+        },
+        {
+          "lhs": "k_R125",
+          "rhs": 1
+        },
+        {
+          "lhs": "k_R126",
+          "rhs": 1
+        },
+        {
+          "lhs": "k_R127",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "cbmz_peroxy_rate",
+                "bindings": {
+                  "g": "g_ch3o2",
+                  "S": "s_perox",
+                  "x": "c_ch3o2"
+                }
+              },
+              {
+                "op": "*",
+                "args": [
+                  "dk_perox_cross_ch3o2_ro2",
+                  "c_ro2"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "k_R128",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_rate",
+            "bindings": {
+              "g": "g_ethp",
+              "S": "s_perox",
+              "x": "c_ethp"
+            }
+          }
+        },
+        {
+          "lhs": "k_R129",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "cbmz_peroxy_rate",
+                "bindings": {
+                  "g": "g_ro2",
+                  "S": "s_perox",
+                  "x": "c_ro2"
+                }
+              },
+              {
+                "op": "*",
+                "args": [
+                  "dk_perox_cross_ch3o2_ro2",
+                  "c_ch3o2"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "k_R130",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_rate",
+            "bindings": {
+              "g": "g_c2o3",
+              "S": "s_perox",
+              "x": "c_c2o3"
+            }
+          }
+        },
+        {
+          "lhs": "k_R131",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_rate",
+            "bindings": {
+              "g": "g_ano2",
+              "S": "s_perox",
+              "x": "c_ano2"
+            }
+          }
+        },
+        {
+          "lhs": "k_R132",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_rate",
+            "bindings": {
+              "g": "g_nap",
+              "S": "s_perox",
+              "x": "c_nap"
+            }
+          }
+        },
+        {
+          "lhs": "k_R133",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_rate",
+            "bindings": {
+              "g": "g_isopp",
+              "S": "s_perox",
+              "x": "c_isopp"
+            }
+          }
+        },
+        {
+          "lhs": "k_R134",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_rate",
+            "bindings": {
+              "g": "g_isopn",
+              "S": "s_perox",
+              "x": "c_isopn"
+            }
+          }
+        },
+        {
+          "lhs": "k_R135",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_rate",
+            "bindings": {
+              "g": "g_isopo2",
+              "S": "s_perox",
+              "x": "c_isopo2"
+            }
+          }
+        },
+        {
+          "lhs": "k_R136",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_peroxy_rate",
+            "bindings": {
+              "g": "g_xo2",
+              "S": "s_perox",
+              "x": "c_xo2"
+            }
+          }
+        },
+        {
+          "lhs": "k_R137",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.21e-11,
+              "B": -444.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R138",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.01e-15,
+              "B": 732.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R139",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "cbmz_arr3",
+            "bindings": {
+              "A": 1.19e-12,
+              "B": -490.0,
+              "T": "T"
+            }
+          }
+        },
+        {
+          "lhs": "k_R140",
+          "rhs": 1.71e-10
+        },
+        {
+          "lhs": "k_R141",
+          "rhs": 2e-16
+        },
+        {
+          "lhs": "k_R142",
+          "rhs": 1.22e-11
+        }
+      ],
+      "tolerance": {
+        "rel": 1e-09
+      },
+      "tests": [
+        {
+          "id": "scm_surface_noon",
+          "description": "Every CBM-Z rate coefficient at the surface layer of the idealized chem_opt = 170 column at local noon, step 364 level 1 (T = 309.11 K, p = 996.3 hPa, M = 2.3344e19 molec/cm3, j(NO2) = 5.56e-3 /s), against RCONST(1:142) written by the fork's chem/KPP/inc/cbmz_mosaic/kpp_mechd_*_cbmz_mosaic.inc hooks straight after Update_Rconst. This is the warm, fully photolysing, peroxy-rich regime: the boundary-layer radical pool is at its largest here, so the ten lumped peroxy-peroxy coefficients k_R127..k_R136 are exercised at their biggest values.\n\nReference and tolerance. The values are RCONST as WRF-Chem itself computed it, cross-checked bit for bit (Linf = 0 at all 16 dumped steps and all 59 levels) by the standalone real64 replay kernels/cbmz_driver, which calls cbmz_mosaic_Update_RCONST on the dumped TEMP, C_M, C_H2O and jv. WRF is built single precision, but the KPP interface promotes t_phy, rho_phy and the photolysis rates to KIND = dp = real64 before Update_Rconst, so every rate law is evaluated in double there; the dumped inputs are bound here as their exact binary64 values, hence rel 1e-9. Of the 568 assertions across the four regimes 529 are BIT-IDENTICAL to WRF's KPP and the largest residual anywhere is 8.5e-16 (k_R127, surface noon); in this regime it is 8.5e-16 (k_R127). Every one of the 39 inexact assertions is a peroxy-pool coefficient or a Troe/JPL form, i.e. the two places where this document evaluates the same algebra in a different order from the Fortran, and all of them are within four ulp. Dump: data/eqwefic/dumps/chem170_wrf/esm_dump_cbmz_kpp_364.json, level k = 1; the run is described in data/eqwefic/notes/chem170_scm_reference_run.md.",
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "parameter_overrides": {
+            "T": 309.1141357421875,
+            "M_air": 2.334435809094009e+19,
+            "j_o31d": 2.0706509531009942e-05,
+            "j_o33p": 0.0003176535537932068,
+            "j_no2": 0.00555551378056407,
+            "j_no3o": 0.1376122534275055,
+            "j_hno2": 0.0012127247173339128,
+            "j_hno3": 3.8736078522561e-07,
+            "j_hno4": 2.5663800897746114e-06,
+            "j_h2o2": 4.608004019246437e-06,
+            "j_ch2or": 1.7385642422595993e-05,
+            "j_ch2om": 2.7755671908380464e-05,
+            "j_n2o5": 0.0,
+            "c_ch3o2": 532135723.9773575,
+            "c_ethp": 60357708.15285586,
+            "c_ro2": 21524268.839473903,
+            "c_c2o3": 30461029.609013133,
+            "c_ano2": 288706.23094594415,
+            "c_nap": 60865.86883023894,
+            "c_isopp": 0.002334436047996632,
+            "c_isopn": 0.002334436047996632,
+            "c_isopo2": 0.002334436047996632,
+            "c_xo2": 28514423.691775426
+          },
+          "assertions": [
+            {
+              "variable": "k_R001",
+              "time": 0.0,
+              "expected": 0.00555551378056407
+            },
+            {
+              "variable": "k_R002",
+              "time": 0.0,
+              "expected": 0.1376122534275055
+            },
+            {
+              "variable": "k_R003",
+              "time": 0.0,
+              "expected": 0.0012127247173339128
+            },
+            {
+              "variable": "k_R004",
+              "time": 0.0,
+              "expected": 3.8736078522561e-07
+            },
+            {
+              "variable": "k_R005",
+              "time": 0.0,
+              "expected": 2.5663800897746114e-06
+            },
+            {
+              "variable": "k_R006",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R007",
+              "time": 0.0,
+              "expected": 0.0003176535537932068
+            },
+            {
+              "variable": "k_R008",
+              "time": 0.0,
+              "expected": 2.0706509531009942e-05
+            },
+            {
+              "variable": "k_R009",
+              "time": 0.0,
+              "expected": 4.608004019246437e-06
+            },
+            {
+              "variable": "k_R010",
+              "time": 0.0,
+              "expected": 1.7385642422595993e-05
+            },
+            {
+              "variable": "k_R011",
+              "time": 0.0,
+              "expected": 2.7755671908380464e-05
+            },
+            {
+              "variable": "k_R012",
+              "time": 0.0,
+              "expected": 3.225602758540817e-06
+            },
+            {
+              "variable": "k_R013",
+              "time": 0.0,
+              "expected": 3.225602758540817e-06
+            },
+            {
+              "variable": "k_R014",
+              "time": 0.0,
+              "expected": 2.555536339059472e-06
+            },
+            {
+              "variable": "k_R015",
+              "time": 0.0,
+              "expected": 4.3333007488399745e-07
+            },
+            {
+              "variable": "k_R016",
+              "time": 0.0,
+              "expected": 0.000167597598922712
+            },
+            {
+              "variable": "k_R017",
+              "time": 0.0,
+              "expected": 0.00015716620683705815
+            },
+            {
+              "variable": "k_R018",
+              "time": 0.0,
+              "expected": 3.225602758540817e-06
+            },
+            {
+              "variable": "k_R019",
+              "time": 0.0,
+              "expected": 5.55551378056407e-07
+            },
+            {
+              "variable": "k_R020",
+              "time": 0.0,
+              "expected": 6.938918080493051e-07
+            },
+            {
+              "variable": "k_R021",
+              "time": 0.0,
+              "expected": 2.8725498914644037e-11
+            },
+            {
+              "variable": "k_R022",
+              "time": 0.0,
+              "expected": 2.2e-10
+            },
+            {
+              "variable": "k_R023",
+              "time": 0.0,
+              "expected": 2.7457308460021787e-15
+            },
+            {
+              "variable": "k_R024",
+              "time": 0.0,
+              "expected": 1.0206162661269416e-14
+            },
+            {
+              "variable": "k_R025",
+              "time": 0.0,
+              "expected": 9.583168699560996e-12
+            },
+            {
+              "variable": "k_R026",
+              "time": 0.0,
+              "expected": 1.4225987380064907e-12
+            },
+            {
+              "variable": "k_R027",
+              "time": 0.0,
+              "expected": 1.5188570373543677e-12
+            },
+            {
+              "variable": "k_R028",
+              "time": 0.0,
+              "expected": 2.15813827244696e-14
+            },
+            {
+              "variable": "k_R029",
+              "time": 0.0,
+              "expected": 4.3352831738825974e-17
+            },
+            {
+              "variable": "k_R030",
+              "time": 0.0,
+              "expected": 7.64633047913183e-14
+            },
+            {
+              "variable": "k_R031",
+              "time": 0.0,
+              "expected": 2.1822790423924232e-15
+            },
+            {
+              "variable": "k_R032",
+              "time": 0.0,
+              "expected": 4.941525833145411e-21
+            },
+            {
+              "variable": "k_R033",
+              "time": 0.0,
+              "expected": 6.798310492252965e-12
+            },
+            {
+              "variable": "k_R034",
+              "time": 0.0,
+              "expected": 7.858991077233474e-12
+            },
+            {
+              "variable": "k_R035",
+              "time": 0.0,
+              "expected": 2.2e-11
+            },
+            {
+              "variable": "k_R036",
+              "time": 0.0,
+              "expected": 5.097253474512099e-12
+            },
+            {
+              "variable": "k_R037",
+              "time": 0.0,
+              "expected": 1.307996639725674e-13
+            },
+            {
+              "variable": "k_R038",
+              "time": 0.0,
+              "expected": 4.444572335755448e-12
+            },
+            {
+              "variable": "k_R039",
+              "time": 0.0,
+              "expected": 1.0776616768015048e-10
+            },
+            {
+              "variable": "k_R040",
+              "time": 0.0,
+              "expected": 1.7282383136407616e-12
+            },
+            {
+              "variable": "k_R041",
+              "time": 0.0,
+              "expected": 2.610476772202561e-12
+            },
+            {
+              "variable": "k_R042",
+              "time": 0.0,
+              "expected": 4.505784774715607e-30
+            },
+            {
+              "variable": "k_R043",
+              "time": 0.0,
+              "expected": 7.85794972667764e-12
+            },
+            {
+              "variable": "k_R044",
+              "time": 0.0,
+              "expected": 1.2435300413188898e-12
+            },
+            {
+              "variable": "k_R045",
+              "time": 0.0,
+              "expected": 5e-16
+            },
+            {
+              "variable": "k_R046",
+              "time": 0.0,
+              "expected": 0.28958837786296476
+            },
+            {
+              "variable": "k_R047",
+              "time": 0.0,
+              "expected": 2.599772084655261e-11
+            },
+            {
+              "variable": "k_R048",
+              "time": 0.0,
+              "expected": 7.637599086460962e-16
+            },
+            {
+              "variable": "k_R049",
+              "time": 0.0,
+              "expected": 1.2149103159737328e-12
+            },
+            {
+              "variable": "k_R050",
+              "time": 0.0,
+              "expected": 3.0708255815001733e-16
+            },
+            {
+              "variable": "k_R051",
+              "time": 0.0,
+              "expected": 3.5e-12
+            },
+            {
+              "variable": "k_R052",
+              "time": 0.0,
+              "expected": 2e-21
+            },
+            {
+              "variable": "k_R053",
+              "time": 0.0,
+              "expected": 0.15780947408968782
+            },
+            {
+              "variable": "k_R054",
+              "time": 0.0,
+              "expected": 2.3854117987936954e-13
+            },
+            {
+              "variable": "k_R055",
+              "time": 0.0,
+              "expected": 8.405887213150214e-13
+            },
+            {
+              "variable": "k_R056",
+              "time": 0.0,
+              "expected": 7.85683683077045e-15
+            },
+            {
+              "variable": "k_R057",
+              "time": 0.0,
+              "expected": 2.9180068411387277e-13
+            },
+            {
+              "variable": "k_R058",
+              "time": 0.0,
+              "expected": 8.1e-13
+            },
+            {
+              "variable": "k_R059",
+              "time": 0.0,
+              "expected": 1e-11
+            },
+            {
+              "variable": "k_R060",
+              "time": 0.0,
+              "expected": 7.278565334843802e-16
+            },
+            {
+              "variable": "k_R061",
+              "time": 0.0,
+              "expected": 1.341308030532422e-11
+            },
+            {
+              "variable": "k_R062",
+              "time": 0.0,
+              "expected": 2.997056314347448e-15
+            },
+            {
+              "variable": "k_R063",
+              "time": 0.0,
+              "expected": 2.406421480518319e-13
+            },
+            {
+              "variable": "k_R064",
+              "time": 0.0,
+              "expected": 1.7e-11
+            },
+            {
+              "variable": "k_R065",
+              "time": 0.0,
+              "expected": 2.997056314347448e-15
+            },
+            {
+              "variable": "k_R066",
+              "time": 0.0,
+              "expected": 2.42171931164497e-18
+            },
+            {
+              "variable": "k_R067",
+              "time": 0.0,
+              "expected": 8.133905575937167e-12
+            },
+            {
+              "variable": "k_R068",
+              "time": 0.0,
+              "expected": 1.2425464666923037e-17
+            },
+            {
+              "variable": "k_R069",
+              "time": 0.0,
+              "expected": 2.50405464745176e-16
+            },
+            {
+              "variable": "k_R070",
+              "time": 0.0,
+              "expected": 2.722708649759743e-11
+            },
+            {
+              "variable": "k_R071",
+              "time": 0.0,
+              "expected": 6.617044016138843e-11
+            },
+            {
+              "variable": "k_R072",
+              "time": 0.0,
+              "expected": 1.1812647360455934e-14
+            },
+            {
+              "variable": "k_R073",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R074",
+              "time": 0.0,
+              "expected": 5.951383854093571e-12
+            },
+            {
+              "variable": "k_R075",
+              "time": 0.0,
+              "expected": 2.47414323727539e-11
+            },
+            {
+              "variable": "k_R076",
+              "time": 0.0,
+              "expected": 8.1e-12
+            },
+            {
+              "variable": "k_R077",
+              "time": 0.0,
+              "expected": 4.1e-11
+            },
+            {
+              "variable": "k_R078",
+              "time": 0.0,
+              "expected": 2.2e-11
+            },
+            {
+              "variable": "k_R079",
+              "time": 0.0,
+              "expected": 1.4e-11
+            },
+            {
+              "variable": "k_R080",
+              "time": 0.0,
+              "expected": 3e-11
+            },
+            {
+              "variable": "k_R081",
+              "time": 0.0,
+              "expected": 1.0713006208108258e-17
+            },
+            {
+              "variable": "k_R082",
+              "time": 0.0,
+              "expected": 9.763464552096852e-11
+            },
+            {
+              "variable": "k_R083",
+              "time": 0.0,
+              "expected": 1.7823257870548858e-17
+            },
+            {
+              "variable": "k_R084",
+              "time": 0.0,
+              "expected": 7.087726505056037e-13
+            },
+            {
+              "variable": "k_R085",
+              "time": 0.0,
+              "expected": 3.3e-11
+            },
+            {
+              "variable": "k_R086",
+              "time": 0.0,
+              "expected": 7e-18
+            },
+            {
+              "variable": "k_R087",
+              "time": 0.0,
+              "expected": 1e-15
+            },
+            {
+              "variable": "k_R088",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R089",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R090",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R091",
+              "time": 0.0,
+              "expected": 1.1399955860703507e-11
+            },
+            {
+              "variable": "k_R092",
+              "time": 0.0,
+              "expected": 1.1399955860703507e-11
+            },
+            {
+              "variable": "k_R093",
+              "time": 0.0,
+              "expected": 1.1399955860703507e-11
+            },
+            {
+              "variable": "k_R094",
+              "time": 0.0,
+              "expected": 7.257324760576486e-12
+            },
+            {
+              "variable": "k_R095",
+              "time": 0.0,
+              "expected": 7.257324760576486e-12
+            },
+            {
+              "variable": "k_R096",
+              "time": 0.0,
+              "expected": 7.257324760576486e-12
+            },
+            {
+              "variable": "k_R097",
+              "time": 0.0,
+              "expected": 2.7889388184341337e-12
+            },
+            {
+              "variable": "k_R098",
+              "time": 0.0,
+              "expected": 8.176097421151219e-12
+            },
+            {
+              "variable": "k_R099",
+              "time": 0.0,
+              "expected": 0.001925003183366263
+            },
+            {
+              "variable": "k_R100",
+              "time": 0.0,
+              "expected": 9.618246847081698e-13
+            },
+            {
+              "variable": "k_R101",
+              "time": 0.0,
+              "expected": 7.421836803241408e-12
+            },
+            {
+              "variable": "k_R102",
+              "time": 0.0,
+              "expected": 8.468090725810522e-12
+            },
+            {
+              "variable": "k_R103",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R104",
+              "time": 0.0,
+              "expected": 1.6984908043375376e-11
+            },
+            {
+              "variable": "k_R105",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R106",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R107",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R108",
+              "time": 0.0,
+              "expected": 1.1e-12
+            },
+            {
+              "variable": "k_R109",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R110",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R111",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R112",
+              "time": 0.0,
+              "expected": 1.2e-12
+            },
+            {
+              "variable": "k_R113",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R114",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R115",
+              "time": 0.0,
+              "expected": 5.055399041938255e-12
+            },
+            {
+              "variable": "k_R116",
+              "time": 0.0,
+              "expected": 7.219990529900046e-12
+            },
+            {
+              "variable": "k_R117",
+              "time": 0.0,
+              "expected": 1.1399955860703507e-11
+            },
+            {
+              "variable": "k_R118",
+              "time": 0.0,
+              "expected": 1.1433450615473625e-11
+            },
+            {
+              "variable": "k_R119",
+              "time": 0.0,
+              "expected": 8.047027666378946e-12
+            },
+            {
+              "variable": "k_R120",
+              "time": 0.0,
+              "expected": 1.1399955860703507e-11
+            },
+            {
+              "variable": "k_R121",
+              "time": 0.0,
+              "expected": 1.1399955860703507e-11
+            },
+            {
+              "variable": "k_R122",
+              "time": 0.0,
+              "expected": 3.272889256431123e-12
+            },
+            {
+              "variable": "k_R123",
+              "time": 0.0,
+              "expected": 1e-11
+            },
+            {
+              "variable": "k_R124",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R125",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R126",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R127",
+              "time": 0.0,
+              "expected": 0.000641236115630222
+            },
+            {
+              "variable": "k_R128",
+              "time": 0.0,
+              "expected": 0.00029401407917938326
+            },
+            {
+              "variable": "k_R129",
+              "time": 0.0,
+              "expected": 0.006774356069533795
+            },
+            {
+              "variable": "k_R130",
+              "time": 0.0,
+              "expected": 0.0029898598085292185
+            },
+            {
+              "variable": "k_R131",
+              "time": 0.0,
+              "expected": 0.0011429431685238331
+            },
+            {
+              "variable": "k_R132",
+              "time": 0.0,
+              "expected": 0.0006474024306331537
+            },
+            {
+              "variable": "k_R133",
+              "time": 0.0,
+              "expected": 0.0010146063457020045
+            },
+            {
+              "variable": "k_R134",
+              "time": 0.0,
+              "expected": 0.0010146063457020045
+            },
+            {
+              "variable": "k_R135",
+              "time": 0.0,
+              "expected": 0.0010146063457020045
+            },
+            {
+              "variable": "k_R136",
+              "time": 0.0,
+              "expected": 0.0009921473105005706
+            },
+            {
+              "variable": "k_R137",
+              "time": 0.0,
+              "expected": 5.088499596244069e-11
+            },
+            {
+              "variable": "k_R138",
+              "time": 0.0,
+              "expected": 9.459912849615846e-17
+            },
+            {
+              "variable": "k_R139",
+              "time": 0.0,
+              "expected": 5.807372939424063e-12
+            },
+            {
+              "variable": "k_R140",
+              "time": 0.0,
+              "expected": 1.71e-10
+            },
+            {
+              "variable": "k_R141",
+              "time": 0.0,
+              "expected": 2e-16
+            },
+            {
+              "variable": "k_R142",
+              "time": 0.0,
+              "expected": 1.22e-11
+            }
+          ]
+        },
+        {
+          "id": "scm_midtrop_afternoon",
+          "description": "Mid-troposphere, step 601 level 41 (T = 265.53 K, p = 507.9 hPa, M = 1.3856e19 molec/cm3, j(NO2) = 1.61e-3 /s). Half the surface air density and 43 K colder, which moves every Troe coefficient off its high-pressure limit and the Arrhenius forms far from 300 K.\n\nReference and tolerance. The values are RCONST as WRF-Chem itself computed it, cross-checked bit for bit (Linf = 0 at all 16 dumped steps and all 59 levels) by the standalone real64 replay kernels/cbmz_driver, which calls cbmz_mosaic_Update_RCONST on the dumped TEMP, C_M, C_H2O and jv. WRF is built single precision, but the KPP interface promotes t_phy, rho_phy and the photolysis rates to KIND = dp = real64 before Update_Rconst, so every rate law is evaluated in double there; the dumped inputs are bound here as their exact binary64 values, hence rel 1e-9. Of the 568 assertions across the four regimes 529 are BIT-IDENTICAL to WRF's KPP and the largest residual anywhere is 8.5e-16 (k_R127, surface noon); in this regime it is 3.0e-16 (k_R129). Every one of the 39 inexact assertions is a peroxy-pool coefficient or a Troe/JPL form, i.e. the two places where this document evaluates the same algebra in a different order from the Fortran, and all of them are within four ulp. Dump: data/eqwefic/dumps/chem170_wrf/esm_dump_cbmz_kpp_601.json, level k = 41; the run is described in data/eqwefic/notes/chem170_scm_reference_run.md.",
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "parameter_overrides": {
+            "T": 265.53271484375,
+            "M_air": 1.3855661803675058e+19,
+            "j_o31d": 4.190368144918466e-06,
+            "j_o33p": 6.95342241670005e-05,
+            "j_no2": 0.0016093809390440583,
+            "j_no3o": 0.02909519150853157,
+            "j_hno2": 0.00036650561378337443,
+            "j_hno3": 1.150374586700309e-07,
+            "j_hno4": 7.747925678813772e-07,
+            "j_h2o2": 1.4816707789577777e-06,
+            "j_ch2or": 5.617866918328218e-06,
+            "j_ch2om": 9.354756002721842e-06,
+            "j_n2o5": 0.0,
+            "c_ch3o2": 78506177.00101075,
+            "c_ethp": 14463157.811701568,
+            "c_ro2": 4628614.492934034,
+            "c_c2o3": 6610929.463040047,
+            "c_ano2": 34436.002799633556,
+            "c_nap": 5055.303490329639,
+            "c_isopp": 0.0013855662398690011,
+            "c_isopn": 0.0013855662398690011,
+            "c_isopo2": 0.0013855662398690011,
+            "c_xo2": 3695907.9954618416
+          },
+          "assertions": [
+            {
+              "variable": "k_R001",
+              "time": 0.0,
+              "expected": 0.0016093809390440583
+            },
+            {
+              "variable": "k_R002",
+              "time": 0.0,
+              "expected": 0.02909519150853157
+            },
+            {
+              "variable": "k_R003",
+              "time": 0.0,
+              "expected": 0.00036650561378337443
+            },
+            {
+              "variable": "k_R004",
+              "time": 0.0,
+              "expected": 1.150374586700309e-07
+            },
+            {
+              "variable": "k_R005",
+              "time": 0.0,
+              "expected": 7.747925678813772e-07
+            },
+            {
+              "variable": "k_R006",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R007",
+              "time": 0.0,
+              "expected": 6.95342241670005e-05
+            },
+            {
+              "variable": "k_R008",
+              "time": 0.0,
+              "expected": 4.190368144918466e-06
+            },
+            {
+              "variable": "k_R009",
+              "time": 0.0,
+              "expected": 1.4816707789577777e-06
+            },
+            {
+              "variable": "k_R010",
+              "time": 0.0,
+              "expected": 5.617866918328218e-06
+            },
+            {
+              "variable": "k_R011",
+              "time": 0.0,
+              "expected": 9.354756002721842e-06
+            },
+            {
+              "variable": "k_R012",
+              "time": 0.0,
+              "expected": 1.0371695276075523e-06
+            },
+            {
+              "variable": "k_R013",
+              "time": 0.0,
+              "expected": 1.0371695276075523e-06
+            },
+            {
+              "variable": "k_R014",
+              "time": 0.0,
+              "expected": 7.403152319602669e-07
+            },
+            {
+              "variable": "k_R015",
+              "time": 0.0,
+              "expected": 1.2553171324543654e-07
+            },
+            {
+              "variable": "k_R016",
+              "time": 0.0,
+              "expected": 5.4156239021425565e-05
+            },
+            {
+              "variable": "k_R017",
+              "time": 0.0,
+              "expected": 5.0785516727382476e-05
+            },
+            {
+              "variable": "k_R018",
+              "time": 0.0,
+              "expected": 1.0371695276075523e-06
+            },
+            {
+              "variable": "k_R019",
+              "time": 0.0,
+              "expected": 1.6093809390440585e-07
+            },
+            {
+              "variable": "k_R020",
+              "time": 0.0,
+              "expected": 2.3386890355296424e-07
+            },
+            {
+              "variable": "k_R021",
+              "time": 0.0,
+              "expected": 3.026544230506772e-11
+            },
+            {
+              "variable": "k_R022",
+              "time": 0.0,
+              "expected": 2.2e-10
+            },
+            {
+              "variable": "k_R023",
+              "time": 0.0,
+              "expected": 2.3115602062616217e-15
+            },
+            {
+              "variable": "k_R024",
+              "time": 0.0,
+              "expected": 3.418518848807144e-15
+            },
+            {
+              "variable": "k_R025",
+              "time": 0.0,
+              "expected": 1.0213638064386284e-11
+            },
+            {
+              "variable": "k_R026",
+              "time": 0.0,
+              "expected": 1.188825605177848e-12
+            },
+            {
+              "variable": "k_R027",
+              "time": 0.0,
+              "expected": 1.1800131465107984e-12
+            },
+            {
+              "variable": "k_R028",
+              "time": 0.0,
+              "expected": 1.0262356030374377e-14
+            },
+            {
+              "variable": "k_R029",
+              "time": 0.0,
+              "expected": 1.1804868109110407e-17
+            },
+            {
+              "variable": "k_R030",
+              "time": 0.0,
+              "expected": 4.6418842749819005e-14
+            },
+            {
+              "variable": "k_R031",
+              "time": 0.0,
+              "expected": 1.6734512741215024e-15
+            },
+            {
+              "variable": "k_R032",
+              "time": 0.0,
+              "expected": 1.7087252163113477e-21
+            },
+            {
+              "variable": "k_R033",
+              "time": 0.0,
+              "expected": 6.352782010753392e-12
+            },
+            {
+              "variable": "k_R034",
+              "time": 0.0,
+              "expected": 9.75294308668949e-12
+            },
+            {
+              "variable": "k_R035",
+              "time": 0.0,
+              "expected": 2.2e-11
+            },
+            {
+              "variable": "k_R036",
+              "time": 0.0,
+              "expected": 4.143853627098035e-12
+            },
+            {
+              "variable": "k_R037",
+              "time": 0.0,
+              "expected": 2.1395576922953586e-13
+            },
+            {
+              "variable": "k_R038",
+              "time": 0.0,
+              "expected": 5.438208554084224e-12
+            },
+            {
+              "variable": "k_R039",
+              "time": 0.0,
+              "expected": 1.2306400486181396e-10
+            },
+            {
+              "variable": "k_R040",
+              "time": 0.0,
+              "expected": 1.5874809468480163e-12
+            },
+            {
+              "variable": "k_R041",
+              "time": 0.0,
+              "expected": 3.2209846084588468e-12
+            },
+            {
+              "variable": "k_R042",
+              "time": 0.0,
+              "expected": 1.7879154825773783e-29
+            },
+            {
+              "variable": "k_R043",
+              "time": 0.0,
+              "expected": 8.973417021173934e-12
+            },
+            {
+              "variable": "k_R044",
+              "time": 0.0,
+              "expected": 1.3528074057457652e-12
+            },
+            {
+              "variable": "k_R045",
+              "time": 0.0,
+              "expected": 5e-16
+            },
+            {
+              "variable": "k_R046",
+              "time": 0.0,
+              "expected": 0.0009657876159940585
+            },
+            {
+              "variable": "k_R047",
+              "time": 0.0,
+              "expected": 2.8453541413211136e-11
+            },
+            {
+              "variable": "k_R048",
+              "time": 0.0,
+              "expected": 3.9120814423424507e-16
+            },
+            {
+              "variable": "k_R049",
+              "time": 0.0,
+              "expected": 1.3467100636110347e-12
+            },
+            {
+              "variable": "k_R050",
+              "time": 0.0,
+              "expected": 8.361781577286538e-17
+            },
+            {
+              "variable": "k_R051",
+              "time": 0.0,
+              "expected": 3.5e-12
+            },
+            {
+              "variable": "k_R052",
+              "time": 0.0,
+              "expected": 2e-21
+            },
+            {
+              "variable": "k_R053",
+              "time": 0.0,
+              "expected": 0.0005085390760632867
+            },
+            {
+              "variable": "k_R054",
+              "time": 0.0,
+              "expected": 1.9514293425857207e-13
+            },
+            {
+              "variable": "k_R055",
+              "time": 0.0,
+              "expected": 8.34911901623172e-13
+            },
+            {
+              "variable": "k_R056",
+              "time": 0.0,
+              "expected": 3.0763728355026143e-15
+            },
+            {
+              "variable": "k_R057",
+              "time": 0.0,
+              "expected": 1.6581819784063107e-13
+            },
+            {
+              "variable": "k_R058",
+              "time": 0.0,
+              "expected": 8.1e-13
+            },
+            {
+              "variable": "k_R059",
+              "time": 0.0,
+              "expected": 1e-11
+            },
+            {
+              "variable": "k_R060",
+              "time": 0.0,
+              "expected": 2.65409451969831e-16
+            },
+            {
+              "variable": "k_R061",
+              "time": 0.0,
+              "expected": 1.548064381636522e-11
+            },
+            {
+              "variable": "k_R062",
+              "time": 0.0,
+              "expected": 1.0928624492875394e-15
+            },
+            {
+              "variable": "k_R063",
+              "time": 0.0,
+              "expected": 1.5715685127200174e-13
+            },
+            {
+              "variable": "k_R064",
+              "time": 0.0,
+              "expected": 1.7e-11
+            },
+            {
+              "variable": "k_R065",
+              "time": 0.0,
+              "expected": 1.0928624492875394e-15
+            },
+            {
+              "variable": "k_R066",
+              "time": 0.0,
+              "expected": 5.993223563240294e-19
+            },
+            {
+              "variable": "k_R067",
+              "time": 0.0,
+              "expected": 8.03727925709073e-12
+            },
+            {
+              "variable": "k_R068",
+              "time": 0.0,
+              "expected": 4.777961889074473e-18
+            },
+            {
+              "variable": "k_R069",
+              "time": 0.0,
+              "expected": 2.0335309634721372e-16
+            },
+            {
+              "variable": "k_R070",
+              "time": 0.0,
+              "expected": 3.509338849477636e-11
+            },
+            {
+              "variable": "k_R071",
+              "time": 0.0,
+              "expected": 7.57644719748963e-11
+            },
+            {
+              "variable": "k_R072",
+              "time": 0.0,
+              "expected": 6.9095040272442375e-15
+            },
+            {
+              "variable": "k_R073",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R074",
+              "time": 0.0,
+              "expected": 7.0610512864638674e-12
+            },
+            {
+              "variable": "k_R075",
+              "time": 0.0,
+              "expected": 2.631320757581779e-11
+            },
+            {
+              "variable": "k_R076",
+              "time": 0.0,
+              "expected": 8.1e-12
+            },
+            {
+              "variable": "k_R077",
+              "time": 0.0,
+              "expected": 4.1e-11
+            },
+            {
+              "variable": "k_R078",
+              "time": 0.0,
+              "expected": 2.2e-11
+            },
+            {
+              "variable": "k_R079",
+              "time": 0.0,
+              "expected": 1.4e-11
+            },
+            {
+              "variable": "k_R080",
+              "time": 0.0,
+              "expected": 3e-11
+            },
+            {
+              "variable": "k_R081",
+              "time": 0.0,
+              "expected": 8.215124436596466e-18
+            },
+            {
+              "variable": "k_R082",
+              "time": 0.0,
+              "expected": 1.213157177249945e-10
+            },
+            {
+              "variable": "k_R083",
+              "time": 0.0,
+              "expected": 6.120691939324128e-18
+            },
+            {
+              "variable": "k_R084",
+              "time": 0.0,
+              "expected": 5.593219194361272e-13
+            },
+            {
+              "variable": "k_R085",
+              "time": 0.0,
+              "expected": 3.3e-11
+            },
+            {
+              "variable": "k_R086",
+              "time": 0.0,
+              "expected": 7e-18
+            },
+            {
+              "variable": "k_R087",
+              "time": 0.0,
+              "expected": 1e-15
+            },
+            {
+              "variable": "k_R088",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R089",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R090",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R091",
+              "time": 0.0,
+              "expected": 2.2734003201714005e-11
+            },
+            {
+              "variable": "k_R092",
+              "time": 0.0,
+              "expected": 2.2734003201714005e-11
+            },
+            {
+              "variable": "k_R093",
+              "time": 0.0,
+              "expected": 2.2734003201714005e-11
+            },
+            {
+              "variable": "k_R094",
+              "time": 0.0,
+              "expected": 8.070407089570983e-12
+            },
+            {
+              "variable": "k_R095",
+              "time": 0.0,
+              "expected": 8.070407089570983e-12
+            },
+            {
+              "variable": "k_R096",
+              "time": 0.0,
+              "expected": 8.070407089570983e-12
+            },
+            {
+              "variable": "k_R097",
+              "time": 0.0,
+              "expected": 2.093717099339713e-12
+            },
+            {
+              "variable": "k_R098",
+              "time": 0.0,
+              "expected": 1.0299471969566277e-11
+            },
+            {
+              "variable": "k_R099",
+              "time": 0.0,
+              "expected": 1.433436515208566e-06
+            },
+            {
+              "variable": "k_R100",
+              "time": 0.0,
+              "expected": 6.994219639563478e-13
+            },
+            {
+              "variable": "k_R101",
+              "time": 0.0,
+              "expected": 8.611480814362555e-12
+            },
+            {
+              "variable": "k_R102",
+              "time": 0.0,
+              "expected": 1.0279037866060572e-11
+            },
+            {
+              "variable": "k_R103",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R104",
+              "time": 0.0,
+              "expected": 2.0562560420512838e-11
+            },
+            {
+              "variable": "k_R105",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R106",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R107",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R108",
+              "time": 0.0,
+              "expected": 1.1e-12
+            },
+            {
+              "variable": "k_R109",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R110",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R111",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R112",
+              "time": 0.0,
+              "expected": 1.2e-12
+            },
+            {
+              "variable": "k_R113",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R114",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R115",
+              "time": 0.0,
+              "expected": 7.730916426224829e-12
+            },
+            {
+              "variable": "k_R116",
+              "time": 0.0,
+              "expected": 1.0470145632967101e-11
+            },
+            {
+              "variable": "k_R117",
+              "time": 0.0,
+              "expected": 2.2734003201714005e-11
+            },
+            {
+              "variable": "k_R118",
+              "time": 0.0,
+              "expected": 1.9443378968690114e-11
+            },
+            {
+              "variable": "k_R119",
+              "time": 0.0,
+              "expected": 1.604753167179812e-11
+            },
+            {
+              "variable": "k_R120",
+              "time": 0.0,
+              "expected": 2.2734003201714005e-11
+            },
+            {
+              "variable": "k_R121",
+              "time": 0.0,
+              "expected": 2.2734003201714005e-11
+            },
+            {
+              "variable": "k_R122",
+              "time": 0.0,
+              "expected": 2.888960617854894e-12
+            },
+            {
+              "variable": "k_R123",
+              "time": 0.0,
+              "expected": 1e-11
+            },
+            {
+              "variable": "k_R124",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R125",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R126",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R127",
+              "time": 0.0,
+              "expected": 0.00014546283072037683
+            },
+            {
+              "variable": "k_R128",
+              "time": 0.0,
+              "expected": 5.280403621838508e-05
+            },
+            {
+              "variable": "k_R129",
+              "time": 0.0,
+              "expected": 0.0014587305277155922
+            },
+            {
+              "variable": "k_R130",
+              "time": 0.0,
+              "expected": 0.0005305202427623061
+            },
+            {
+              "variable": "k_R131",
+              "time": 0.0,
+              "expected": 0.00020623132674264864
+            },
+            {
+              "variable": "k_R132",
+              "time": 0.0,
+              "expected": 0.00019758707059781716
+            },
+            {
+              "variable": "k_R133",
+              "time": 0.0,
+              "expected": 0.00023871934109718853
+            },
+            {
+              "variable": "k_R134",
+              "time": 0.0,
+              "expected": 0.00023871934109718853
+            },
+            {
+              "variable": "k_R135",
+              "time": 0.0,
+              "expected": 0.00023871934109718853
+            },
+            {
+              "variable": "k_R136",
+              "time": 0.0,
+              "expected": 0.00023376892083522288
+            },
+            {
+              "variable": "k_R137",
+              "time": 0.0,
+              "expected": 6.441302084862798e-11
+            },
+            {
+              "variable": "k_R138",
+              "time": 0.0,
+              "expected": 6.413454521038635e-17
+            },
+            {
+              "variable": "k_R139",
+              "time": 0.0,
+              "expected": 7.533052302024238e-12
+            },
+            {
+              "variable": "k_R140",
+              "time": 0.0,
+              "expected": 1.71e-10
+            },
+            {
+              "variable": "k_R141",
+              "time": 0.0,
+              "expected": 2e-16
+            },
+            {
+              "variable": "k_R142",
+              "time": 0.0,
+              "expected": 1.22e-11
+            }
+          ]
+        },
+        {
+          "id": "scm_upper_trop_morning",
+          "description": "Upper troposphere, step 230 level 56 (T = 213.13 K, p = 159.0 hPa, M = 5.4026e18 molec/cm3, j(NO2) = 1.59e-2 /s). The coldest and thinnest state of the reference column and the one with the strongest photolysis: at 213 K the Troe falloff ratio k0/kinf is more than an order of magnitude from its surface value, and TROEEMS's exp(-B/T) with B = 14000 K spans eleven decades between this regime and the surface one.\n\nReference and tolerance. The values are RCONST as WRF-Chem itself computed it, cross-checked bit for bit (Linf = 0 at all 16 dumped steps and all 59 levels) by the standalone real64 replay kernels/cbmz_driver, which calls cbmz_mosaic_Update_RCONST on the dumped TEMP, C_M, C_H2O and jv. WRF is built single precision, but the KPP interface promotes t_phy, rho_phy and the photolysis rates to KIND = dp = real64 before Update_Rconst, so every rate law is evaluated in double there; the dumped inputs are bound here as their exact binary64 values, hence rel 1e-9. Of the 568 assertions across the four regimes 529 are BIT-IDENTICAL to WRF's KPP and the largest residual anywhere is 8.5e-16 (k_R127, surface noon); in this regime it is 3.3e-16 (k_R129). Every one of the 39 inexact assertions is a peroxy-pool coefficient or a Troe/JPL form, i.e. the two places where this document evaluates the same algebra in a different order from the Fortran, and all of them are within four ulp. Dump: data/eqwefic/dumps/chem170_wrf/esm_dump_cbmz_kpp_230.json, level k = 56; the run is described in data/eqwefic/notes/chem170_scm_reference_run.md.",
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "parameter_overrides": {
+            "T": 213.1254425048828,
+            "M_air": 5.402608162995962e+18,
+            "j_o31d": 5.1105926104355603e-05,
+            "j_o33p": 0.000720627314876765,
+            "j_no2": 0.01589580997824669,
+            "j_no3o": 0.3092559576034546,
+            "j_hno2": 0.0035564873833209276,
+            "j_hno3": 1.3515866612578975e-06,
+            "j_hno4": 8.961714229371864e-06,
+            "j_h2o2": 1.5117954717425164e-05,
+            "j_ch2or": 5.850818342878483e-05,
+            "j_ch2om": 9.562480408931151e-05,
+            "j_n2o5": 0.0,
+            "c_ch3o2": 36883543.35594019,
+            "c_ethp": 11504806.346635204,
+            "c_ro2": 2675215.13737437,
+            "c_c2o3": 4626199.438994764,
+            "c_ano2": 16702.32271785899,
+            "c_nap": 265.098892085952,
+            "c_isopp": 0.0005402609075876606,
+            "c_isopn": 0.0005402609075876606,
+            "c_isopo2": 0.0005402609075876606,
+            "c_xo2": 3927426.190717308
+          },
+          "assertions": [
+            {
+              "variable": "k_R001",
+              "time": 0.0,
+              "expected": 0.01589580997824669
+            },
+            {
+              "variable": "k_R002",
+              "time": 0.0,
+              "expected": 0.3092559576034546
+            },
+            {
+              "variable": "k_R003",
+              "time": 0.0,
+              "expected": 0.0035564873833209276
+            },
+            {
+              "variable": "k_R004",
+              "time": 0.0,
+              "expected": 1.3515866612578975e-06
+            },
+            {
+              "variable": "k_R005",
+              "time": 0.0,
+              "expected": 8.961714229371864e-06
+            },
+            {
+              "variable": "k_R006",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R007",
+              "time": 0.0,
+              "expected": 0.000720627314876765
+            },
+            {
+              "variable": "k_R008",
+              "time": 0.0,
+              "expected": 5.1105926104355603e-05
+            },
+            {
+              "variable": "k_R009",
+              "time": 0.0,
+              "expected": 1.5117954717425164e-05
+            },
+            {
+              "variable": "k_R010",
+              "time": 0.0,
+              "expected": 5.850818342878483e-05
+            },
+            {
+              "variable": "k_R011",
+              "time": 0.0,
+              "expected": 9.562480408931151e-05
+            },
+            {
+              "variable": "k_R012",
+              "time": 0.0,
+              "expected": 1.058256812197755e-05
+            },
+            {
+              "variable": "k_R013",
+              "time": 0.0,
+              "expected": 1.058256812197755e-05
+            },
+            {
+              "variable": "k_R014",
+              "time": 0.0,
+              "expected": 7.312072589993477e-06
+            },
+            {
+              "variable": "k_R015",
+              "time": 0.0,
+              "expected": 1.2398731783032417e-06
+            },
+            {
+              "variable": "k_R016",
+              "time": 0.0,
+              "expected": 0.0005640189083406764
+            },
+            {
+              "variable": "k_R017",
+              "time": 0.0,
+              "expected": 0.0005289139759643048
+            },
+            {
+              "variable": "k_R018",
+              "time": 0.0,
+              "expected": 1.058256812197755e-05
+            },
+            {
+              "variable": "k_R019",
+              "time": 0.0,
+              "expected": 1.589580997824669e-06
+            },
+            {
+              "variable": "k_R020",
+              "time": 0.0,
+              "expected": 2.3906201378558033e-06
+            },
+            {
+              "variable": "k_R021",
+              "time": 0.0,
+              "expected": 3.315878216188023e-11
+            },
+            {
+              "variable": "k_R022",
+              "time": 0.0,
+              "expected": 2.2e-10
+            },
+            {
+              "variable": "k_R023",
+              "time": 0.0,
+              "expected": 1.4944854883679215e-15
+            },
+            {
+              "variable": "k_R024",
+              "time": 0.0,
+              "expected": 5.073915627440095e-16
+            },
+            {
+              "variable": "k_R025",
+              "time": 0.0,
+              "expected": 1.141411629919496e-11
+            },
+            {
+              "variable": "k_R026",
+              "time": 0.0,
+              "expected": 7.713430169755671e-13
+            },
+            {
+              "variable": "k_R027",
+              "time": 0.0,
+              "expected": 6.820335612805995e-13
+            },
+            {
+              "variable": "k_R028",
+              "time": 0.0,
+              "expected": 2.8066767784088406e-15
+            },
+            {
+              "variable": "k_R029",
+              "time": 0.0,
+              "expected": 1.2209994157866809e-18
+            },
+            {
+              "variable": "k_R030",
+              "time": 0.0,
+              "expected": 1.9437630057192893e-14
+            },
+            {
+              "variable": "k_R031",
+              "time": 0.0,
+              "expected": 1.0532273197753336e-15
+            },
+            {
+              "variable": "k_R032",
+              "time": 0.0,
+              "expected": 2.681071558604576e-22
+            },
+            {
+              "variable": "k_R033",
+              "time": 0.0,
+              "expected": 5.0798816190062175e-12
+            },
+            {
+              "variable": "k_R034",
+              "time": 0.0,
+              "expected": 1.2265042805833216e-11
+            },
+            {
+              "variable": "k_R035",
+              "time": 0.0,
+              "expected": 2.2e-11
+            },
+            {
+              "variable": "k_R036",
+              "time": 0.0,
+              "expected": 2.887709229968498e-12
+            },
+            {
+              "variable": "k_R037",
+              "time": 0.0,
+              "expected": 4.5079554794662623e-13
+            },
+            {
+              "variable": "k_R038",
+              "time": 0.0,
+              "expected": 7.731877862467937e-12
+            },
+            {
+              "variable": "k_R039",
+              "time": 0.0,
+              "expected": 1.5512311675374927e-10
+            },
+            {
+              "variable": "k_R040",
+              "time": 0.0,
+              "expected": 1.3688612062851976e-12
+            },
+            {
+              "variable": "k_R041",
+              "time": 0.0,
+              "expected": 4.842193985681205e-12
+            },
+            {
+              "variable": "k_R042",
+              "time": 0.0,
+              "expected": 2.0615825277843398e-28
+            },
+            {
+              "variable": "k_R043",
+              "time": 0.0,
+              "expected": 1.131106059662755e-11
+            },
+            {
+              "variable": "k_R044",
+              "time": 0.0,
+              "expected": 1.3591144589799695e-12
+            },
+            {
+              "variable": "k_R045",
+              "time": 0.0,
+              "expected": 5e-16
+            },
+            {
+              "variable": "k_R046",
+              "time": 0.0,
+              "expected": 4.009764420334246e-08
+            },
+            {
+              "variable": "k_R047",
+              "time": 0.0,
+              "expected": 3.330483241100732e-11
+            },
+            {
+              "variable": "k_R048",
+              "time": 0.0,
+              "expected": 1.2180319461145388e-16
+            },
+            {
+              "variable": "k_R049",
+              "time": 0.0,
+              "expected": 1.5319408227560346e-12
+            },
+            {
+              "variable": "k_R050",
+              "time": 0.0,
+              "expected": 8.648745861822324e-18
+            },
+            {
+              "variable": "k_R051",
+              "time": 0.0,
+              "expected": 3.5e-12
+            },
+            {
+              "variable": "k_R052",
+              "time": 0.0,
+              "expected": 2e-21
+            },
+            {
+              "variable": "k_R053",
+              "time": 0.0,
+              "expected": 2.179170380360792e-08
+            },
+            {
+              "variable": "k_R054",
+              "time": 0.0,
+              "expected": 1.6412807903437904e-13
+            },
+            {
+              "variable": "k_R055",
+              "time": 0.0,
+              "expected": 7.730613608873274e-13
+            },
+            {
+              "variable": "k_R056",
+              "time": 0.0,
+              "expected": 6.178961249985031e-16
+            },
+            {
+              "variable": "k_R057",
+              "time": 0.0,
+              "expected": 6.773189319799582e-14
+            },
+            {
+              "variable": "k_R058",
+              "time": 0.0,
+              "expected": 8.1e-13
+            },
+            {
+              "variable": "k_R059",
+              "time": 0.0,
+              "expected": 1e-11
+            },
+            {
+              "variable": "k_R060",
+              "time": 0.0,
+              "expected": 4.568469748507867e-17
+            },
+            {
+              "variable": "k_R061",
+              "time": 0.0,
+              "expected": 1.9878249369916592e-11
+            },
+            {
+              "variable": "k_R062",
+              "time": 0.0,
+              "expected": 1.8811346023267687e-16
+            },
+            {
+              "variable": "k_R063",
+              "time": 0.0,
+              "expected": 8.182122998600323e-14
+            },
+            {
+              "variable": "k_R064",
+              "time": 0.0,
+              "expected": 1.7e-11
+            },
+            {
+              "variable": "k_R065",
+              "time": 0.0,
+              "expected": 1.8811346023267687e-16
+            },
+            {
+              "variable": "k_R066",
+              "time": 0.0,
+              "expected": 5.247132742641433e-20
+            },
+            {
+              "variable": "k_R067",
+              "time": 0.0,
+              "expected": 7.785459437952023e-12
+            },
+            {
+              "variable": "k_R068",
+              "time": 0.0,
+              "expected": 9.022257972465895e-19
+            },
+            {
+              "variable": "k_R069",
+              "time": 0.0,
+              "expected": 1.4144756653797703e-16
+            },
+            {
+              "variable": "k_R070",
+              "time": 0.0,
+              "expected": 5.463466165293261e-11
+            },
+            {
+              "variable": "k_R071",
+              "time": 0.0,
+              "expected": 9.594492070818475e-11
+            },
+            {
+              "variable": "k_R072",
+              "time": 0.0,
+              "expected": 2.7117093821271218e-15
+            },
+            {
+              "variable": "k_R073",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R074",
+              "time": 0.0,
+              "expected": 9.514192657369953e-12
+            },
+            {
+              "variable": "k_R075",
+              "time": 0.0,
+              "expected": 2.929725245942625e-11
+            },
+            {
+              "variable": "k_R076",
+              "time": 0.0,
+              "expected": 8.1e-12
+            },
+            {
+              "variable": "k_R077",
+              "time": 0.0,
+              "expected": 4.1e-11
+            },
+            {
+              "variable": "k_R078",
+              "time": 0.0,
+              "expected": 2.2e-11
+            },
+            {
+              "variable": "k_R079",
+              "time": 0.0,
+              "expected": 1.4e-11
+            },
+            {
+              "variable": "k_R080",
+              "time": 0.0,
+              "expected": 3e-11
+            },
+            {
+              "variable": "k_R081",
+              "time": 0.0,
+              "expected": 5.170388660715275e-18
+            },
+            {
+              "variable": "k_R082",
+              "time": 0.0,
+              "expected": 1.7717786891570195e-10
+            },
+            {
+              "variable": "k_R083",
+              "time": 0.0,
+              "expected": 9.488735347008602e-19
+            },
+            {
+              "variable": "k_R084",
+              "time": 0.0,
+              "expected": 3.7007411296248136e-13
+            },
+            {
+              "variable": "k_R085",
+              "time": 0.0,
+              "expected": 3.3e-11
+            },
+            {
+              "variable": "k_R086",
+              "time": 0.0,
+              "expected": 7e-18
+            },
+            {
+              "variable": "k_R087",
+              "time": 0.0,
+              "expected": 1e-15
+            },
+            {
+              "variable": "k_R088",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R089",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R090",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R091",
+              "time": 0.0,
+              "expected": 7.577263702264825e-11
+            },
+            {
+              "variable": "k_R092",
+              "time": 0.0,
+              "expected": 7.577263702264825e-11
+            },
+            {
+              "variable": "k_R093",
+              "time": 0.0,
+              "expected": 7.577263702264825e-11
+            },
+            {
+              "variable": "k_R094",
+              "time": 0.0,
+              "expected": 9.71251772459881e-12
+            },
+            {
+              "variable": "k_R095",
+              "time": 0.0,
+              "expected": 9.71251772459881e-12
+            },
+            {
+              "variable": "k_R096",
+              "time": 0.0,
+              "expected": 9.71251772459881e-12
+            },
+            {
+              "variable": "k_R097",
+              "time": 0.0,
+              "expected": 1.2698129964601326e-12
+            },
+            {
+              "variable": "k_R098",
+              "time": 0.0,
+              "expected": 1.4306791029408711e-11
+            },
+            {
+              "variable": "k_R099",
+              "time": 0.0,
+              "expected": 4.6618573108758145e-12
+            },
+            {
+              "variable": "k_R100",
+              "time": 0.0,
+              "expected": 4.012639273386955e-13
+            },
+            {
+              "variable": "k_R101",
+              "time": 0.0,
+              "expected": 1.1160631619811148e-11
+            },
+            {
+              "variable": "k_R102",
+              "time": 0.0,
+              "expected": 1.4412816707714072e-11
+            },
+            {
+              "variable": "k_R103",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R104",
+              "time": 0.0,
+              "expected": 2.8698730075706722e-11
+            },
+            {
+              "variable": "k_R105",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R106",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R107",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R108",
+              "time": 0.0,
+              "expected": 1.1e-12
+            },
+            {
+              "variable": "k_R109",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R110",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R111",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R112",
+              "time": 0.0,
+              "expected": 1.2e-12
+            },
+            {
+              "variable": "k_R113",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R114",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R115",
+              "time": 0.0,
+              "expected": 1.6217223707698256e-11
+            },
+            {
+              "variable": "k_R116",
+              "time": 0.0,
+              "expected": 2.0020736995072822e-11
+            },
+            {
+              "variable": "k_R117",
+              "time": 0.0,
+              "expected": 7.577263702264825e-11
+            },
+            {
+              "variable": "k_R118",
+              "time": 0.0,
+              "expected": 4.908554897310351e-11
+            },
+            {
+              "variable": "k_R119",
+              "time": 0.0,
+              "expected": 5.3486567310104645e-11
+            },
+            {
+              "variable": "k_R120",
+              "time": 0.0,
+              "expected": 7.577263702264825e-11
+            },
+            {
+              "variable": "k_R121",
+              "time": 0.0,
+              "expected": 7.577263702264825e-11
+            },
+            {
+              "variable": "k_R122",
+              "time": 0.0,
+              "expected": 2.3239611970752477e-12
+            },
+            {
+              "variable": "k_R123",
+              "time": 0.0,
+              "expected": 1e-11
+            },
+            {
+              "variable": "k_R124",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R125",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R126",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R127",
+              "time": 0.0,
+              "expected": 0.00012896997824588145
+            },
+            {
+              "variable": "k_R128",
+              "time": 0.0,
+              "expected": 3.408076039258024e-05
+            },
+            {
+              "variable": "k_R129",
+              "time": 0.0,
+              "expected": 0.0013036505176910618
+            },
+            {
+              "variable": "k_R130",
+              "time": 0.0,
+              "expected": 0.0003411336734765324
+            },
+            {
+              "variable": "k_R131",
+              "time": 0.0,
+              "expected": 0.00013367713250596954
+            },
+            {
+              "variable": "k_R132",
+              "time": 0.0,
+              "expected": 0.0003203398600147779
+            },
+            {
+              "variable": "k_R133",
+              "time": 0.0,
+              "expected": 0.0002458458017433092
+            },
+            {
+              "variable": "k_R134",
+              "time": 0.0,
+              "expected": 0.0002458458017433092
+            },
+            {
+              "variable": "k_R135",
+              "time": 0.0,
+              "expected": 0.0002458458017433092
+            },
+            {
+              "variable": "k_R136",
+              "time": 0.0,
+              "expected": 0.00023256541074569547
+            },
+            {
+              "variable": "k_R137",
+              "time": 0.0,
+              "expected": 9.717228962219931e-11
+            },
+            {
+              "variable": "k_R138",
+              "time": 0.0,
+              "expected": 3.2560784519116296e-17
+            },
+            {
+              "variable": "k_R139",
+              "time": 0.0,
+              "expected": 1.1858782924914861e-11
+            },
+            {
+              "variable": "k_R140",
+              "time": 0.0,
+              "expected": 1.71e-10
+            },
+            {
+              "variable": "k_R141",
+              "time": 0.0,
+              "expected": 2e-16
+            },
+            {
+              "variable": "k_R142",
+              "time": 0.0,
+              "expected": 1.22e-11
+            }
+          ]
+        },
+        {
+          "id": "scm_surface_night",
+          "description": "Surface at midnight, step 1080 level 1 (T = 304.77 K, p = 996.1 hPa, M = 2.3673e19 molec/cm3). photolysis_driver is not called at this step, so all eleven j values are exactly zero and the twenty photolysis coefficients must be exactly zero with them; the thermal chemistry and the night-time peroxy pool (three orders of magnitude below noon) carry the rest. This is the regime that would hide a photolysis coefficient wired to the wrong j, so it is asserted alongside the three daylight ones rather than instead of them.\n\nReference and tolerance. The values are RCONST as WRF-Chem itself computed it, cross-checked bit for bit (Linf = 0 at all 16 dumped steps and all 59 levels) by the standalone real64 replay kernels/cbmz_driver, which calls cbmz_mosaic_Update_RCONST on the dumped TEMP, C_M, C_H2O and jv. WRF is built single precision, but the KPP interface promotes t_phy, rho_phy and the photolysis rates to KIND = dp = real64 before Update_Rconst, so every rate law is evaluated in double there; the dumped inputs are bound here as their exact binary64 values, hence rel 1e-9. Of the 568 assertions across the four regimes 529 are BIT-IDENTICAL to WRF's KPP and the largest residual anywhere is 8.5e-16 (k_R127, surface noon); in this regime it is 3.3e-16 (k_R132). Every one of the 39 inexact assertions is a peroxy-pool coefficient or a Troe/JPL form, i.e. the two places where this document evaluates the same algebra in a different order from the Fortran, and all of them are within four ulp. Dump: data/eqwefic/dumps/chem170_wrf/esm_dump_cbmz_kpp_1080.json, level k = 1; the run is described in data/eqwefic/notes/chem170_scm_reference_run.md.",
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "parameter_overrides": {
+            "T": 304.7676696777344,
+            "M_air": 2.36730087135521e+19,
+            "j_o31d": 0.0,
+            "j_o33p": 0.0,
+            "j_no2": 0.0,
+            "j_no3o": 0.0,
+            "j_hno2": 0.0,
+            "j_hno3": 0.0,
+            "j_hno4": 0.0,
+            "j_h2o2": 0.0,
+            "j_ch2or": 0.0,
+            "j_ch2om": 0.0,
+            "j_n2o5": 0.0,
+            "c_ch3o2": 37738016.07647786,
+            "c_ethp": 1785325.769123058,
+            "c_ro2": 424510.262457848,
+            "c_c2o3": 2217212.1541062975,
+            "c_ano2": 17318.429725484893,
+            "c_nap": 178738.73963360942,
+            "c_isopp": 0.002367300948723647,
+            "c_isopn": 0.002367300948723647,
+            "c_isopo2": 0.002367300948723647,
+            "c_xo2": 678757.3918590436
+          },
+          "assertions": [
+            {
+              "variable": "k_R001",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R002",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R003",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R004",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R005",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R006",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R007",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R008",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R009",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R010",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R011",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R012",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R013",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R014",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R015",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R016",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R017",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R018",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R019",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R020",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "k_R021",
+              "time": 0.0,
+              "expected": 2.8856034996182852e-11
+            },
+            {
+              "variable": "k_R022",
+              "time": 0.0,
+              "expected": 2.2e-10
+            },
+            {
+              "variable": "k_R023",
+              "time": 0.0,
+              "expected": 2.876566499692682e-15
+            },
+            {
+              "variable": "k_R024",
+              "time": 0.0,
+              "expected": 9.280817907144387e-15
+            },
+            {
+              "variable": "k_R025",
+              "time": 0.0,
+              "expected": 9.636372381392373e-12
+            },
+            {
+              "variable": "k_R026",
+              "time": 0.0,
+              "expected": 1.4721261301438906e-12
+            },
+            {
+              "variable": "k_R027",
+              "time": 0.0,
+              "expected": 1.5646487918591044e-12
+            },
+            {
+              "variable": "k_R028",
+              "time": 0.0,
+              "expected": 2.023147082890922e-14
+            },
+            {
+              "variable": "k_R029",
+              "time": 0.0,
+              "expected": 3.8719238169470147e-17
+            },
+            {
+              "variable": "k_R030",
+              "time": 0.0,
+              "expected": 7.32180702296525e-14
+            },
+            {
+              "variable": "k_R031",
+              "time": 0.0,
+              "expected": 2.13251344780817e-15
+            },
+            {
+              "variable": "k_R032",
+              "time": 0.0,
+              "expected": 4.505957141494075e-21
+            },
+            {
+              "variable": "k_R033",
+              "time": 0.0,
+              "expected": 7.003125289032638e-12
+            },
+            {
+              "variable": "k_R034",
+              "time": 0.0,
+              "expected": 8.206715763485513e-12
+            },
+            {
+              "variable": "k_R035",
+              "time": 0.0,
+              "expected": 2.2e-11
+            },
+            {
+              "variable": "k_R036",
+              "time": 0.0,
+              "expected": 5.0063567961609056e-12
+            },
+            {
+              "variable": "k_R037",
+              "time": 0.0,
+              "expected": 1.368127428541507e-13
+            },
+            {
+              "variable": "k_R038",
+              "time": 0.0,
+              "expected": 4.523181775642236e-12
+            },
+            {
+              "variable": "k_R039",
+              "time": 0.0,
+              "expected": 1.0901636341808164e-10
+            },
+            {
+              "variable": "k_R040",
+              "time": 0.0,
+              "expected": 1.7155275931070245e-12
+            },
+            {
+              "variable": "k_R041",
+              "time": 0.0,
+              "expected": 2.717923688235375e-12
+            },
+            {
+              "variable": "k_R042",
+              "time": 0.0,
+              "expected": 5.192413657410966e-30
+            },
+            {
+              "variable": "k_R043",
+              "time": 0.0,
+              "expected": 7.949109832568454e-12
+            },
+            {
+              "variable": "k_R044",
+              "time": 0.0,
+              "expected": 1.2941461707506172e-12
+            },
+            {
+              "variable": "k_R045",
+              "time": 0.0,
+              "expected": 5e-16
+            },
+            {
+              "variable": "k_R046",
+              "time": 0.0,
+              "expected": 0.1822656399872484
+            },
+            {
+              "variable": "k_R047",
+              "time": 0.0,
+              "expected": 2.62024298713509e-11
+            },
+            {
+              "variable": "k_R048",
+              "time": 0.0,
+              "expected": 7.2062650079323265e-16
+            },
+            {
+              "variable": "k_R049",
+              "time": 0.0,
+              "expected": 1.2337868505748262e-12
+            },
+            {
+              "variable": "k_R050",
+              "time": 0.0,
+              "expected": 2.742612703670802e-16
+            },
+            {
+              "variable": "k_R051",
+              "time": 0.0,
+              "expected": 3.5e-12
+            },
+            {
+              "variable": "k_R052",
+              "time": 0.0,
+              "expected": 2e-21
+            },
+            {
+              "variable": "k_R053",
+              "time": 0.0,
+              "expected": 0.09647658358771893
+            },
+            {
+              "variable": "k_R054",
+              "time": 0.0,
+              "expected": 2.385251874588452e-13
+            },
+            {
+              "variable": "k_R055",
+              "time": 0.0,
+              "expected": 8.575730394638059e-13
+            },
+            {
+              "variable": "k_R056",
+              "time": 0.0,
+              "expected": 7.237480679397858e-15
+            },
+            {
+              "variable": "k_R057",
+              "time": 0.0,
+              "expected": 2.772861358455036e-13
+            },
+            {
+              "variable": "k_R058",
+              "time": 0.0,
+              "expected": 8.1e-13
+            },
+            {
+              "variable": "k_R059",
+              "time": 0.0,
+              "expected": 1e-11
+            },
+            {
+              "variable": "k_R060",
+              "time": 0.0,
+              "expected": 6.667691103608997e-16
+            },
+            {
+              "variable": "k_R061",
+              "time": 0.0,
+              "expected": 1.358121162659252e-11
+            },
+            {
+              "variable": "k_R062",
+              "time": 0.0,
+              "expected": 2.74551986619194e-15
+            },
+            {
+              "variable": "k_R063",
+              "time": 0.0,
+              "expected": 2.3145322753408753e-13
+            },
+            {
+              "variable": "k_R064",
+              "time": 0.0,
+              "expected": 1.7e-11
+            },
+            {
+              "variable": "k_R065",
+              "time": 0.0,
+              "expected": 2.74551986619194e-15
+            },
+            {
+              "variable": "k_R066",
+              "time": 0.0,
+              "expected": 2.1449959536619154e-18
+            },
+            {
+              "variable": "k_R067",
+              "time": 0.0,
+              "expected": 8.139396970596325e-12
+            },
+            {
+              "variable": "k_R068",
+              "time": 0.0,
+              "expected": 1.1435259555451414e-17
+            },
+            {
+              "variable": "k_R069",
+              "time": 0.0,
+              "expected": 2.4591742113605213e-16
+            },
+            {
+              "variable": "k_R070",
+              "time": 0.0,
+              "expected": 2.7834207485100278e-11
+            },
+            {
+              "variable": "k_R071",
+              "time": 0.0,
+              "expected": 6.695352706362434e-11
+            },
+            {
+              "variable": "k_R072",
+              "time": 0.0,
+              "expected": 1.1274826367937234e-14
+            },
+            {
+              "variable": "k_R073",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R074",
+              "time": 0.0,
+              "expected": 6.040458133779515e-12
+            },
+            {
+              "variable": "k_R075",
+              "time": 0.0,
+              "expected": 2.487420056009077e-11
+            },
+            {
+              "variable": "k_R076",
+              "time": 0.0,
+              "expected": 8.1e-12
+            },
+            {
+              "variable": "k_R077",
+              "time": 0.0,
+              "expected": 4.1e-11
+            },
+            {
+              "variable": "k_R078",
+              "time": 0.0,
+              "expected": 2.2e-11
+            },
+            {
+              "variable": "k_R079",
+              "time": 0.0,
+              "expected": 1.4e-11
+            },
+            {
+              "variable": "k_R080",
+              "time": 0.0,
+              "expected": 3e-11
+            },
+            {
+              "variable": "k_R081",
+              "time": 0.0,
+              "expected": 1.0468702380149196e-17
+            },
+            {
+              "variable": "k_R082",
+              "time": 0.0,
+              "expected": 9.949450360261224e-11
+            },
+            {
+              "variable": "k_R083",
+              "time": 0.0,
+              "expected": 1.6242489550048387e-17
+            },
+            {
+              "variable": "k_R084",
+              "time": 0.0,
+              "expected": 6.943372196027533e-13
+            },
+            {
+              "variable": "k_R085",
+              "time": 0.0,
+              "expected": 3.3e-11
+            },
+            {
+              "variable": "k_R086",
+              "time": 0.0,
+              "expected": 7e-18
+            },
+            {
+              "variable": "k_R087",
+              "time": 0.0,
+              "expected": 1e-15
+            },
+            {
+              "variable": "k_R088",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R089",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R090",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R091",
+              "time": 0.0,
+              "expected": 1.2104623299315665e-11
+            },
+            {
+              "variable": "k_R092",
+              "time": 0.0,
+              "expected": 1.2104623299315665e-11
+            },
+            {
+              "variable": "k_R093",
+              "time": 0.0,
+              "expected": 1.2104623299315665e-11
+            },
+            {
+              "variable": "k_R094",
+              "time": 0.0,
+              "expected": 7.32460078631962e-12
+            },
+            {
+              "variable": "k_R095",
+              "time": 0.0,
+              "expected": 7.32460078631962e-12
+            },
+            {
+              "variable": "k_R096",
+              "time": 0.0,
+              "expected": 7.32460078631962e-12
+            },
+            {
+              "variable": "k_R097",
+              "time": 0.0,
+              "expected": 2.7203137927180244e-12
+            },
+            {
+              "variable": "k_R098",
+              "time": 0.0,
+              "expected": 8.369091324787457e-12
+            },
+            {
+              "variable": "k_R099",
+              "time": 0.0,
+              "expected": 0.001032869865798759
+            },
+            {
+              "variable": "k_R100",
+              "time": 0.0,
+              "expected": 9.355644582561958e-13
+            },
+            {
+              "variable": "k_R101",
+              "time": 0.0,
+              "expected": 7.51833654824931e-12
+            },
+            {
+              "variable": "k_R102",
+              "time": 0.0,
+              "expected": 8.611900626123668e-12
+            },
+            {
+              "variable": "k_R103",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R104",
+              "time": 0.0,
+              "expected": 1.7269371109609368e-11
+            },
+            {
+              "variable": "k_R105",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R106",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R107",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R108",
+              "time": 0.0,
+              "expected": 1.1e-12
+            },
+            {
+              "variable": "k_R109",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R110",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R111",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R112",
+              "time": 0.0,
+              "expected": 1.2e-12
+            },
+            {
+              "variable": "k_R113",
+              "time": 0.0,
+              "expected": 4e-12
+            },
+            {
+              "variable": "k_R114",
+              "time": 0.0,
+              "expected": 2.5e-12
+            },
+            {
+              "variable": "k_R115",
+              "time": 0.0,
+              "expected": 5.2454777258012035e-12
+            },
+            {
+              "variable": "k_R116",
+              "time": 0.0,
+              "expected": 7.45697234816918e-12
+            },
+            {
+              "variable": "k_R117",
+              "time": 0.0,
+              "expected": 1.2104623299315665e-11
+            },
+            {
+              "variable": "k_R118",
+              "time": 0.0,
+              "expected": 1.1973312758837602e-11
+            },
+            {
+              "variable": "k_R119",
+              "time": 0.0,
+              "expected": 8.544439975987528e-12
+            },
+            {
+              "variable": "k_R120",
+              "time": 0.0,
+              "expected": 1.2104623299315665e-11
+            },
+            {
+              "variable": "k_R121",
+              "time": 0.0,
+              "expected": 1.2104623299315665e-11
+            },
+            {
+              "variable": "k_R122",
+              "time": 0.0,
+              "expected": 3.2375956949970774e-12
+            },
+            {
+              "variable": "k_R123",
+              "time": 0.0,
+              "expected": 1e-11
+            },
+            {
+              "variable": "k_R124",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R125",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R126",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "k_R127",
+              "time": 0.0,
+              "expected": 3.231579727937277e-05
+            },
+            {
+              "variable": "k_R128",
+              "time": 0.0,
+              "expected": 1.8074445917351363e-05
+            },
+            {
+              "variable": "k_R129",
+              "time": 0.0,
+              "expected": 0.000464795111374939
+            },
+            {
+              "variable": "k_R130",
+              "time": 0.0,
+              "expected": 0.00017962398287873889
+            },
+            {
+              "variable": "k_R131",
+              "time": 0.0,
+              "expected": 6.976057272192263e-05
+            },
+            {
+              "variable": "k_R132",
+              "time": 0.0,
+              "expected": 4.1299769837723366e-05
+            },
+            {
+              "variable": "k_R133",
+              "time": 0.0,
+              "expected": 6.337231800922166e-05
+            },
+            {
+              "variable": "k_R134",
+              "time": 0.0,
+              "expected": 6.337231800922166e-05
+            },
+            {
+              "variable": "k_R135",
+              "time": 0.0,
+              "expected": 6.337231800922166e-05
+            },
+            {
+              "variable": "k_R136",
+              "time": 0.0,
+              "expected": 6.281245976878403e-05
+            },
+            {
+              "variable": "k_R137",
+              "time": 0.0,
+              "expected": 5.193811401245904e-11
+            },
+            {
+              "variable": "k_R138",
+              "time": 0.0,
+              "expected": 9.145765178786598e-17
+            },
+            {
+              "variable": "k_R139",
+              "time": 0.0,
+              "expected": 5.940155990807034e-12
+            },
+            {
+              "variable": "k_R140",
+              "time": 0.0,
+              "expected": 1.71e-10
+            },
+            {
+              "variable": "k_R141",
+              "time": 0.0,
+              "expected": 2e-16
+            },
+            {
+              "variable": "k_R142",
+              "time": 0.0,
+              "expected": 1.22e-11
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
