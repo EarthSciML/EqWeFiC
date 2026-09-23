@@ -210,6 +210,58 @@ the physics, and it must be resolved before real64 references for nucleation and
 coagulation can be produced. Until then the honest stage-2 position is: deposition and
 CBM-Z are ready, the two aerosol dynamics stages are not.
 
+
+## MOSAIC writes its own rates now (2026-09-22, WRF fork `a40edfe`)
+
+Differencing two real32 stage states was never going to give a usable reference for
+coagulation (N87), so each sub-process now writes its **instantaneous rate where it forms
+it**, at the state the stage starts from (`chem/module_esm_mosaic_rates.F`, inert unless
+the driver switches it on for the dumped column). What each one records:
+
+| process | what is recorded | is it a true rate? |
+|---|---|---|
+| nucleation | `wexler_nuc_mosaic_1box` evaluated in the **dt → 0 limit** (`rate_newnuc`), and the increment WRF applies divided by `dtnuc` (`rate_newnuc_finitedt`) | a rate exists, but WRF's applied increment is a **projection, not that rate** — see below |
+| coagulation | the same production and loss sums `coagsolv` uses, evaluated with the **input** distribution and divided by `deltat` (`rate_coag_num`, `rate_coag_vol`) | yes |
+| gas-particle transfer, non-volatile | `gas(iv)*kg(iv,ibin)` per bin — the **exact** dt → 0 limit of ASTEM's analytical exponential decay (`rate_cond_nonvol`) | yes, exactly |
+| gas-particle transfer, semi-volatile | `flux_s + flux_l` on ASTEM's **first sub-step**, i.e. kg·(gas − surface value) at the input state (`rate_cond_semivol`) | yes |
+| aerosol dry deposition | unchanged: the per-bin velocities, cross-checked by `mosaic_drydep_driver` | yes (a velocity, not an increment) |
+
+### Rate against finite increment, over the 16 dumped steps
+
+- **Coagulation.** Where the increment is resolved (more than 10× the real32 resolution)
+  the rate reproduces it to **0.1 % median, 4.4 % at the 90th percentile, 16 % worst**;
+  the residual is the semi-implicit solver's own nonlinearity over 60 s. At every step
+  **90–113 of the 472 number entries have a genuine rate but an increment at or below the
+  real32 resolution** — those bins simply cannot be referenced from the state dumps.
+- **Gas-particle transfer.** H2SO4 1.00–1.01 and HNO3 1.00 — linear over the step, so
+  either quantity would do. HCl 0.67–1.00. **NH3 ranges from −856 to +438**: the ammonia
+  flux reverses sign inside the step, so its increment is not a tendency at all and only
+  the rate can be referenced.
+- **Nucleation.** The increment WRF applies is **not** the rate: sulfate differs by 1×–56×,
+  number by 1.4×–79×, and ammonium by **363×–6.4e4×**. The cause is recorded as
+  FORTRAN_BUGS N95 — `qh2so4_avail` is an excess rate times `dtnuc`, and the composition
+  partition then divides `qnh3_cur` by that dt-scaled amount, so both the size and the
+  neutralisation of the new particles move with the step. A component must say which of
+  the two it transcribes; both are dumped.
+
+### Tolerances this supports
+
+| quantity | reference | tolerance |
+|---|---|---|
+| CBM-Z rate coefficients and integrated step | `cbmz_driver`, exact | as tight as the .esm arithmetic allows (RADM2 uses `rel 1e-9`) |
+| CBM-Z instantaneous rates | `Fun` from the same driver | same |
+| MOSAIC aerosol deposition velocities | `mosaic_drydep_driver`, real64 | `rel 1e-5` (real32 round-off, measured 2.3e-7–1.6e-6) |
+| MOSAIC coagulation, condensation, nucleation rates | the in-model rate hooks, real32 | `rel 1e-5`; the rates are single-precision values from the model, so the bound is WRF's own precision, not the differencing noise |
+| MOSAIC stage increments | the stage states | **not usable for coagulation** (N87) and not a tendency for NH3 or nucleation |
+
+`tools/mosaic_rate_check.py` prints the comparison for any dumped column; the run over
+all 16 steps is in `chem170_scm/replay/rate_summary.txt`.
+
+**This takes the `-fdefault-real-8` promotion off the critical path.** The rates are
+computed inside the model in its own precision, so nucleation and coagulation no longer
+need the real64 replay whose build was unresolved. That driver's real32 build still
+reproduces WRF bit for bit and stays as a cross-check.
+
 ## Bisecting the chem-on / chem-off divergence
 
 One binary (`wrf-chem170/main/wrf.exe`), one namelist switch at a time
