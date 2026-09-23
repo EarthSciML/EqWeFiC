@@ -1,0 +1,907 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "NoahFrozenSoilColumn",
+  "description": "The frozen soil column of WRF's unified Noah land-surface model -- vertical water transport and the freeze/thaw phase change, mounted together and summed against what WRF's own step does to the liquid water. WHY A COUPLING DOCUMENT AND NOT A COMPONENT TEST. Each half is already pinned on its own: `soil_moisture.esm` reproduces SMFLX/SRT as Richards' equation, and `frozen_soil.esm` reproduces TBND/TMPAVG/FRH2O/SNKSRC with every assertion exact at zero tolerance since the N97 hook. Neither, alone, says anything about the quantity a consumer actually integrates, which is their SUM -- and WRF never forms that sum. SFLX calls SMFLX, which advances the liquid water over the step, and only then SHFLX -> HRT, whose phase-change sink acts on the water SMFLX has ALREADY MOVED. WRF's answer is a sequential composition of two operators; a continuous formulation is their sum evaluated at ONE instantaneous state. That the two agree is a claim about the pair, it is O(dt), and it has to be measured. This document builds one column state, hands it to BOTH mounts, and asserts the sum against WRF's own (sh2o_out - sh2o_in)/dt. THREE CLAIMS, NOT ONE. (1) The liquid budget: transport + phase = WRF's total step. (2) The total-water budget: transport ALONE reproduces WRF's smc step, because the phase change moves water between liquid and ice within a layer and does not change the total -- an independent check that the split was made in the right place, since an error leaking transport into the phase term would pass (1) and fail (2). (3) The clamp decision: `phase_active`, decided at the shared state, matches at ZERO tolerance the decision WRF made at its post-SMFLX state. (3) is what licenses (1): the phase rate is qtot/(rho_w hlice dz) where the sink runs and zero where the interval clamp holds the layer, so it depends on the liquid water ONLY through that discrete switch, and if the switch does not flip between the two states the splitting error cannot enter through it at all. THE REFERENCE STEP IS A FLOOR CASE (FORTRAN_BUGS N99, PLAN section 6) and its V was measured over all seventeen cold bare-ground columns rather than guessed. Below: the reference (sh2o_out - sh2o_in)/dt is a difference of two nearly equal stored states, and the increment is only 3e-13 to 2e-11 of sh2o at a 1e-6 s step -- four digits left in binary64. Above: at WRF's own 60 s step the interval clamp decision FLIPS at one layer of six of the seventeen columns (0 -> 2, stopped at `free`), which turns the phase term into a finite-step artefact rather than a rate, exactly the bind FORTRAN_BUGS N97 describes. The minimum is ESM_DT = 0.01 s, where the increment is 3e-9 to 2e-7 of sh2o -- about eight digits -- and every clamp decision still agrees with the one at 1e-6 s. The tolerances are therefore the REFERENCE's cancellation floor, not the assembly's accuracy. SCOPE. `qtot` is consumer-supplied, exactly as in `frozen_soil.esm`'s own tests, so this document isolates the WATER budget; the heat budget that produces qtot belongs to the soil-heat component and joins in a larger assembly. The snow-covered SNOPAC columns are out of scope: there the water supply includes snowmelt, which brings the snow-energy component in as a third mount. THIS COLUMN: case D step 1813, bare frozen ground in a dry column, the LARGEST water increment in the cold set (2.0e-7 of sh2o over the 0.01 s reference step, so the reference carries about nine digits). The phase change runs in the top two layers and WRF's clamp holds it at `sh2o` in the lower two, so both sides of the switch are exercised in one column.",
+  "license": "MIT",
+  "tags": [
+   "wrf",
+   "land-surface",
+   "noah",
+   "coupling",
+   "soil-moisture",
+   "frozen-soil",
+   "operator-splitting"
+  ],
+  "references": [
+   {
+    "citation": "Koren, V., Schaake, J., Mitchell, K., Duan, Q.-Y., Chen, F., & Baker, J. M. (1999). A parameterization of snowpack and frozen ground intended for NCEP weather and climate models. J. Geophys. Res., 104(D16), 19569-19585."
+   },
+   {
+    "citation": "Ek, M. B., et al. (2003). Implementation of Noah land surface model advances in the NCEP operational mesoscale Eta model. J. Geophys. Res., 108(D22), 8851."
+   },
+   {
+    "citation": "wrf-model/WRF v4.8.0 phys/module_sf_noahlsm.F: SFLX's SMFLX call followed by SHFLX -> HRT -> SNKSRC, the sequential composition this document sums instead."
+   }
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {
+   "type": "integer",
+   "default": 4,
+   "description": "Number of soil layers, WRF num_soil_layers. Declared at document level and bound into BOTH mount edges, so the two components share one vertical grid."
+  }
+ },
+ "models": {
+  "Sm": {
+   "ref": "../components/land_surface/noah/soil_moisture.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/frzcol_D1813_sm_inputs.esm"
+    }
+   ]
+  },
+  "Frz": {
+   "ref": "../components/land_surface/noah/frozen_soil.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/frzcol_D1813_frz_inputs.esm"
+    }
+   ]
+  },
+  "NoahFrozenSoilColumn": {
+   "variables": {
+    "smcmax0": {
+     "type": "parameter",
+     "units": "m^3/m^3",
+     "default": 0.476,
+     "description": "Soil porosity (SOILPARM MAXSMC). SHARED: both the transport and the phase change read it, and the coupling hands them the same copy. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "smcmax": {
+     "type": "unknown",
+     "units": "m^3/m^3",
+     "description": "Assembly value of smcmax, mapped into the mount(s)."
+    },
+    "bexp0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 5.33,
+     "description": "Clapp-Hornberger b for the soil type. SHARED by both mounts. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "bexp": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of bexp, mapped into the mount(s)."
+    },
+    "edir0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Direct soil evaporation, from the evapotranspiration component. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "edir": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of edir, mapped into the mount(s)."
+    },
+    "ec0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Canopy evaporation, from the evapotranspiration component. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "ec": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of ec, mapped into the mount(s)."
+    },
+    "etp0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Potential evaporation from the Penman component; its sign selects the dew branch. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "etp": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of etp, mapped into the mount(s)."
+    },
+    "prcp0": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 0.0,
+     "description": "Precipitation reaching the surface. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "prcp": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Assembly value of prcp, mapped into the mount(s)."
+    },
+    "shdfac0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.5,
+     "description": "Green vegetation fraction. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "shdfac": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of shdfac, mapped into the mount(s)."
+    },
+    "cmc0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Canopy water content. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "cmc": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Assembly value of cmc, mapped into the mount(s)."
+    },
+    "smcwlt0": {
+     "type": "parameter",
+     "units": "m^3/m^3",
+     "default": 0.03,
+     "description": "Wilting-point soil moisture. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "smcwlt": {
+     "type": "unknown",
+     "units": "m^3/m^3",
+     "description": "Assembly value of smcwlt, mapped into the mount(s)."
+    },
+    "dksat0": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 7.2e-06,
+     "description": "Saturated hydraulic conductivity. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "dksat": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Assembly value of dksat, mapped into the mount(s)."
+    },
+    "dwsat0": {
+     "type": "parameter",
+     "units": "m^2/s",
+     "default": 5.1e-06,
+     "description": "Saturated soil-water diffusivity. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "dwsat": {
+     "type": "unknown",
+     "units": "m^2/s",
+     "description": "Assembly value of dwsat, mapped into the mount(s)."
+    },
+    "kdt0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 3.0,
+     "description": "Infiltration parameter, refkdt dksat/refdk. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "kdt": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of kdt, mapped into the mount(s)."
+    },
+    "frzx0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.15,
+     "description": "Frozen-ground infiltration parameter from REDPRM. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "frzx": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of frzx, mapped into the mount(s)."
+    },
+    "slope0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.1,
+     "description": "Slope-type baseflow coefficient. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "slope": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of slope, mapped into the mount(s)."
+    },
+    "tsurf0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 273.0,
+     "description": "HRT's linearised surface temperature, the upper end of the layer-temperature profile the phase change reads. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "tsurf": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Assembly value of tsurf, mapped into the mount(s)."
+    },
+    "tbot0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 285.0,
+     "description": "Deep soil temperature at z_deep. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "tbot": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Assembly value of tbot, mapped into the mount(s)."
+    },
+    "z_deep0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 8.0,
+     "description": "Depth of the lower temperature boundary, WRF's ZBOT. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "z_deep": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Assembly value of z_deep, mapped into the mount(s)."
+    },
+    "psisat0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.3548,
+     "description": "Saturated soil matric potential for the soil type. Test-settable; the document's single copy, handed to the mount(s) through the coupling."
+    },
+    "psisat": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Assembly value of psisat, mapped into the mount(s)."
+    },
+    "dsh2o_dt_transport_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives NoahSoilMoisture.dsh2o_dt through the coupling."
+    },
+    "dsh2o_dt_phase_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives NoahFrozenSoil.dsh2o_dt_phase through the coupling."
+    },
+    "dsmc_dt_transport_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives NoahSoilMoisture.dsmc_dt through the coupling."
+    },
+    "phase_active_in": {
+     "type": "parameter",
+     "units": "1",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives NoahFrozenSoil.phase_active through the coupling."
+    },
+    "supersaturation_active_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives NoahSoilMoisture.supersaturation_active through the coupling."
+    },
+    "dsh2o_dt_transport": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Liquid-water tendency from vertical transport alone: Richards' equation with the Clapp-Hornberger closures, the infiltration limiter and the evaporation sinks, evaluated at the assembly's column state."
+    },
+    "dsh2o_dt_phase": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Liquid-water tendency from the freeze/thaw phase change, qtot/(rho_w hlice dz) where the sink runs and zero where WRF's interval clamp holds the layer. Evaluated at the SAME column state as the transport, which is the whole point of this document."
+    },
+    "dsh2o_dt_total": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "THE COUPLING CLAIM: the sum, which is what a consumer integrating the soil column adds to its liquid water. WRF never forms it -- SMFLX advances the water and only then does HRT's sink act on what SMFLX has already moved -- so reproducing the total step is a claim about the two components TOGETHER that neither can make alone."
+    },
+    "dsmc_dt_total": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Total-water tendency. The phase change moves water between the liquid and the ice within a layer and does not change the total, so this is the transport tendency alone; asserting it against WRF's own smc step is an independent check that the split was made in the right place, because an error leaking transport into the phase term would pass the liquid claim and fail this one."
+    },
+    "dsice_dt": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "Soil-ice tendency, dsmc_dt_total - dsh2o_dt_total, which reduces identically to minus the phase rate. It is the quantity a heat-equation consumer needs, because the latent sink is proportional to it."
+    },
+    "phase_active": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "lev"
+     ],
+     "description": "Which layers the phase change actually runs in, decided at the ASSEMBLY's shared column state. Asserted at zero tolerance against the decision WRF made at its POST-SMFLX state: that the two agree is what licenses evaluating both processes at one instantaneous state, because the phase rate depends on the liquid water only through this discrete switch."
+    },
+    "supersaturation_active": {
+     "type": "unknown",
+     "units": "1",
+     "description": "SSTEP's supersaturation redistribution indicator. It must be zero for WRF's total step to be the sum of two rates at all -- it is a post-step projection that no tendency can carry -- so this is a precondition of the claim rather than a result."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "smcmax",
+     "rhs": "smcmax0"
+    },
+    {
+     "lhs": "bexp",
+     "rhs": "bexp0"
+    },
+    {
+     "lhs": "edir",
+     "rhs": "edir0"
+    },
+    {
+     "lhs": "ec",
+     "rhs": "ec0"
+    },
+    {
+     "lhs": "etp",
+     "rhs": "etp0"
+    },
+    {
+     "lhs": "prcp",
+     "rhs": "prcp0"
+    },
+    {
+     "lhs": "shdfac",
+     "rhs": "shdfac0"
+    },
+    {
+     "lhs": "cmc",
+     "rhs": "cmc0"
+    },
+    {
+     "lhs": "smcwlt",
+     "rhs": "smcwlt0"
+    },
+    {
+     "lhs": "dksat",
+     "rhs": "dksat0"
+    },
+    {
+     "lhs": "dwsat",
+     "rhs": "dwsat0"
+    },
+    {
+     "lhs": "kdt",
+     "rhs": "kdt0"
+    },
+    {
+     "lhs": "frzx",
+     "rhs": "frzx0"
+    },
+    {
+     "lhs": "slope",
+     "rhs": "slope0"
+    },
+    {
+     "lhs": "tsurf",
+     "rhs": "tsurf0"
+    },
+    {
+     "lhs": "tbot",
+     "rhs": "tbot0"
+    },
+    {
+     "lhs": "z_deep",
+     "rhs": "z_deep0"
+    },
+    {
+     "lhs": "psisat",
+     "rhs": "psisat0"
+    },
+    {
+     "lhs": "dsh2o_dt_transport",
+     "rhs": "dsh2o_dt_transport_in"
+    },
+    {
+     "lhs": "dsh2o_dt_phase",
+     "rhs": "dsh2o_dt_phase_in"
+    },
+    {
+     "lhs": "dsmc_dt_total",
+     "rhs": "dsmc_dt_transport_in"
+    },
+    {
+     "lhs": "phase_active",
+     "rhs": "phase_active_in"
+    },
+    {
+     "lhs": "supersaturation_active",
+     "rhs": "supersaturation_active_in"
+    },
+    {
+     "lhs": "dsh2o_dt_total",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "dsh2o_dt_transport",
+       "dsh2o_dt_phase"
+      ]
+     }
+    },
+    {
+     "lhs": "dsice_dt",
+     "rhs": {
+      "op": "-",
+      "args": [
+       "dsmc_dt_total",
+       "dsh2o_dt_total"
+      ]
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "cold_D1813_frozen_column",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 0.01 s. THE ASSERTED CLAIM is that the SUM of the two mounted tendencies reproduces WRF's own step: `dsh2o_dt_total` against (sh2o_out - sh2o_in)/dt, `dsmc_dt_total` against (smc_out - smc_in)/dt, and `dsice_dt` against the ice difference, all per layer. WRF forms none of these; it advances the water with SMFLX and then applies HRT's phase-change sink to what SMFLX has already moved, so this is a statement about the two components TOGETHER. THE REFERENCE STEP WAS CHOSEN BY MEASURING ITS V, not by assuming smaller is better (the rule is FORTRAN_BUGS N99 / PLAN section 6: a differenced reference HAS a cancellation floor, so its accuracy is a V in dt and the step is the minimum). Worst absolute residual over this document's assertions, at the three replay passes: 1.034e-11 at ESM_DT = 1e-6 s, 1.142e-15 at 0.01 s, 8.134e-15 at 60 s. The left branch is pure cancellation -- the liquid-water increment is only 2.0e-11 of sh2o at 1e-6 s, so the reference difference keeps about four digits, and the residual scales as 1/dt (a 10000x drop in dt raises it by 9000x). The right branch is the operator-splitting error plus WRF's interval clamp; on THIS column the clamp does not flip and 60 s costs only a factor of 7, but over the seventeen cold bare-ground columns the clamp decision flips at one layer of SIX of them at 60 s (0 -> 2, stopped at `free`), which turns the phase term into a finite-step artefact rather than a rate -- exactly the bind FORTRAN_BUGS N97 describes. 0.01 s is the minimum and it is four orders better than either end. TOLERANCES ARE THE REFERENCE'S FLOOR, NOT THE ASSEMBLY'S ACCURACY, and they are ABSOLUTE for a traced reason: the deepest layer's tendency is 1.7e-11 per second while the top layer's is 4.0e-06, so a single relative bound would be meaningless. The floor is eps(sh2o)/dt = 2.2e-16 x 0.3 / 0.01 = 6.7e-15 per second; the measured worst residual over the three documents is 4.7e-15, i.e. AT that floor, and the published bound of 1e-14 is 2.1x it. The phase rate itself is asserted at abs 1e-18 and is exact, because it is referenced against the N97 publisher rather than any difference. `phase_active` and `supersaturation_active` are asserted at ZERO tolerance. THIS COLUMN: case D step 1813, bare frozen ground in a dry column and the LARGEST water increment in the cold set. The phase change runs in the top two layers and WRF's clamp holds it at `sh2o` in the lower two, so both sides of the switch are exercised here; `phase_active` reproduces that decision at zero tolerance although the assembly decides it at the shared column state and WRF decided it at its post-SMFLX state.",
+       "parameter_overrides": {
+         "smcmax0": 0.47600001096725464,
+         "bexp0": 5.329999923706055,
+         "edir0": 11.659375142523958,
+         "ec0": 0.0,
+         "etp0": 271.9437095916205,
+         "prcp0": 0.0,
+         "shdfac0": 0.5,
+         "cmc0": 0.0,
+         "smcwlt0": 0.08399999886751175,
+         "dksat0": 2.8100000690756133e-06,
+         "dwsat0": 2.390000008745119e-05,
+         "kdt0": 4.215000114255272,
+         "frzx0": 0.17460114362402857,
+         "slope0": 0.10000000149011612,
+         "tsurf0": 290.7184894059586,
+         "tbot0": 276.0,
+         "z_deep0": 8.0,
+         "psisat0": 0.7590000033378601
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "dsh2o_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 3.9758248110421945e-06,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsh2o_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": -5.793621693506168e-08,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsh2o_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": -4.1905529046815104e-08,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsh2o_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 1.7419399256368706e-11,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsmc_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": -7.229598864011422e-08,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsmc_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": -3.9002320817438374e-08,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsmc_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": -4.1905529046815104e-08,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsmc_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 1.7419399256368706e-11,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsice_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": -4.048120799682309e-06,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsice_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 1.8933896117623306e-08,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsice_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsice_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 1e-14
+           }
+         },
+         {
+           "variable": "dsh2o_dt_phase",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 4.0481208003464605e-06,
+           "tolerance": {
+             "abs": 1e-18
+           }
+         },
+         {
+           "variable": "dsh2o_dt_phase",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": -1.893389696329599e-08,
+           "tolerance": {
+             "abs": 1e-18
+           }
+         },
+         {
+           "variable": "dsh2o_dt_phase",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": -0.0,
+           "tolerance": {
+             "abs": 1e-18
+           }
+         },
+         {
+           "variable": "dsh2o_dt_phase",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 1e-18
+           }
+         },
+         {
+           "variable": "phase_active",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 1.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "phase_active",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 1.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "phase_active",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "phase_active",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "supersaturation_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     }
+   ]
+  }
+ },
+ "coupling": [
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.smcmax",
+   "to": "Sm.smcmax",
+   "transform": "param_to_var",
+   "description": "shared soil parameter smcmax into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.smcmax",
+   "to": "Frz.smcmax",
+   "transform": "param_to_var",
+   "description": "the SAME smcmax into the phase change -- one copy for both, which is what makes this a coupling"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.bexp",
+   "to": "Sm.bexp",
+   "transform": "param_to_var",
+   "description": "shared soil parameter bexp into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.bexp",
+   "to": "Frz.bexp",
+   "transform": "param_to_var",
+   "description": "the SAME bexp into the phase change -- one copy for both, which is what makes this a coupling"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.edir",
+   "to": "Sm.edir",
+   "transform": "param_to_var",
+   "description": "edir into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.ec",
+   "to": "Sm.ec",
+   "transform": "param_to_var",
+   "description": "ec into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.etp",
+   "to": "Sm.etp",
+   "transform": "param_to_var",
+   "description": "etp into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.prcp",
+   "to": "Sm.prcp",
+   "transform": "param_to_var",
+   "description": "prcp into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.shdfac",
+   "to": "Sm.shdfac",
+   "transform": "param_to_var",
+   "description": "shdfac into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.cmc",
+   "to": "Sm.cmc",
+   "transform": "param_to_var",
+   "description": "cmc into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.smcwlt",
+   "to": "Sm.smcwlt",
+   "transform": "param_to_var",
+   "description": "smcwlt into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.dksat",
+   "to": "Sm.dksat",
+   "transform": "param_to_var",
+   "description": "dksat into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.dwsat",
+   "to": "Sm.dwsat",
+   "transform": "param_to_var",
+   "description": "dwsat into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.kdt",
+   "to": "Sm.kdt",
+   "transform": "param_to_var",
+   "description": "kdt into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.frzx",
+   "to": "Sm.frzx",
+   "transform": "param_to_var",
+   "description": "frzx into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.slope",
+   "to": "Sm.slope",
+   "transform": "param_to_var",
+   "description": "slope into the transport"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.tsurf",
+   "to": "Frz.tsurf",
+   "transform": "param_to_var",
+   "description": "tsurf into the phase change"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.tbot",
+   "to": "Frz.tbot",
+   "transform": "param_to_var",
+   "description": "tbot into the phase change"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.z_deep",
+   "to": "Frz.z_deep",
+   "transform": "param_to_var",
+   "description": "z_deep into the phase change"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahFrozenSoilColumn.psisat",
+   "to": "Frz.psisat",
+   "transform": "param_to_var",
+   "description": "psisat into the phase change"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sm.dsh2o_dt",
+   "to": "NoahFrozenSoilColumn.dsh2o_dt_transport_in",
+   "transform": "param_to_var",
+   "description": "expose the transport tendency"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sm.dsmc_dt",
+   "to": "NoahFrozenSoilColumn.dsmc_dt_transport_in",
+   "transform": "param_to_var",
+   "description": "expose the total-water tendency"
+  },
+  {
+   "type": "variable_map",
+   "from": "Sm.supersaturation_active",
+   "to": "NoahFrozenSoilColumn.supersaturation_active_in",
+   "transform": "param_to_var",
+   "description": "expose SSTEP's projection indicator"
+  },
+  {
+   "type": "variable_map",
+   "from": "Frz.dsh2o_dt_phase",
+   "to": "NoahFrozenSoilColumn.dsh2o_dt_phase_in",
+   "transform": "param_to_var",
+   "description": "expose the phase-change tendency"
+  },
+  {
+   "type": "variable_map",
+   "from": "Frz.phase_active",
+   "to": "NoahFrozenSoilColumn.phase_active_in",
+   "transform": "param_to_var",
+   "description": "expose the clamp decision"
+  }
+ ]
+}

@@ -2570,3 +2570,81 @@ real exposure at esm 2.0.0, and clearing it needs a migration PR there.
       anywhere, and the `wet_capped` branch is never reached: untested, not
       merely unused, and said so in their descriptions.
 
+1.4j Noah stage 2, seventh tranche (done 2026-09-23): the frozen soil column as a
+    COUPLING, not a component.
+
+    `couplings/frozen_soil_column.esm` and its two variants
+    `_guard.esm` and `_dew.esm`, **63/63** (21 assertions each).
+
+    - **Why it is a coupling document.** Both halves were already pinned alone:
+      `soil_moisture.esm` reproduces SMFLX/SRT as Richards' equation and
+      `frozen_soil.esm` reproduces TBND/TMPAVG/FRH2O/SNKSRC exactly. Neither
+      says anything about the quantity a consumer integrates, which is their
+      SUM -- and WRF never forms it. SFLX advances the water with SMFLX and only
+      then applies HRT's sink to what SMFLX has already moved, so WRF's answer
+      is a sequential composition of two operators while a continuous
+      formulation is their sum at ONE instantaneous state. The documents build
+      one column state, hand it to BOTH mounts, and assert the sum against
+      WRF's own (sh2o_out - sh2o_in)/dt.
+    - **Three claims, not one.** (1) liquid budget: transport + phase = WRF's
+      step. (2) total-water budget: transport ALONE reproduces WRF's `smc` step,
+      because the phase change moves water between liquid and ice within a layer
+      and does not change the total -- an independent check that the split was
+      made in the right place, since an error leaking transport into the phase
+      term passes (1) and fails (2). (3) the clamp decision `phase_active`,
+      decided at the shared state, matches at ZERO tolerance the decision WRF
+      made at its post-SMFLX state. (3) is what licenses (1): the phase rate is
+      `qtot/(rho_w hlice dz)` where the sink runs and zero where the interval
+      clamp holds the layer, so it depends on the liquid water ONLY through that
+      discrete switch, and a switch that does not flip cannot admit the
+      splitting error.
+    - **The reference step was chosen by MEASURING its V** (section 6, N99), and
+      the measurement is the tranche's main number. Worst absolute residual over
+      each document's assertions:
+
+      | document | 1e-6 s | **0.01 s** | 60 s |
+      |---|---|---|---|
+      | `frozen_soil_column` (D1813) | 1.03e-11 | **1.14e-15** | 8.13e-15 |
+      | `_guard` (D2096) | 1.36e-11 | **1.57e-15** | 8.62e-15 |
+      | `_dew` (A1) | 3.41e-11 | **4.65e-15** | 6.15e-15 |
+
+      The left branch is pure cancellation in the reference difference: the
+      liquid increment is 3e-13 to 2e-11 of `sh2o` at 1e-6 s, about four digits,
+      and the residual scales as 1/dt (10000x less dt, 9000x more residual). The
+      right branch is the splitting error plus WRF's clamp; on these three
+      columns the clamp does not flip and 60 s costs only 1.3x to 7x, but across
+      the seventeen cold bare-ground columns the decision flips at one layer of
+      SIX of them at 60 s (0 -> 2, stopped at `free`), which makes the phase term
+      a finite-step artefact. **0.01 s is the minimum, four orders better than
+      either end.**
+    - **Tolerances are the REFERENCE's floor and are absolute for a traced
+      reason.** The deepest layer's tendency is 1.7e-11 per second while the top
+      layer's is 4.0e-6, so one relative bound would be meaningless. The floor is
+      eps(sh2o)/dt = 2.2e-16 x 0.3 / 0.01 = 6.7e-15 per second; the measured
+      worst is 4.65e-15, AT the floor, and the published 1e-14 is 2.1x it. The
+      phase rate itself is asserted at abs 1e-18 and is exact, because it is
+      referenced against the N97 publisher and not against any difference.
+    - **A mount-edge constraint worth recording: a test-level
+      `expression_template_imports` does NOT reach a mounted leaf's
+      `input_<name>` ops.** Lowering them requires the library on
+      `models.<Mount>.expression_template_imports`, which is document-level, so
+      a coupling over components that take their columns through rewrite-target
+      ops gets ONE column state per document. That is why this is three small
+      documents rather than one with seventeen tests, and it is the same reason
+      `radiation_column`/`_night` and `rrtm_lw_column_call*` are separate files.
+      A component whose columns are shaped PARAMETERS (the Madronich mounts) has
+      no such limit and can carry many tests in one document.
+    - Coverage: the main document has the phase change running in two layers and
+      clamped in two; `_guard` has a thawed, ice-free top layer where HRT's
+      evaluation guard never calls the sink at all (clamp -1), so `phase_active`
+      reads zero for a different reason and the total there is transport alone;
+      `_dew` is the only step in the cold set on the ACTIVE frozen-ground
+      infiltration branch and is supplied by dew rather than precipitation.
+      `supersaturation_active` is asserted zero in all three -- a precondition of
+      the claim, since SSTEP's redistribution is a post-step projection that no
+      tendency can carry.
+    - **Still to do:** the snow-covered SNOPAC columns, where the water supply
+      includes snowmelt and the snow-energy component joins as a third mount;
+      and the heat budget that produces `qtot`, which is consumer-supplied here.
+
+

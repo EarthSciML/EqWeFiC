@@ -1,0 +1,1332 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "GWDOBlockingDrag",
+    "description": "The low-level flow-blocking drag, and the total stress profile the momentum stage differentiates. Lines 553-592 of `phys/physics_mmm/bl_gwdo.F90` (WRF 4.8, NCAR/MMM-physics CCPP kernel `bl_gwdo_run`).\n\nAir that cannot carry itself over the sub-grid ridge goes AROUND it instead of over it, and the form drag of that deflection is a separate stress from the gravity wave. The scheme decides how deep the blocked layer is by an energy argument: descending from the top of the search, it compares the kinetic energy of the flow at each level against the potential energy it would have to spend to be lifted to the height of the highest sub-grid peak,\n\n    PE(z) = integral from z to the top of the search of N^2(z') (z_komax - z') dz'\n    KE(z) = (u^2 + v^2)/2\n\nand the blocking top is the HIGHEST level at or below the peak where PE has caught up with KE. The potential energy is a genuine cumulative column integral -- the Fortran spells it `bnv2*(zl(komax)-zl)*del/g/rho`, in which `del/g/rho` is nothing but the hydrostatic layer thickness -- so it is written here as `integral(..., var: lev, lower: lev_nodes, ...)` and lowered by the EarthSciDiscretizations `integral_lev_nodes_cumulative_to_top` rule, with the consumer-supplied measure `dz` bound to that thickness. Its value at interface k is exactly the Fortran's accumulator at layer k, so the interface field is read at the layer index.\n\nThe stress itself is a bulk form drag, 0.5 rhobar (coefm/area) Cd dxyp olp zblk U^2 with Cd = max(2 - 1/od, 0), applied at the surface and RAMPED LINEARLY TO ZERO at the blocking top. The Fortran writes that ramp as a subtraction recurrence, taufb(k) = taufb(k-1) - taufb(1)/(kblk-1); it is written here in the closed form taufb(1) (1 - (k-1)/(kblk-1)) it is equivalent to, because nothing about it is sequential -- the increment is a constant, not a function of the previous answer -- and esm-spec 4.3.1.1 recurrences are reserved for sweeps that genuinely are. The two differ only by the round-off the repeated subtraction accumulates, about 1e-15 of the surface value over the ten or so layers a blocked column has.\n\nThe component's output is the TOTAL interface stress, the wave stress plus the blocking stress, which is what the Fortran leaves in `taup` and what the tendency is the divergence of.",
+    "license": "MIT",
+    "tags": ["wrf", "gravity-wave-drag", "gwdo", "flow-blocking", "form-drag", "column"],
+    "references": [
+      { "citation": "Choi, H.-J., and S.-Y. Hong (2015). An updated subgrid orographic parameterization for global atmospheric forecast models. J. Geophys. Res. Atmos. 120, 12445-12457.", "doi": "10.1002/2015JD024230" },
+      { "citation": "Kim, Y.-J., and J. D. Doyle (2005). Extension of an orographic-drag parametrization scheme to incorporate orographic anisotropy and flow blocking. Quart. J. Roy. Meteor. Soc. 131, 1893-1921.", "doi": "10.1256/qj.04.160" },
+      { "citation": "Hong, S.-Y., and co-authors (2025). Revision of the orographic gravity wave drag parameterization in the KIAPS Integrated Model. Wea. Forecasting." },
+      { "citation": "NCAR/MMM-physics bl_gwdo.F90 at commit 52cfbd7 (WRF 4.8 phys/physics_mmm submodule)." }
+    ]
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 50,
+      "description": "Number of model layers (WRF kte). Bound at the mount edge and passed down to the imported grid, to the cumulative-integral rule and to the `sat` subsystem."
+    }
+  },
+  "models": {
+    "GWDOBlockingDrag": {
+      "expression_template_imports": [
+        { "ref": "${ESD_ROOT}/grids/column_nonuniform_1d/grid.esm", "bindings": { "NLEV": "NLEV" } },
+        { "ref": "${ESD_ROOT}/grids/column_nonuniform_1d/rules/integral_lev_nodes_cumulative_to_top.esm", "bindings": { "NLEV": "NLEV" } }
+      ],
+      "subsystems": {
+        "wrf": { "ref": "../../../lib/wrf_constants.esm" },
+        "par": { "ref": "./gwdo_parameters.esm" },
+        "sat": { "ref": "./wave_saturation.esm", "bindings": { "NLEV": "NLEV" } }
+      },
+      "variables": {
+        "ldrag": { "type": "unknown", "units": "1", "description": "The column's off switch, read from the mounted column state." },
+        "on": { "type": "unknown", "units": "1", "description": "1 - ldrag: the arithmetic form of the Fortran's `if (.not. ldrag)` guard around the whole blocking block." },
+        "komax": { "type": "unknown", "units": "1", "description": "Level index one above the lowest level reaching the maximum sub-grid peak; the blocked air would have to be lifted to THIS level's height, and the blocking top can be no higher." },
+        "kbomax": { "type": "unknown", "units": "1", "description": "Level index one above the lowest level reaching ELVMAX + 2 var: the top of the downward search, where the potential-energy integral starts from zero." },
+        "zl": { "type": "unknown", "units": "m", "shape": ["lev"], "description": "Layer-centre heights above sea level, read from the mounted column state." },
+        "bnv2": { "type": "unknown", "units": "1/s^2", "shape": ["lev"], "description": "Squared Brunt-Vaisala frequency, read from the mounted column state. NOTE that this is the profile whose level-1 entry the column stage replaced with the low-level pressure-weighted mean; the blocking search reads it from kgwdmin = 2 upward, so it never sees the substituted value." },
+        "rho": { "type": "unknown", "units": "kg/m^3", "shape": ["lev"], "description": "Air density, read from the mounted column state." },
+        "del": { "type": "unknown", "units": "Pa", "shape": ["lev"], "description": "Layer pressure thickness, read from the mounted column state." },
+        "u1": { "type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Earth-relative zonal wind, read from the mounted column state." },
+        "v1": { "type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Earth-relative meridional wind, read from the mounted column state." },
+        "dz": { "type": "unknown", "units": "m", "shape": ["lev"], "description": "GEOMETRIC layer thickness del/(g rho), the hydrostatic thickness the Fortran writes inline as `del(i,k)/g_/rho(i,k)`. It is the measure of the potential-energy integral below, supplied under the bare name every rule of the column_nonuniform_1d grid reads (esm-spec 9.7.7 permits a consumer to supply its own monotone layer measure). It is NOT the measure the column stage uses: that one integrates in mass, because the stress divergence is taken with respect to pressure, and this one integrates in height, because a potential energy is g times a height." },
+        "pe_dens": { "type": "unknown", "units": "m/s^2", "shape": ["lev"], "description": "Integrand of the potential-energy integral, N^2 (z_komax - z), zeroed outside the search window [kgwdmin, kbomax] so that the whole-column integral operator reproduces the Fortran's bounded accumulation. Bound to its own layer-shaped observed because the ESD integral rules match a bare field, not a compound." },
+        "fbdpe_nodes": { "type": "unknown", "units": "m^2/s^2", "shape": ["lev_nodes"], "description": "Cumulative potential energy per unit mass from each interface to the model top." },
+        "fbdpe": { "type": "unknown", "units": "m^2/s^2", "shape": ["lev"], "description": "The Fortran's `fbdpe` accumulator at layer k: the potential energy the flow at layer k would have to spend to reach the height of the highest sub-grid peak. It is the interface field above read at the BOTTOM face of layer k, which is exactly what a downward accumulation that has just added layer k holds." },
+        "fbdke": { "type": "unknown", "units": "m^2/s^2", "shape": ["lev"], "description": "Kinetic energy per unit mass of the earth-relative flow at layer k, (u^2 + v^2)/2." },
+        "kblk": { "type": "unknown", "units": "1", "description": "Top of the blocked layer: the highest level index at or below komax, and within the search window, at which the potential energy has caught up with the kinetic energy; 0 when no level does, or when the column produces no drag. The Fortran finds it by a downward scan that stops at the first hit, which is the same thing as the maximum over the levels that satisfy the test, so it is an aggregate and not a sweep." },
+        "zblk": { "type": "unknown", "units": "m", "description": "Depth of the blocked layer, the height of the blocking top above the lowest model level." },
+        "fbdcd": { "type": "unknown", "units": "1", "description": "Bulk form-drag coefficient of the blocked flow, max(2 - 1/od, 0): it vanishes for an obstacle at most half as wide as it is long and saturates at 2 for a very wide one." },
+        "taufb_sfc": { "type": "unknown", "units": "Pa", "description": "Flow-blocking stress at the surface, 0.5 rhobar (coefm/area) Cd dxyp olp zblk U^2, in the Fortran's own left-to-right association." },
+        "taufb": { "type": "unknown", "units": "Pa", "shape": ["lev_nodes"], "description": "Flow-blocking stress profile: taufb_sfc at the surface, falling linearly to zero at the blocking top, and zero above it." },
+        "taup": { "type": "unknown", "units": "Pa", "shape": ["lev_nodes"], "description": "TOTAL interface stress, the saturating wave stress plus the flow-blocking stress. This is what the Fortran leaves in `taup` and what the momentum stage differentiates." }
+      },
+      "equations": [
+        { "lhs": "ldrag", "rhs": "sat.oro.col.ldrag" },
+        { "lhs": "on", "rhs": { "op": "-", "args": [1.0, "ldrag"] } },
+        { "lhs": "komax", "rhs": "sat.oro.col.komax" },
+        { "lhs": "kbomax", "rhs": "sat.oro.col.kbomax" },
+        { "lhs": "zl", "rhs": "sat.oro.col.zl" },
+        { "lhs": "bnv2", "rhs": "sat.oro.col.bnv2" },
+        { "lhs": "rho", "rhs": "sat.oro.col.rho" },
+        { "lhs": "del", "rhs": "sat.oro.col.del" },
+        { "lhs": "u1", "rhs": "sat.oro.col.u1" },
+        { "lhs": "v1", "rhs": "sat.oro.col.v1" },
+
+        { "lhs": "dz", "rhs": { "op": "/", "args": [
+            { "op": "/", "args": ["del", "wrf.g"] }, "rho"] } },
+        { "lhs": "pe_dens", "rhs": { "op": "faq", "output_idx": ["k"], "args": ["bnv2", "zl"],
+            "ranges": { "k": { "from": "lev" } },
+            "expr": { "op": "ifelse", "args": [
+              { "op": "and", "args": [
+                { "op": ">=", "args": ["k", "par.kgwdmin"] },
+                { "op": "<=", "args": ["k", "kbomax"] }] },
+              { "op": "*", "args": [
+                { "op": "index", "args": ["bnv2", "k"] },
+                { "op": "-", "args": [
+                  { "op": "index", "args": ["zl", "komax"] },
+                  { "op": "index", "args": ["zl", "k"] }] }] },
+              0.0] } } },
+        { "lhs": "fbdpe_nodes", "rhs": { "op": "integral", "args": ["pe_dens"], "var": "lev",
+            "lower": "lev_nodes", "upper": { "op": "index", "args": ["zl", "NLEV"] } } },
+        { "lhs": "fbdpe", "rhs": { "op": "faq", "output_idx": ["k"], "args": ["fbdpe_nodes"],
+            "ranges": { "k": { "from": "lev" } },
+            "expr": { "op": "index", "args": ["fbdpe_nodes", "k"] } } },
+        { "lhs": "fbdke", "rhs": { "op": "*", "args": [0.5,
+            { "op": "+", "args": [
+              { "op": "^", "args": ["u1", 2] }, { "op": "^", "args": ["v1", 2] }] }] } },
+
+        { "lhs": "kblk", "rhs": { "op": "*", "args": ["on",
+            { "op": "faq", "output_idx": [], "reduce": "max", "args": ["fbdpe", "fbdke"],
+              "ranges": { "k": { "from": "lev" } },
+              "expr": { "op": "ifelse", "args": [
+                { "op": "and", "args": [
+                  { "op": "and", "args": [
+                    { "op": ">=", "args": ["k", "par.kgwdmin"] },
+                    { "op": "<=", "args": ["k", "kbomax"] }] },
+                  { "op": "and", "args": [
+                    { "op": "<=", "args": ["k", "komax"] },
+                    { "op": ">=", "args": [
+                      { "op": "index", "args": ["fbdpe", "k"] },
+                      { "op": "index", "args": ["fbdke", "k"] }] }] }] },
+                "k", 0.0] } }] } },
+        { "lhs": "zblk", "rhs": { "op": "ifelse", "args": [
+            { "op": ">", "args": ["kblk", 0.0] },
+            { "op": "-", "args": [
+              { "op": "index", "args": ["zl", { "op": "max", "args": ["kblk", 1.0] }] },
+              { "op": "index", "args": ["zl", 1] }] },
+            0.0] } },
+        { "lhs": "fbdcd", "rhs": { "op": "max", "args": [
+            { "op": "-", "args": [2.0, { "op": "/", "args": [1.0, "sat.oro.od"] }] }, 0.0] } },
+        { "lhs": "taufb_sfc", "rhs": { "op": "*", "args": [
+            { "op": "*", "args": [
+              { "op": "*", "args": [
+                { "op": "*", "args": [
+                  { "op": "*", "args": [
+                    { "op": "/", "args": [
+                      { "op": "*", "args": [
+                        { "op": "*", "args": [0.5, "sat.oro.col.rhobar"] }, "sat.oro.coefm"] },
+                      "sat.oro.area"] },
+                    "fbdcd"] },
+                  "sat.oro.dxyp"] },
+                "sat.oro.olp"] },
+              "zblk"] },
+            { "op": "^", "args": ["sat.oro.col.ulow", 2] }] } },
+        { "lhs": "taufb", "rhs": { "op": "faq", "output_idx": ["m"], "args": [],
+            "ranges": { "m": { "from": "lev_nodes" } },
+            "expr": { "op": "ifelse", "args": [
+              { "op": "and", "args": [
+                { "op": ">", "args": ["kblk", 0.0] },
+                { "op": "<=", "args": ["m", "kblk"] }] },
+              { "op": "*", "args": ["taufb_sfc",
+                { "op": "-", "args": [1.0,
+                  { "op": "/", "args": [
+                    { "op": "-", "args": ["m", 1.0] },
+                    { "op": "-", "args": ["kblk", 1.0] }] }] }] },
+              0.0] } } },
+        { "lhs": "taup", "rhs": { "op": "+", "args": ["sat.taup_wave", "taufb"] } }
+      ],
+      "tests": [
+        {
+          "id": "s2_j61_i39_col30_night_launch_over_the_sangre_de_cristo",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 2012-06-25 12:01Z, global row j = 61 across the Sangre de Cristo range, tile column 30 of the dump that starts at i = 39. Drag is ON (ELVMAX = 1770 m, var = 54 m); wind-rose sector 3 (south-west), aspect ratio od = 1.59, Froude number 0.42, launch stress 0.30 Pa. Above the reference level kref = 5 it has 8 saturating levels, 24 no-wave-breaking levels and a flow-blocking layer, so one column exercises the whole scheme. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j61_i39_col30_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 33.147216796875
+            },
+            {
+              "variable": "fbdcd",
+              "time": 0.0,
+              "expected": 1.3716215945840138
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.21405272478667792, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.1405272478667794e-10
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.5153847442173595, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.18903069863550917, 0.10106497015775476, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.06683338674385686, 0.034096949599816365, 0.011527276173909098, 0.0029903639836919814, 0.001870059219320042, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.153847442173595e-10
+              }
+            }
+          ]
+        },
+        {
+          "id": "s880_j141_i39_col22_evening_saturating_wave_over_wyoming",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 880 = 06-25 23Z, global row j = 141 over the southern Wyoming ranges, tile column 22 of the dump that starts at i = 39. The strongest saturating column in the dumped set: launch stress 2.06 Pa, |dtaux3d| up to 1.6e-2 m/s^2, six saturating levels and no flow blocking. Wind-rose sector 7 (north-east) and the widest cross-wind orography of the base regimes, od = 2.73. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s880_j141_i39_col22_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.055298837837352, 2.055298837837352, 2.055298837837352, 2.055298837837352, 2.055298837837352, 2.055298837837352, 0.37654111792094447, 0.09861864787446531, 0.04503990637415827, 0.029891237634420188, 0.007702867283030829, 0.0009916586784162863, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.0552988378373523e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j61_i39_col18_predawn_flow_blocking_only",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 61, tile column 18 of the dump that starts at i = 39. The largest |dtaux3d| anywhere in the dumped set, 1.72e-2 m/s^2, and all of it is flow blocking: a critical level sits at the reference level kref = 11 itself, so no level ever reaches the saturation test. ELVMAX = 3649 m and var = 283 m, the deepest launch layer of these tests; sector 3, od = 0.98, launch stress 2.82 Pa. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j61_i39_col18_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 32.3359375
+            },
+            {
+              "variable": "fbdcd",
+              "time": 0.0,
+              "expected": 0.9793814052708374
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.2753907983519557, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.753907983519557e-10
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [3.095303312826438, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 3.095303312826438e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j91_i1_col2_wave_reaching_the_model_top",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 91 over the Front Range, tile column 2 of the dump that starts at i = 1. One of only twelve columns in the whole dumped set in which no critical level is ever found above the reference level, so the wave-saturation sweep runs uninterrupted from kref = 12 to the model top: 8 saturating and 30 no-wave-breaking levels. Wind-rose sector 2 (south), and the only regime here with a NEGATIVE along-wind asymmetry, oa = -0.48. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j91_i1_col2_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 32.889404296875
+            },
+            {
+              "variable": "fbdcd",
+              "time": 0.0,
+              "expected": 1.0548980709653102
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.22896443201064776, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.2896443201064778e-10
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.9879797865778257, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.113055043443713, 0.5086661541946926, 0.24890233481873497, 0.10414730273989237, 0.04162240349348047, 0.017024190971624498, 0.006052721484164156, 0.0024926199732694496, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.9879797865778257e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "s2_j81_i76_col30_near_critical_richardson_number",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 81, tile column 30 of the dump that starts at i = 76. THE column FORTRAN_BUGS N85 was measured on. Its one saturating level sits at Ri = 0.25664, 1.6e-3 above the critical value ric = 0.25, so the saturation factor 2 sqrt(temc) - temc is only 1.301e-2 and a perturbation of Ri is amplified 37-fold in the stress. Weak orography: ELVMAX = 932 m, var = 13.9 m, Fr = 0.064, launch stress 0.012 Pa. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j81_i76_col30_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.007445029713597852, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.2002820455350301e-11
+              }
+            }
+          ]
+        },
+        {
+          "id": "s720_j101_i39_col3_daytime_mixed_layer_drag_off",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 720 = 06-25 21Z (15:00 local), global row j = 101, tile column 3 of the dump that starts at i = 39. The all-off branch: ELVMAX = 3304 m and var = 361 m clear the two orography gates by a wide margin, but the afternoon mixed layer is statically unstable below the reference level, so the low-level mean N^2 is -1.71e-5 s^-2 and the sixth condition of ldrag fires. Every dumped column of the 17Z, 19Z and 21Z rows is off this way. NOTE that the FIRST condition, omax <= 50 m, is not exercised by any test: with ELVMAX supplied it is 231-4227 m across the domain. That condition is precisely FORTRAN_BUGS B17 -- under WPS 4.3, which writes no ELVMAX, it is the only one that ever fires and it fires everywhere. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s720_j101_i39_col3_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i39_col11_westerly_sector_strong_drag",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 11 of the dump that starts at i = 39. Wind-rose sector 1 (west) -- the W-E orographic axis read in the positive direction, so the asymmetry keeps its sign and is the largest of any regime here, oa = +0.86, which drives the shape coefficient coefm to 1.68. Launch stress 1.18 Pa and |dtaux3d| 1.59e-2 m/s^2, the second largest in the set. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i39_col11_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.1845403916545461e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i39_col14_northwesterly_sector_saturation_and_blocking",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 14 of the dump that starts at i = 39. Wind-rose sector 4 (north-west), the fourth orographic axis in its positive direction; four saturating levels, sixteen no-wave-breaking levels and a flow-blocking layer. Its minimum saturation margin is 1.69e-2, the second-closest approach to the critical Richardson number in these regimes after the N85 column. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i39_col14_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 32.320068359375
+            },
+            {
+              "variable": "fbdcd",
+              "time": 0.0,
+              "expected": 1.185483904669795
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.07780181422077767, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 7.780181422077768e-11
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.22662863589719523, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.07817172164526318, 0.07817172164526318, 0.06986698461150587, 0.06986698461150587, 0.02229976412745959, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.2662863589719524e-10
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i114_col21_easterly_sector_widest_obstacle",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 21 of the dump that starts at i = 114. Wind-rose sector 5 (east) -- the W-E axis read in the NEGATIVE direction, so the sign flip 1 - 2 int((nwd-1)/4) fires and the stored asymmetry +0.228 is used as -0.228. The widest obstacle of any regime here, od = 4.07 from a cross-wind ridge fraction four times the along-wind one, over weak terrain (ELVMAX = 487 m, var = 16.7 m). Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i114_col21_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.14115391628071117, 0.14115391628071117, 0.14115391628071117, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.4115391628071117e-10
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1040_j141_i76_col1_northerly_sector_rare_case",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1040 = 06-26 01Z, global row j = 141, tile column 1 of the dump that starts at i = 76. Wind-rose sector 6 (north), which only SEVEN of the 1473 drag-producing columns in the whole dumped set reach; it is the S-N axis read in the negative direction. Three saturating levels and a flow-blocking layer. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1040_j141_i76_col1_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 33.969482421875
+            },
+            {
+              "variable": "fbdcd",
+              "time": 0.0,
+              "expected": 1.0910830675218302
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.12558402578405203, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.2558402578405205e-10
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.6036873519499297, 0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.1628663554780453, 0.0400400509100349, 0.005020411862819878, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 6.036873519499298e-10
+              }
+            }
+          ]
+        },
+        {
+          "id": "s2_j61_i1_col19_southeasterly_sector_deep_wave_column",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 61, tile column 19 of the dump that starts at i = 1. Wind-rose sector 8 (south-east), the fourth axis in its negative direction, so this is the second of the two sign-flip regimes. Three saturating levels, twenty-two no-wave-breaking levels and a three-layer blocking depth. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j61_i1_col19_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 3.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 71.712646484375
+            },
+            {
+              "variable": "fbdcd",
+              "time": 0.0,
+              "expected": 1.4105263479165424
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.29190293516798865, 0.14595146758399433, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.919029351679887e-10
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.8638487272481121, 0.7178972596641178, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.11279500275013826, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.00784990078729927, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 8.638487272481122e-10
+              }
+            }
+          ]
+        },
+        {
+          "id": "s2_j81_i39_col16_enhancement_factor_at_its_clamp",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 81, tile column 16 of the dump that starts at i = 39. The CLAMP regime: the Froude number reaches 5.38, the largest in the dumped set, which drives the asymmetry enhancement (oa + 2)^(ce Fr) to 12.9 and pins it at efacmax = 10 -- the only branch of the launch block that the other regimes leave untested. The convexity factor is correspondingly saturated at 0.986 and the non-hydrostatic correction has almost cancelled the stress, 1 + nhd = 5.1e-3, leaving a launch stress of only 5e-4 Pa. An eight-layer blocking depth. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j81_i39_col16_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "kblk",
+              "time": 0.0,
+              "expected": 8.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "zblk",
+              "time": 0.0,
+              "expected": 385.3134765625
+            },
+            {
+              "variable": "fbdcd",
+              "time": 0.0,
+              "expected": 1.428571404965251
+            },
+            {
+              "variable": "taufb",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.06849198685331964, 0.058707417302845406, 0.04892284775237117, 0.039138278201896935, 0.0293537086514227, 0.019569139100948464, 0.00978456955047423, -3.469446951953614e-18, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 6.849198685331965e-11
+              }
+            },
+            {
+              "variable": "taup",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0690313195700012, 0.05924675001952698, 0.04946218046905274, 0.03967761091857851, 0.029893041368104268, 0.020108471817630032, 0.010323902267155799, 0.0005393327166815651, 0.0005393327166815686, 0.0005393327166815686, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 6.903131957000121e-11
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
