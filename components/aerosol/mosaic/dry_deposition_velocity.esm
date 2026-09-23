@@ -1,0 +1,1707 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "MosaicAerosolDryDeposition",
+    "description": "MOSAIC's aerosol dry-deposition velocity for ONE size bin, as WRF-Chem computes it at `aer_drydep_opt = 1`: the wet-size and density preamble of mosaic_drydep_1clm and the Binkowski-Shankar kernel aerosol_depvel_2, both in chem/module_mosaic_drydep.F of WRF v4.8.0. The bins are independent of one another, so a consumer maps this component over its size bins rather than the component owning a bin index.\n\nWhat it takes and what it leaves to the consumer. The two composition sums MOSAIC performs first -- drymass = sum over components of rsub*mw_aer and dryvol = the same over dens_aer -- are a mapping across MOSAIC's species pointers rather than physics, so they are inputs here; everything from the wet size and density onwards is transcribed. The aerodynamic resistance and friction velocity come from the surface layer, and MOSAIC uses only the k = 1 (surface) level, so this is a surface-layer component.\n\nWhat cannot be pinned by the reference. WRF stores none of the intermediate quantities: the dump carries the per-bin deposition velocity and nothing between the inputs and it. So the tests assert `vdep`, and the twenty-odd intermediates (wet diameter, Schmidt and Stokes numbers, the two resistances) are transcribed but unasserted. Two branches are likewise unexercised by any WRF-Chem run: MOSAIC always passes alnsg = log(1) = 0, which collapses the moment-0 and moment-3 forms onto the monodisperse case and makes vsettl_0 = vsettl_3, and `depresist_unstabpblfact` is always 1.0. The moment-0 quantities are computed but never used by WRF for the deposition velocity.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-09-22T00:00:00Z",
+    "tags": [
+      "mosaic",
+      "aerosol",
+      "dry-deposition",
+      "wrf-chem",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "Binkowski, F. S. and Shankar, U. (1995). The Regional Particulate Matter Model 1. Model description and preliminary results. J. Geophys. Res. 100(D12), 26191-26209 (Eq. A33, the resistance sum this kernel uses)."
+      },
+      {
+        "citation": "Zaveri, R. A., Easter, R. C., Fast, J. D. and Peters, L. K. (2008). Model for Simulating Aerosol Interactions and Chemistry (MOSAIC). J. Geophys. Res. 113, D13204."
+      }
+    ]
+  },
+  "models": {
+    "MosaicAerosolDryDeposition": {
+      "subsystems": {
+        "par": {
+          "ref": "./mosaic_drydep_parameters.esm"
+        }
+      },
+      "variables": {
+        "temp": {
+          "type": "parameter",
+          "units": "K",
+          "default": 305.6,
+          "description": "Air temperature, MOSAIC's `rsub(ktemp,1,1)` at the surface level."
+        },
+        "cair": {
+          "type": "parameter",
+          "units": "mol/cm^3",
+          "default": 3.9e-05,
+          "description": "Air molar density at the surface level, `cairclm(1)`."
+        },
+        "ustar_in": {
+          "type": "parameter",
+          "units": "m/s",
+          "default": 0.026,
+          "description": "Friction velocity from the surface layer, WRF's `ust`."
+        },
+        "aer_res_in": {
+          "type": "parameter",
+          "units": "s/m",
+          "default": 18.2,
+          "description": "Aerodynamic resistance from the dry-deposition driver, WRF's `aer_res`."
+        },
+        "drymass": {
+          "type": "parameter",
+          "units": "g/mol",
+          "default": 1.2e-10,
+          "description": "Dry aerosol mass of this bin per mole of air, MOSAIC's `drymass` = sum over components of rsub*mw_aer. The sum itself is a mapping over MOSAIC's species pointers, not physics, so it is the consumer's; see the model description."
+        },
+        "dryvol": {
+          "type": "parameter",
+          "units": "cm^3/mol",
+          "default": 8.18e-11,
+          "description": "Dry aerosol volume of this bin per mole of air, `dryvol` = sum of rsub*mw_aer/dens_aer."
+        },
+        "q_water": {
+          "type": "parameter",
+          "units": "mol/mol",
+          "default": 1.78e-12,
+          "description": "Aerosol water of this bin, `rsub(waterptr_aer)`."
+        },
+        "q_num": {
+          "type": "parameter",
+          "units": "1/mol",
+          "default": 915000.0,
+          "description": "Number concentration of this bin, `rsub(numptr_aer)`, particles per mole of air."
+        },
+        "d_cen": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 5.5e-06,
+          "description": "Bin centre diameter, `dcen_sect`."
+        },
+        "d_lo": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 3.9e-06,
+          "description": "Bin lower diameter bound, `dlo_sect`."
+        },
+        "d_hi": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 7.8e-06,
+          "description": "Bin upper diameter bound, `dhi_sect`."
+        },
+        "volum_lo": {
+          "type": "parameter",
+          "units": "cm^3",
+          "default": 3.12e-17,
+          "description": "Single-particle volume at the bin's lower bound, `volumlo_sect`."
+        },
+        "volum_hi": {
+          "type": "parameter",
+          "units": "cm^3",
+          "default": 2.5e-16,
+          "description": "Single-particle volume at the bin's upper bound, `volumhi_sect`."
+        },
+        "mw_water": {
+          "type": "parameter",
+          "units": "g/mol",
+          "default": 18.0,
+          "description": "Molecular weight of aerosol water, MOSAIC's `mw_water_aer`."
+        },
+        "dens_water": {
+          "type": "parameter",
+          "units": "g/cm^3",
+          "default": 1.0,
+          "description": "Density of aerosol water, `dens_water_aer`."
+        },
+        "alnsg": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "ln of the geometric standard deviation the deposition kernel is asked for. MOSAIC passes log(1.0) = 0 at every call, which collapses the moment-0 and moment-3 forms onto the monodisperse one; the general form is transcribed but is never exercised by WRF-Chem."
+        },
+        "unstable_pbl_fact": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "MOSAIC's `depresist_unstabpblfact`, which the routine sets to 1.0 unconditionally."
+        },
+        "airdens": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "Air mass density, cairclm*28.966 (module_mosaic_drydep.F:288)."
+        },
+        "airkinvisc": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Air kinematic viscosity, Sutherland's law over the air density (:292)."
+        },
+        "freepath": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Air molecular mean free path (:296)."
+        },
+        "ustar": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Friction velocity in CGS."
+        },
+        "aer_res": {
+          "type": "unknown",
+          "units": "s/cm",
+          "description": "Aerodynamic resistance in CGS."
+        },
+        "water_mass": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "Aerosol water mass of this bin, q_water*mw_water."
+        },
+        "wetmass_raw": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "drymass + water_mass, before the small-mass overrides."
+        },
+        "wetvol_raw": {
+          "type": "unknown",
+          "units": "cm^3/mol",
+          "description": "dryvol + water_mass/dens_water, before the small-mass overrides."
+        },
+        "tiny_mass": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 where drymass <= 1e-30 g/mol, the branch that falls back to the bin centre and a default density (:318)."
+        },
+        "small_mass": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 where drymass <= 1e-20 g/mol, the branch that drops the aerosol water (:327)."
+        },
+        "wetmass": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "Wet mass after those overrides."
+        },
+        "wetvol": {
+          "type": "unknown",
+          "units": "cm^3/mol",
+          "description": "Wet volume after those overrides."
+        },
+        "drydens_calc": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "drymass/dryvol."
+        },
+        "wetdens_calc": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "wetmass/wetvol."
+        },
+        "drydp_calc": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Dry diameter from the bin's own volume and number, clamped to the bin bounds by the number test at :336-342."
+        },
+        "dumfact": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Wet-to-dry diameter ratio, (wetvol/dryvol)^(1/3), clamped to [1,10]; the 10 is also taken directly when wetvol exceeds 1000*dryvol (:345-352)."
+        },
+        "drydp": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Dry diameter actually used."
+        },
+        "wetdp": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Wet diameter actually used."
+        },
+        "wetdens": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "Wet density actually used."
+        },
+        "dgnum": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "The diameter handed to the deposition kernel, wetdp*exp(-1.5*alnsg^2) (:361)."
+        },
+        "alnsg2": {
+          "type": "unknown",
+          "units": "1",
+          "description": "alnsg squared."
+        },
+        "xknudsenfact": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1.246 times the Knudsen number 2*freepath/dgnum."
+        },
+        "vsettl_dgnum": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Stokes settling velocity at dgnum (module_mosaic_drydep.F, aerosol_depvel_2)."
+        },
+        "vsettl_0": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Number-weighted (moment 0) settling velocity."
+        },
+        "vsettl_3": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Mass-weighted (moment 3) settling velocity, the one the deposition velocity uses."
+        },
+        "aerodiffus_dgnum": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Brownian diffusivity at dgnum (Stokes-Einstein with the slip correction)."
+        },
+        "aerodiffus_0": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Moment-0 Brownian diffusivity."
+        },
+        "aerodiffus_3": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Moment-3 Brownian diffusivity."
+        },
+        "schmidt_0": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Moment-0 Schmidt number."
+        },
+        "schmidt_3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Moment-3 Schmidt number."
+        },
+        "stokes_0": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Moment-0 Stokes number."
+        },
+        "stokes_3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Moment-3 Stokes number."
+        },
+        "fac_d0": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Moment-0 surface-collection factor, Sc^(-2/3) + 10^(-3/max(0.03,St))."
+        },
+        "fac_d3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Moment-3 surface-collection factor."
+        },
+        "depresist_d0": {
+          "type": "unknown",
+          "units": "s/cm",
+          "description": "Moment-0 quasi-laminar (surface) resistance."
+        },
+        "depresist_d3": {
+          "type": "unknown",
+          "units": "s/cm",
+          "description": "Moment-3 quasi-laminar resistance."
+        },
+        "depvel_a3": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Mass-weighted deposition velocity, the Binkowski-Shankar resistance sum (:372-378)."
+        },
+        "vdep": {
+          "type": "unknown",
+          "units": "m/s",
+          "description": "Deposition velocity of this bin as MOSAIC hands it to the vertical-mixing driver, depvel_a3*0.01."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "airdens",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "cair",
+              "par.mw_air"
+            ]
+          }
+        },
+        {
+          "lhs": "airkinvisc",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "par.visc_c0",
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          "par.visc_t1",
+                          {
+                            "op": "+",
+                            "args": [
+                              "temp",
+                              "par.visc_t2"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "^",
+                        "args": [
+                          {
+                            "op": "/",
+                            "args": [
+                              "temp",
+                              "par.visc_t3"
+                            ]
+                          },
+                          1.5
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "airdens"
+            ]
+          }
+        },
+        {
+          "lhs": "freepath",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "par.freepath_c0",
+                  "airkinvisc"
+                ]
+              },
+              {
+                "op": "^",
+                "args": [
+                  "temp",
+                  0.5
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "ustar",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "ustar_in",
+              "par.m_to_cm"
+            ]
+          }
+        },
+        {
+          "lhs": "aer_res",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "aer_res_in",
+              "par.m_to_cm"
+            ]
+          }
+        },
+        {
+          "lhs": "water_mass",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "q_water",
+              "mw_water"
+            ]
+          }
+        },
+        {
+          "lhs": "wetmass_raw",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "drymass",
+              "water_mass"
+            ]
+          }
+        },
+        {
+          "lhs": "wetvol_raw",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "dryvol",
+              {
+                "op": "/",
+                "args": [
+                  "water_mass",
+                  "dens_water"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "tiny_mass",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "drymass",
+                  {
+                    "op": "*",
+                    "args": [
+                      1.01,
+                      "par.smallmassbb"
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "small_mass",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "drymass",
+                  "par.smallmassaa"
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "wetmass",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "small_mass",
+                  0.5
+                ]
+              },
+              "drymass",
+              "wetmass_raw"
+            ]
+          }
+        },
+        {
+          "lhs": "wetvol",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "small_mass",
+                  0.5
+                ]
+              },
+              "dryvol",
+              "wetvol_raw"
+            ]
+          }
+        },
+        {
+          "lhs": "drydens_calc",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "drymass",
+              {
+                "op": "max",
+                "args": [
+                  "dryvol",
+                  "par.vol_floor"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "wetdens_calc",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "wetmass",
+              {
+                "op": "max",
+                "args": [
+                  "wetvol",
+                  "par.vol_floor"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "drydp_calc",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">=",
+                "args": [
+                  "q_num",
+                  {
+                    "op": "/",
+                    "args": [
+                      "dryvol",
+                      "volum_lo"
+                    ]
+                  }
+                ]
+              },
+              "d_lo",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": "<=",
+                    "args": [
+                      "q_num",
+                      {
+                        "op": "/",
+                        "args": [
+                          "dryvol",
+                          "volum_hi"
+                        ]
+                      }
+                    ]
+                  },
+                  "d_hi",
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          "dryvol",
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.piover6",
+                              "q_num"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "/",
+                        "args": [
+                          1.0,
+                          3.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "dumfact",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  {
+                    "op": "abs",
+                    "args": [
+                      "wetvol"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      1000.0,
+                      {
+                        "op": "abs",
+                        "args": [
+                          "dryvol"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              10.0,
+              {
+                "op": "max",
+                "args": [
+                  1.0,
+                  {
+                    "op": "min",
+                    "args": [
+                      10.0,
+                      {
+                        "op": "^",
+                        "args": [
+                          {
+                            "op": "abs",
+                            "args": [
+                              {
+                                "op": "/",
+                                "args": [
+                                  "wetvol",
+                                  "dryvol"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "/",
+                            "args": [
+                              1.0,
+                              3.0
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "drydp",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "tiny_mass",
+                  0.5
+                ]
+              },
+              "d_cen",
+              "drydp_calc"
+            ]
+          }
+        },
+        {
+          "lhs": "wetdp",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "tiny_mass",
+                  0.5
+                ]
+              },
+              "d_cen",
+              {
+                "op": "*",
+                "args": [
+                  "drydp_calc",
+                  "dumfact"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "wetdens",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "tiny_mass",
+                  0.5
+                ]
+              },
+              "par.dens_default",
+              "wetdens_calc"
+            ]
+          }
+        },
+        {
+          "lhs": "alnsg2",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "alnsg",
+              "alnsg"
+            ]
+          }
+        },
+        {
+          "lhs": "dgnum",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "wetdp",
+              {
+                "op": "exp",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      -1.5,
+                      "alnsg2"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "xknudsenfact",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      "freepath"
+                    ]
+                  },
+                  "dgnum"
+                ]
+              },
+              "par.knudsen_fact"
+            ]
+          }
+        },
+        {
+          "lhs": "vsettl_dgnum",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "par.gravity",
+                  "wetdens",
+                  "dgnum",
+                  "dgnum"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  18.0,
+                  "airkinvisc",
+                  "airdens"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "vsettl_0",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "vsettl_dgnum",
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          2.0,
+                          "alnsg2"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "xknudsenfact",
+                      {
+                        "op": "exp",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              0.5,
+                              "alnsg2"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "vsettl_3",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "vsettl_dgnum",
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          8.0,
+                          "alnsg2"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "xknudsenfact",
+                      {
+                        "op": "exp",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              3.5,
+                              "alnsg2"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "aerodiffus_dgnum",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "par.boltzmann",
+                  "temp"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  3.0,
+                  "par.pi",
+                  "airkinvisc",
+                  "airdens",
+                  "dgnum"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "aerodiffus_0",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "aerodiffus_dgnum",
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          0.5,
+                          "alnsg2"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "xknudsenfact",
+                      {
+                        "op": "exp",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              2.0,
+                              "alnsg2"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "aerodiffus_3",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "aerodiffus_dgnum",
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          -2.5,
+                          "alnsg2"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "xknudsenfact",
+                      {
+                        "op": "exp",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              -4.0,
+                              "alnsg2"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "schmidt_0",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "airkinvisc",
+              "aerodiffus_0"
+            ]
+          }
+        },
+        {
+          "lhs": "schmidt_3",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "airkinvisc",
+              "aerodiffus_3"
+            ]
+          }
+        },
+        {
+          "lhs": "stokes_0",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "ustar",
+                  "ustar",
+                  "vsettl_0"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.gravity",
+                  "airkinvisc"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "stokes_3",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "ustar",
+                  "ustar",
+                  "vsettl_3"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.gravity",
+                  "airkinvisc"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "fac_d0",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "^",
+                "args": [
+                  "schmidt_0",
+                  "par.schmidt_exp"
+                ]
+              },
+              {
+                "op": "^",
+                "args": [
+                  10.0,
+                  {
+                    "op": "/",
+                    "args": [
+                      -3.0,
+                      {
+                        "op": "max",
+                        "args": [
+                          0.03,
+                          "stokes_0"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "fac_d3",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "^",
+                "args": [
+                  "schmidt_3",
+                  "par.schmidt_exp"
+                ]
+              },
+              {
+                "op": "^",
+                "args": [
+                  10.0,
+                  {
+                    "op": "/",
+                    "args": [
+                      -3.0,
+                      {
+                        "op": "max",
+                        "args": [
+                          0.03,
+                          "stokes_3"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "depresist_d0",
+          "rhs": {
+            "op": "/",
+            "args": [
+              1.0,
+              {
+                "op": "max",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "fac_d0",
+                      "ustar",
+                      "unstable_pbl_fact"
+                    ]
+                  },
+                  1e-20
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "depresist_d3",
+          "rhs": {
+            "op": "/",
+            "args": [
+              1.0,
+              {
+                "op": "max",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "fac_d3",
+                      "ustar",
+                      "unstable_pbl_fact"
+                    ]
+                  },
+                  1e-20
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "depvel_a3",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "vsettl_3",
+              {
+                "op": "/",
+                "args": [
+                  1.0,
+                  {
+                    "op": "+",
+                    "args": [
+                      "aer_res",
+                      "depresist_d3",
+                      {
+                        "op": "*",
+                        "args": [
+                          "aer_res",
+                          "depresist_d3",
+                          "vsettl_3"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "vdep",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "depvel_a3",
+              "par.m_to_cm"
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "chem170_step1_bin1",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 1, column i = its, j = jts, surface level, size bin 1 of 8 (bin centre 5.52e-06 cm). Regime: T = 305.6 K, u* = 0.026 m/s, aerodynamic resistance 4727.0 s/m, dry mass 1.2e-10 g/mol-air, aerosol water 1.78e-12 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 305.61834716796875,
+            "cair": 3.9198461308842525e-05,
+            "ustar_in": 0.025703078135848045,
+            "aer_res_in": 4726.95166015625,
+            "drymass": 1.202572269677474e-10,
+            "dryvol": 8.176132202668799e-11,
+            "q_water": 1.7812349902349145e-12,
+            "q_num": 915469.4375,
+            "d_cen": 5.524272182810819e-06,
+            "d_lo": 3.906250185536919e-06,
+            "d_hi": 7.812500371073838e-06,
+            "volum_lo": 3.1208925632862246e-17,
+            "volum_hi": 2.4967140506289797e-16,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 4.167743099969812e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_bin4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 1, column i = its, j = jts, surface level, size bin 4 of 8 (bin centre 4.42e-05 cm). Regime: T = 305.6 K, u* = 0.026 m/s, aerodynamic resistance 4727.0 s/m, dry mass 7.82e-09 g/mol-air, aerosol water 1.15e-10 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 305.61834716796875,
+            "cair": 3.9198461308842525e-05,
+            "ustar_in": 0.025703078135848045,
+            "aer_res_in": 4726.95166015625,
+            "drymass": 7.81564725478281e-09,
+            "dryvol": 5.315391972106295e-09,
+            "q_water": 1.1456015996946789e-10,
+            "q_num": 117452.6953125,
+            "d_cen": 4.419417746248655e-05,
+            "d_lo": 3.125000148429535e-05,
+            "d_hi": 6.25000029685907e-05,
+            "volum_lo": 1.597896992402547e-14,
+            "volum_hi": 1.2783175939220376e-13,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 1.868039726105053e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_bin8",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 1, column i = its, j = jts, surface level, size bin 8 of 8 (bin centre 0.000707 cm). Regime: T = 305.6 K, u* = 0.026 m/s, aerodynamic resistance 4727.0 s/m, dry mass 5.38e-09 g/mol-air, aerosol water 1.47e-18 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 305.61834716796875,
+            "cair": 3.9198461308842525e-05,
+            "ustar_in": 0.025703078135848045,
+            "aer_res_in": 4726.95166015625,
+            "drymass": 5.3790101464918845e-09,
+            "dryvol": 2.186389247160158e-09,
+            "q_water": 1.4711832158295296e-18,
+            "q_num": 11.84692096710205,
+            "d_cen": 0.0007071068393997848,
+            "d_lo": 0.0005000000237487257,
+            "d_hi": 0.0010000000474974513,
+            "volum_lo": 6.544986080880832e-11,
+            "volum_hi": 5.235988864704666e-10,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 0.0036485507152974606
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_bin1",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 601, column i = its, j = jts, surface level, size bin 1 of 8 (bin centre 5.52e-06 cm). Regime: T = 306.6 K, u* = 0.204 m/s, aerodynamic resistance 16.5 s/m, dry mass 1.42e-09 g/mol-air, aerosol water 7.22e-11 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 306.6494140625,
+            "cair": 3.9073333027772605e-05,
+            "ustar_in": 0.20379871129989624,
+            "aer_res_in": 16.501161575317383,
+            "drymass": 1.424169952953782e-09,
+            "dryvol": 7.99392460413696e-10,
+            "q_water": 7.215596870002727e-11,
+            "q_num": 8820893.0,
+            "d_cen": 5.524272182810819e-06,
+            "d_lo": 3.906250185536919e-06,
+            "d_hi": 7.812500371073838e-06,
+            "volum_lo": 3.1208925632862246e-17,
+            "volum_hi": 2.4967140506289797e-16,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 0.0003153139550704509
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_bin4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 601, column i = its, j = jts, surface level, size bin 4 of 8 (bin centre 4.42e-05 cm). Regime: T = 306.6 K, u* = 0.204 m/s, aerodynamic resistance 16.5 s/m, dry mass 9.56e-09 g/mol-air, aerosol water 2.07e-10 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 306.6494140625,
+            "cair": 3.9073333027772605e-05,
+            "ustar_in": 0.20379871129989624,
+            "aer_res_in": 16.501161575317383,
+            "drymass": 9.563968134905063e-09,
+            "dryvol": 6.359768526840588e-09,
+            "q_water": 2.0679605250428779e-10,
+            "q_num": 129837.0234375,
+            "d_cen": 4.419417746248655e-05,
+            "d_lo": 3.125000148429535e-05,
+            "d_hi": 6.25000029685907e-05,
+            "volum_lo": 1.597896992402547e-14,
+            "volum_hi": 1.2783175939220376e-13,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 6.207564729265869e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_bin8",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 601, column i = its, j = jts, surface level, size bin 8 of 8 (bin centre 0.000707 cm). Regime: T = 306.6 K, u* = 0.204 m/s, aerodynamic resistance 16.5 s/m, dry mass 4.86e-09 g/mol-air, aerosol water 1.59e-19 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 306.6494140625,
+            "cair": 3.9073333027772605e-05,
+            "ustar_in": 0.20379871129989624,
+            "aer_res_in": 16.501161575317383,
+            "drymass": 4.864408113938002e-09,
+            "dryvol": 1.9812578519962875e-09,
+            "q_water": 1.593655215432613e-19,
+            "q_num": 10.684317588806152,
+            "d_cen": 0.0007071068393997848,
+            "d_lo": 0.0005000000237487257,
+            "d_hi": 0.0010000000474974513,
+            "volum_lo": 6.544986080880832e-11,
+            "volum_hi": 5.235988864704666e-10,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 0.0037617285270243883
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1080_bin1",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 1080, column i = its, j = jts, surface level, size bin 1 of 8 (bin centre 5.52e-06 cm). Regime: T = 304.8 K, u* = 0.010 m/s, aerodynamic resistance 10515.7 s/m, dry mass 1.47e-09 g/mol-air, aerosol water 7.78e-11 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 304.7548522949219,
+            "cair": 3.9317972550634295e-05,
+            "ustar_in": 0.009731428697705269,
+            "aer_res_in": 10515.7236328125,
+            "drymass": 1.473934109792461e-09,
+            "dryvol": 8.268562513597007e-10,
+            "q_water": 7.783753502854651e-11,
+            "q_num": 8674127.0,
+            "d_cen": 5.524272182810819e-06,
+            "d_lo": 3.906250185536919e-06,
+            "d_hi": 7.812500371073838e-06,
+            "volum_lo": 3.1208925632862246e-17,
+            "volum_hi": 2.4967140506289797e-16,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 1.3402122931438498e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1080_bin4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 1080, column i = its, j = jts, surface level, size bin 4 of 8 (bin centre 4.42e-05 cm). Regime: T = 304.8 K, u* = 0.010 m/s, aerodynamic resistance 10515.7 s/m, dry mass 9.52e-09 g/mol-air, aerosol water 2.54e-10 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 304.7548522949219,
+            "cair": 3.9317972550634295e-05,
+            "ustar_in": 0.009731428697705269,
+            "aer_res_in": 10515.7236328125,
+            "drymass": 9.523039728518734e-09,
+            "dryvol": 6.331216357628557e-09,
+            "q_water": 2.5395655023352504e-10,
+            "q_num": 129295.90625,
+            "d_cen": 4.419417746248655e-05,
+            "d_lo": 3.125000148429535e-05,
+            "d_hi": 6.25000029685907e-05,
+            "volum_lo": 1.597896992402547e-14,
+            "volum_hi": 1.2783175939220376e-13,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 1.6586172932875343e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1080_bin8",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 1080, column i = its, j = jts, surface level, size bin 8 of 8 (bin centre 0.000707 cm). Regime: T = 304.8 K, u* = 0.010 m/s, aerodynamic resistance 10515.7 s/m, dry mass 1.48e-09 g/mol-air, aerosol water 5.38e-20 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 304.7548522949219,
+            "cair": 3.9317972550634295e-05,
+            "ustar_in": 0.009731428697705269,
+            "aer_res_in": 10515.7236328125,
+            "drymass": 1.4822237747268718e-09,
+            "dryvol": 6.041833319898122e-10,
+            "q_water": 5.3828723431925724e-20,
+            "q_num": 3.251894474029541,
+            "d_cen": 0.0007071068393997848,
+            "d_lo": 0.0005000000237487257,
+            "d_hi": 0.0010000000474974513,
+            "volum_lo": 6.544986080880832e-11,
+            "volum_hi": 5.235988864704666e-10,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 0.0036620458122342825
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_bin1",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 2101, column i = its, j = jts, surface level, size bin 1 of 8 (bin centre 5.52e-06 cm). Regime: T = 307.4 K, u* = 0.185 m/s, aerodynamic resistance 17.3 s/m, dry mass 1.94e-09 g/mol-air, aerosol water 7.81e-11 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 307.4283142089844,
+            "cair": 3.8983533158898354e-05,
+            "ustar_in": 0.1852826625108719,
+            "aer_res_in": 17.270544052124023,
+            "drymass": 1.9359782798632562e-09,
+            "dryvol": 1.0839487696568283e-09,
+            "q_water": 7.811426505632824e-11,
+            "q_num": 11354467.0,
+            "d_cen": 5.524272182810819e-06,
+            "d_lo": 3.906250185536919e-06,
+            "d_hi": 7.812500371073838e-06,
+            "volum_lo": 3.1208925632862246e-17,
+            "volum_hi": 2.4967140506289797e-16,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 0.0002953565854113549
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_bin4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 2101, column i = its, j = jts, surface level, size bin 4 of 8 (bin centre 4.42e-05 cm). Regime: T = 307.4 K, u* = 0.185 m/s, aerodynamic resistance 17.3 s/m, dry mass 9.6e-09 g/mol-air, aerosol water 2.15e-10 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 307.4283142089844,
+            "cair": 3.8983533158898354e-05,
+            "ustar_in": 0.1852826625108719,
+            "aer_res_in": 17.270544052124023,
+            "drymass": 9.603463668393138e-09,
+            "dryvol": 6.387624998850995e-09,
+            "q_water": 2.1533973215692725e-10,
+            "q_num": 130616.015625,
+            "d_cen": 4.419417746248655e-05,
+            "d_lo": 3.125000148429535e-05,
+            "d_hi": 6.25000029685907e-05,
+            "volum_lo": 1.597896992402547e-14,
+            "volum_hi": 1.2783175939220376e-13,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 5.753220830229111e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_bin8",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) column of data/eqwefic/chem170_scm, built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (B20 fixed), GNU gfortran 13.3 REAL*4. Dumped by the `mosaic_drydep` hook at model step 2101, column i = its, j = jts, surface level, size bin 8 of 8 (bin centre 0.000707 cm). Regime: T = 307.4 K, u* = 0.185 m/s, aerodynamic resistance 17.3 s/m, dry mass 4.13e-09 g/mol-air, aerosol water 1.47e-19 mol/mol. Only the deposition velocity is asserted: WRF stores none of the intermediates. Tolerance measured, not assumed: over the twelve cases the deposition velocity agrees with WRF to 3.0e-7 median and 7.2e-7 worst in a zero-tolerance run -- single-precision round-off through the Sutherland viscosity, the cube-root diameter and the resistance sum -- so the bound is 2e-6.",
+          "parameter_overrides": {
+            "temp": 307.4283142089844,
+            "cair": 3.8983533158898354e-05,
+            "ustar_in": 0.1852826625108719,
+            "aer_res_in": 17.270544052124023,
+            "drymass": 4.1260191645290225e-09,
+            "dryvol": 1.6860382553263934e-09,
+            "q_water": 1.4671312199001503e-19,
+            "q_num": 9.019651412963867,
+            "d_cen": 0.0007071068393997848,
+            "d_lo": 0.0005000000237487257,
+            "d_hi": 0.0010000000474974513,
+            "volum_lo": 6.544986080880832e-11,
+            "volum_hi": 5.235988864704666e-10,
+            "mw_water": 18.016000747680664,
+            "dens_water": 1.0,
+            "alnsg": 0.0,
+            "unstable_pbl_fact": 1.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 2e-06
+          },
+          "assertions": [
+            {
+              "variable": "vdep",
+              "time": 0.0,
+              "expected": 0.0036701723001897335
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
