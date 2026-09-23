@@ -1,0 +1,2563 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "GWDOOrographicStatistics",
+    "description": "What the sub-grid orography looks like TO THE LOW-LEVEL WIND, and the wave stress it launches. Lines 343-377 and 461-494 of `phys/physics_mmm/bl_gwdo.F90` (WRF 4.8, NCAR/MMM-physics CCPP kernel `bl_gwdo_run`).\n\nWPS supplies the sub-grid orography as EIGHT direction-resolved numbers per grid cell -- the asymmetry oa1..oa4 and the along-ridge length fraction ol1..ol4, each on the four axes W-E, S-N, SW-NE and NW-SE -- plus the standard deviation var, the convexity oc1 and the maximum height ELVMAX. GWDO reduces that to a single along-wind pair by rounding the direction of the low-level mean wind onto an eight-sector rose and reading the statistics of the matching axis, with a sign flip on the asymmetry for the four sectors that point the other way along an axis. It then takes the CROSS-wind length fraction from the perpendicular axis, and their ratio od is the horizontal aspect ratio of the obstacle as the flow meets it. Everything else follows: the obstacle's effective wavenumber coefm = (1 + ol)^(oa + 1) divided by the effective grid length, the Froude number Fr = N var od / U, the asymmetry enhancement (oa + 2)^(ce Fr), the convexity factor Fr^2 oc / (Fr^2 oc + cg), and finally the launch stress taub.\n\nGUARDS. The Fortran computes the launch block only inside `if (.not. ldrag)`, and leaves fr, efac, gfac, coefm and xlinv undefined otherwise -- which is why the diagnostic build had to be changed to read them inside that branch rather than wholesale. Here the branch is arithmetic instead: `on = 1 - ldrag` multiplies every launched quantity, and the two inputs that could be non-finite in an off column (a non-positive low-level N^2, whose square root is taken, and a zero orographic standard deviation, which would put a 1/Fr in the non-hydrostatic factor at infinity) are replaced by unit stand-ins there. A stand-in never reaches an answer: every quantity built from one is multiplied by `on`. The two PURELY orographic quantities, coefm and xlinv, are left unguarded, because the obstacle's length scale exists whether or not the flow is drag-producing; the Fortran simply never asks for it.\n\nThe non-hydrostatic correction of Xu et al. (2024) is optional in WRF (`if_nonhyd`) and is ON in the reference run. It is carried here as a 0/1 parameter multiplying the correction rather than as a branch.",
+    "license": "MIT",
+    "tags": [
+      "wrf",
+      "gravity-wave-drag",
+      "gwdo",
+      "orography",
+      "wave-launch",
+      "column"
+    ],
+    "references": [
+      {
+        "citation": "Hong, S.-Y., and co-authors (2025). Revision of the orographic gravity wave drag parameterization in the KIAPS Integrated Model. Wea. Forecasting."
+      },
+      {
+        "citation": "Choi, H.-J., and S.-Y. Hong (2015). An updated subgrid orographic parameterization for global atmospheric forecast models. J. Geophys. Res. Atmos. 120, 12445-12457.",
+        "doi": "10.1002/2015JD024230"
+      },
+      {
+        "citation": "Kim, Y.-J., and A. Arakawa (1995). Improvement of orographic gravity wave parameterization using a mesoscale gravity wave model. J. Atmos. Sci. 52, 1875-1902.",
+        "doi": "10.1175/1520-0469(1995)052<1875:IOOGWP>2.0.CO;2"
+      },
+      {
+        "citation": "Xu, X., and co-authors (2024). Nonhydrostatic effects on orographic gravity wave drag. J. Atmos. Sci.",
+        "doi": "10.1175/JAS-D-23-0139.1"
+      },
+      {
+        "citation": "NCAR/MMM-physics bl_gwdo.F90 at commit 52cfbd7 (WRF 4.8 phys/physics_mmm submodule)."
+      }
+    ]
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 50,
+      "description": "Number of model layers (WRF kte). This component owns no column field of its own; NLEV exists to be bound at the mount edge and passed down to the `col` subsystem, so that an assembly of a different depth does not leave the leaf at its default size."
+    }
+  },
+  "models": {
+    "GWDOOrographicStatistics": {
+      "expression_template_imports": [
+        {
+          "ref": "./gwdo_templates.esm",
+          "bindings": {
+            "NLEV": "NLEV"
+          }
+        }
+      ],
+      "subsystems": {
+        "wrf": {
+          "ref": "../../../lib/wrf_constants.esm"
+        },
+        "par": {
+          "ref": "./gwdo_parameters.esm"
+        },
+        "col": {
+          "ref": "./column_state.esm",
+          "bindings": {
+            "NLEV": "NLEV"
+          }
+        }
+      },
+      "variables": {
+        "oa1": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sub-grid orographic asymmetry on the W-E axis (WPS `OA1`)."
+        },
+        "oa2": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sub-grid orographic asymmetry on the S-N axis (WPS `OA2`)."
+        },
+        "oa3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sub-grid orographic asymmetry on the SW-NE axis (WPS `OA3`)."
+        },
+        "oa4": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sub-grid orographic asymmetry on the NW-SE axis (WPS `OA4`)."
+        },
+        "ol1": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Fraction of the grid cell occupied by sub-grid ridges on the W-E axis (WPS `OL1`)."
+        },
+        "ol2": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Same on the S-N axis (WPS `OL2`)."
+        },
+        "ol3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Same on the SW-NE axis (WPS `OL3`)."
+        },
+        "ol4": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Same on the NW-SE axis (WPS `OL4`)."
+        },
+        "oc1": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sub-grid orographic convexity (WPS `CON`), the fourth moment of the sub-grid terrain over the square of its variance."
+        },
+        "dxmeter": {
+          "type": "unknown",
+          "units": "m",
+          "description": "Grid spacing. GWDO sets both the x and the y grid length to this one number, so the along- and cross-wind grid lengths differ only through which of the four rose axes is picked."
+        },
+        "dx_factor": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Effective-grid-length multiplier for the wave-launch stress (WRF namelist `dx_factor`, default 2)."
+        },
+        "if_nonhyd": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when the non-hydrostatic correction of Xu et al. (2024) is applied to the launch stress, 0 otherwise (WRF namelist `if_nonhyd`, a logical there). The reference run has it on."
+        },
+        "on": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when this column produces drag and 0 when the ldrag gate has switched the scheme off; the arithmetic form of the Fortran's `if (.not. ldrag)` guard."
+        },
+        "wdir": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Direction of the low-level mean wind as an angle in [0, 2 pi], atan2(ubar, vbar) + pi. Carried dimensionless because the only thing done with it is to scale it by mdir/(2 pi) and round the result to an integer sector; pi here is `wrf.piconst`, not the truncated literal WRF passes in (FORTRAN_BUGS N102), which can change the answer only for a wind within 3e-8 of a sector boundary."
+        },
+        "fdir": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sectors per radian, mdir/(2 pi)."
+        },
+        "isec": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Rose sector index in 1..mdir: `mod(nint(fdir wdir), mdir) + 1`. The rounding is written as floor(x + 1/2), which is Fortran's `nint` for the non-negative argument this always has."
+        },
+        "nwd": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Wind-direction code in 1..8 from the scheme's `nwdir` table (6,7,5,8,2,3,1,4), which maps the rose sector onto the numbering W=1, S=2, SW=3, NW=4, E=5, N=6, NE=7, SE=8."
+        },
+        "jax": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Orographic AXIS index in 1..4 selected by the wind direction, `mod(nwd-1,4)+1`: the two opposite directions of one axis share the same statistics."
+        },
+        "jper": {
+          "type": "unknown",
+          "units": "1",
+          "description": "The axis PERPENDICULAR to jax, the Fortran's `ol4p` permutation (1<->2, 3<->4)."
+        },
+        "sgn": {
+          "type": "unknown",
+          "units": "1",
+          "description": "+1 for the four directions with nwd <= 4 and -1 for the other four, the Fortran's `1 - 2 int((nwd-1)/4)`: the asymmetry reverses sign when the wind blows the other way along the same axis."
+        },
+        "oa": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sub-grid orographic asymmetry along the low-level wind, signed."
+        },
+        "ol": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Ridge length fraction along the low-level wind, floored at olmin."
+        },
+        "olp": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Ridge length fraction across the low-level wind, floored at olmin."
+        },
+        "oc": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Orographic convexity clamped into [oc_min, oc_max]."
+        },
+        "od": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Horizontal orographic aspect ratio olp/ol clamped into [odmin, odmax]: how much wider than long the obstacle is as the flow meets it. It scales the Froude number and sets the flow-blocking drag coefficient."
+        },
+        "dxy": {
+          "type": "unknown",
+          "units": "m",
+          "description": "Grid length along the wind direction: dx on the two cardinal axes and the diagonal sqrt(dx^2 + dy^2) on the two diagonal ones."
+        },
+        "dxyp": {
+          "type": "unknown",
+          "units": "m",
+          "description": "Grid length across the wind direction, the same table read on the perpendicular axis. With GWDO's dx = dy it equals dxy in every sector; it is written out because the scheme's table would distinguish them on an anisotropic grid."
+        },
+        "area": {
+          "type": "unknown",
+          "units": "m^2",
+          "description": "Grid-cell area dx dy."
+        },
+        "dx_eff": {
+          "type": "unknown",
+          "units": "m",
+          "description": "Effective grid length for the launch stress, dx_factor (dx + dy)/2."
+        },
+        "coefm": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Obstacle shape coefficient (1 + ol)^(oa + 1) of Kim and Arakawa (1995): the enhancement of the effective wavenumber by a long, asymmetric ridge. Left UNGUARDED by the ldrag switch, unlike the launched quantities below, because it is a property of the terrain and the wind direction alone; the Fortran computes it inside the guard only because that is the only place it is read."
+        },
+        "xlinv": {
+          "type": "unknown",
+          "units": "1/m",
+          "description": "Effective horizontal wavenumber coefm / dx_eff."
+        },
+        "bnv2_ref": {
+          "type": "unknown",
+          "units": "1/s^2",
+          "description": "Low-level mean N^2 as the launch block sees it, with a unit stand-in substituted where the column produces no drag. The substitution exists only so that the square root below is real; every quantity built from it is multiplied by `on`."
+        },
+        "var_ref": {
+          "type": "unknown",
+          "units": "m",
+          "description": "Sub-grid standard deviation as the launch block sees it, with a unit stand-in where the column produces no drag -- otherwise a column switched off BY a zero standard deviation would put a 1/Fr at infinity inside the non-hydrostatic correction."
+        },
+        "bnv": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Brunt-Vaisala frequency of the launch layer, sqrt(bnv2_ref)."
+        },
+        "fr": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Froude number of the obstacle, N var od / U, capped at frmax and zeroed where there is no drag. It measures how far the flow must rise over the sub-grid terrain against its own stratification."
+        },
+        "efac": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Asymmetry enhancement factor (oa + 2)^(ce Fr / frc), clamped into [efacmin, efacmax] and zeroed where there is no drag."
+        },
+        "gfac": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Convexity factor Fr^2 oc / (Fr^2 oc + cg), which saturates at 1 for a sharp, high obstacle and vanishes for a smooth low one."
+        },
+        "nhd": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Non-hydrostatic correction of Xu et al. (2024): -9/8 Fr^2 + exp(-2/Fr) (-5/(4 Fr^2) - 1/(2 Fr) + 5/4 + 9 Fr/4 + 9 Fr^2/8). It multiplies the hydrostatic launch stress by (1 + nhd) and is NEGATIVE at the Froude numbers of the reference run (-0.005 to -0.25), i.e. it weakens the drag."
+        },
+        "taub_hyd": {
+          "type": "unknown",
+          "units": "Pa",
+          "description": "Hydrostatic launch stress rhobar efac xlinv gfac U^3 / N, before the non-hydrostatic correction and before the off switch."
+        },
+        "taub": {
+          "type": "unknown",
+          "units": "Pa",
+          "description": "Launch (base-level) wave stress: the value the stress profile carries from the surface up to the reference level. Zero wherever ldrag has switched the column off."
+        },
+        "xn": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Zonal component of the unit vector along the low-level mean wind; the drag is anti-parallel to it. Zero where there is no drag."
+        },
+        "yn": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Meridional component of the same unit vector."
+        },
+        "fr_ref": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Froude number built from the stand-ins, so it is strictly positive in EVERY column: bnv is at least 1/s by the stand-in, var_ref at least 1 m, od at least odmin and ulow at least velmin. That matters because the non-hydrostatic correction contains exp(-2/Fr) times -5/(4 Fr^2), which is 0 x (-inf) = NaN at Fr = 0 -- so the off switch cannot be applied to Fr itself and must instead multiply the quantities Fr feeds."
+        },
+        "efac_ref": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Asymmetry enhancement factor before the off switch."
+        },
+        "gfac_ref": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Convexity factor before the off switch."
+        },
+        "nhd_ref": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Non-hydrostatic correction before the off switch."
+        },
+        "taub_hyd_ref": {
+          "type": "unknown",
+          "units": "Pa",
+          "description": "Hydrostatic launch stress before the off switch."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "oa1",
+          "rhs": {
+            "op": "input_oa1",
+            "args": []
+          }
+        },
+        {
+          "lhs": "oa2",
+          "rhs": {
+            "op": "input_oa2",
+            "args": []
+          }
+        },
+        {
+          "lhs": "oa3",
+          "rhs": {
+            "op": "input_oa3",
+            "args": []
+          }
+        },
+        {
+          "lhs": "oa4",
+          "rhs": {
+            "op": "input_oa4",
+            "args": []
+          }
+        },
+        {
+          "lhs": "ol1",
+          "rhs": {
+            "op": "input_ol1",
+            "args": []
+          }
+        },
+        {
+          "lhs": "ol2",
+          "rhs": {
+            "op": "input_ol2",
+            "args": []
+          }
+        },
+        {
+          "lhs": "ol3",
+          "rhs": {
+            "op": "input_ol3",
+            "args": []
+          }
+        },
+        {
+          "lhs": "ol4",
+          "rhs": {
+            "op": "input_ol4",
+            "args": []
+          }
+        },
+        {
+          "lhs": "oc1",
+          "rhs": {
+            "op": "input_oc1",
+            "args": []
+          }
+        },
+        {
+          "lhs": "dxmeter",
+          "rhs": {
+            "op": "input_dxmeter",
+            "args": []
+          }
+        },
+        {
+          "lhs": "dx_factor",
+          "rhs": {
+            "op": "input_dx_factor",
+            "args": []
+          }
+        },
+        {
+          "lhs": "if_nonhyd",
+          "rhs": {
+            "op": "input_if_nonhyd",
+            "args": []
+          }
+        },
+        {
+          "lhs": "on",
+          "rhs": {
+            "op": "-",
+            "args": [
+              1.0,
+              "col.ldrag"
+            ]
+          }
+        },
+        {
+          "lhs": "wdir",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "atan2",
+                "args": [
+                  "col.ubar",
+                  "col.vbar"
+                ]
+              },
+              "wrf.piconst"
+            ]
+          }
+        },
+        {
+          "lhs": "fdir",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "par.mdir",
+              {
+                "op": "*",
+                "args": [
+                  2.0,
+                  "wrf.piconst"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "isec",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">=",
+                    "args": [
+                      {
+                        "op": "floor",
+                        "args": [
+                          {
+                            "op": "+",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "fdir",
+                                  "wdir"
+                                ]
+                              },
+                              0.5
+                            ]
+                          }
+                        ]
+                      },
+                      "par.mdir"
+                    ]
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "floor",
+                        "args": [
+                          {
+                            "op": "+",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "fdir",
+                                  "wdir"
+                                ]
+                              },
+                              0.5
+                            ]
+                          }
+                        ]
+                      },
+                      "par.mdir"
+                    ]
+                  },
+                  {
+                    "op": "floor",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              "fdir",
+                              "wdir"
+                            ]
+                          },
+                          0.5
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "nwd",
+          "rhs": {
+            "op": "index",
+            "args": [
+              {
+                "op": "const",
+                "args": [],
+                "value": [
+                  6,
+                  7,
+                  5,
+                  8,
+                  2,
+                  3,
+                  1,
+                  4
+                ]
+              },
+              "isec"
+            ]
+          }
+        },
+        {
+          "lhs": "jax",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "nwd",
+                  4
+                ]
+              },
+              "nwd",
+              {
+                "op": "-",
+                "args": [
+                  "nwd",
+                  4
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "jper",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "pick4",
+            "bindings": {
+              "a1": 2,
+              "a2": 1,
+              "a3": 4,
+              "a4": 3,
+              "j": "jax"
+            }
+          }
+        },
+        {
+          "lhs": "sgn",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "nwd",
+                  4
+                ]
+              },
+              1.0,
+              -1.0
+            ]
+          }
+        },
+        {
+          "lhs": "oa",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "sgn",
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "pick4",
+                "bindings": {
+                  "a1": "oa1",
+                  "a2": "oa2",
+                  "a3": "oa3",
+                  "a4": "oa4",
+                  "j": "jax"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "ol",
+          "rhs": {
+            "op": "max",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "pick4",
+                "bindings": {
+                  "a1": "ol1",
+                  "a2": "ol2",
+                  "a3": "ol3",
+                  "a4": "ol4",
+                  "j": "jax"
+                }
+              },
+              "par.olmin"
+            ]
+          }
+        },
+        {
+          "lhs": "olp",
+          "rhs": {
+            "op": "max",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "pick4",
+                "bindings": {
+                  "a1": "ol1",
+                  "a2": "ol2",
+                  "a3": "ol3",
+                  "a4": "ol4",
+                  "j": "jper"
+                }
+              },
+              "par.olmin"
+            ]
+          }
+        },
+        {
+          "lhs": "oc",
+          "rhs": {
+            "op": "min",
+            "args": [
+              {
+                "op": "max",
+                "args": [
+                  "oc1",
+                  "par.oc_min"
+                ]
+              },
+              "par.oc_max"
+            ]
+          }
+        },
+        {
+          "lhs": "od",
+          "rhs": {
+            "op": "max",
+            "args": [
+              {
+                "op": "min",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "olp",
+                      "ol"
+                    ]
+                  },
+                  "par.odmax"
+                ]
+              },
+              "par.odmin"
+            ]
+          }
+        },
+        {
+          "lhs": "dxy",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "pick4",
+            "bindings": {
+              "a1": "dxmeter",
+              "a2": "dxmeter",
+              "a3": {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      {
+                        "op": "^",
+                        "args": [
+                          "dxmeter",
+                          2
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "a4": {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      {
+                        "op": "^",
+                        "args": [
+                          "dxmeter",
+                          2
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "j": "jax"
+            }
+          }
+        },
+        {
+          "lhs": "dxyp",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "pick4",
+            "bindings": {
+              "a1": "dxmeter",
+              "a2": "dxmeter",
+              "a3": {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      {
+                        "op": "^",
+                        "args": [
+                          "dxmeter",
+                          2
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "a4": {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      {
+                        "op": "^",
+                        "args": [
+                          "dxmeter",
+                          2
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "j": "jper"
+            }
+          }
+        },
+        {
+          "lhs": "area",
+          "rhs": {
+            "op": "^",
+            "args": [
+              "dxmeter",
+              2
+            ]
+          }
+        },
+        {
+          "lhs": "dx_eff",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "dx_factor",
+              "dxmeter"
+            ]
+          }
+        },
+        {
+          "lhs": "coefm",
+          "rhs": {
+            "op": "^",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  1.0,
+                  "ol"
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  "oa",
+                  1.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "xlinv",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "coefm",
+              "dx_eff"
+            ]
+          }
+        },
+        {
+          "lhs": "bnv2_ref",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "col.ldrag",
+                  0.0
+                ]
+              },
+              1.0,
+              "col.bnv2low"
+            ]
+          }
+        },
+        {
+          "lhs": "var_ref",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "col.ldrag",
+                  0.0
+                ]
+              },
+              1.0,
+              "col.var"
+            ]
+          }
+        },
+        {
+          "lhs": "bnv",
+          "rhs": {
+            "op": "sqrt",
+            "args": [
+              "bnv2_ref"
+            ]
+          }
+        },
+        {
+          "lhs": "fr_ref",
+          "rhs": {
+            "op": "min",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "bnv",
+                      "var_ref",
+                      "od"
+                    ]
+                  },
+                  "col.ulow"
+                ]
+              },
+              "par.frmax"
+            ]
+          }
+        },
+        {
+          "lhs": "efac_ref",
+          "rhs": {
+            "op": "min",
+            "args": [
+              {
+                "op": "max",
+                "args": [
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          "oa",
+                          2.0
+                        ]
+                      },
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.ce",
+                              "fr_ref"
+                            ]
+                          },
+                          "par.frc"
+                        ]
+                      }
+                    ]
+                  },
+                  "par.efacmin"
+                ]
+              },
+              "par.efacmax"
+            ]
+          }
+        },
+        {
+          "lhs": "gfac_ref",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "^",
+                    "args": [
+                      "fr_ref",
+                      2
+                    ]
+                  },
+                  "oc"
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "^",
+                        "args": [
+                          "fr_ref",
+                          2
+                        ]
+                      },
+                      "oc"
+                    ]
+                  },
+                  "par.cg"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "nhd_ref",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  -1.125,
+                  {
+                    "op": "^",
+                    "args": [
+                      "fr_ref",
+                      2
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          -2.0,
+                          "fr_ref"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          -1.25,
+                          {
+                            "op": "^",
+                            "args": [
+                              "fr_ref",
+                              2
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "/",
+                        "args": [
+                          -0.5,
+                          "fr_ref"
+                        ]
+                      },
+                      1.25,
+                      {
+                        "op": "*",
+                        "args": [
+                          2.25,
+                          "fr_ref"
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          1.125,
+                          {
+                            "op": "^",
+                            "args": [
+                              "fr_ref",
+                              2
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "taub_hyd_ref",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "col.rhobar",
+                  "efac_ref",
+                  "xlinv",
+                  "gfac_ref",
+                  {
+                    "op": "^",
+                    "args": [
+                      "col.ulow",
+                      3
+                    ]
+                  }
+                ]
+              },
+              "bnv"
+            ]
+          }
+        },
+        {
+          "lhs": "fr",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "on",
+              "fr_ref"
+            ]
+          }
+        },
+        {
+          "lhs": "efac",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "on",
+              "efac_ref"
+            ]
+          }
+        },
+        {
+          "lhs": "gfac",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "on",
+              "gfac_ref"
+            ]
+          }
+        },
+        {
+          "lhs": "nhd",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "on",
+              "nhd_ref"
+            ]
+          }
+        },
+        {
+          "lhs": "taub_hyd",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "on",
+              "taub_hyd_ref"
+            ]
+          }
+        },
+        {
+          "lhs": "taub",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "on",
+              "taub_hyd_ref",
+              {
+                "op": "+",
+                "args": [
+                  1.0,
+                  {
+                    "op": "*",
+                    "args": [
+                      "if_nonhyd",
+                      "nhd_ref"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "xn",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "on",
+              {
+                "op": "/",
+                "args": [
+                  "col.ubar",
+                  "col.ulow"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "yn",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "on",
+              {
+                "op": "/",
+                "args": [
+                  "col.vbar",
+                  "col.ulow"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "s2_j61_i39_col30_night_launch_over_the_sangre_de_cristo",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 2012-06-25 12:01Z, global row j = 61 across the Sangre de Cristo range, tile column 30 of the dump that starts at i = 39. Drag is ON (ELVMAX = 1770 m, var = 54 m); wind-rose sector 3 (south-west), aspect ratio od = 1.59, Froude number 0.42, launch stress 0.30 Pa. Above the reference level kref = 5 it has 8 saturating levels, 24 no-wave-breaking levels and a flow-blocking layer, so one column exercises the whole scheme. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j61_i39_col30_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 3.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": 0.48507463932037354
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.4492753744125366
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.7149758338928223
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 2.5427801609039307
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 1.591397780988353
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.424212755431342
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.3619665067999098
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.31393588638569897
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.2537018841822978
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 0.30133201943068155
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.5626239112248412
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.8267129698499123
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.7350865123797887
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 0.00010710410570245609
+            }
+          ]
+        },
+        {
+          "id": "s880_j141_i39_col22_evening_saturating_wave_over_wyoming",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 880 = 06-25 23Z, global row j = 141 over the southern Wyoming ranges, tile column 22 of the dump that starts at i = 39. The strongest saturating column in the dumped set: launch stress 2.06 Pa, |dtaux3d| up to 1.6e-2 m/s^2, six saturating levels and no flow blocking. Wind-rose sector 7 (north-east) and the widest cross-wind orography of the base regimes, od = 2.73. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s880_j141_i39_col22_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 7.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": -0.02923976629972458
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.18222221732139587
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.4977777898311615
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 4.511914253234863
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 2.7317074566884565
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.20539361669514228
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.1179251344906467
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.15990533353276667
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.04924887685943723
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 2.055298837837352
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": -0.67322912674948
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": -0.7394339340983296
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.1764498306153959
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 7.262035991453061e-05
+            }
+          ]
+        },
+        {
+          "id": "s1440_j61_i39_col18_predawn_flow_blocking_only",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 61, tile column 18 of the dump that starts at i = 39. The largest |dtaux3d| anywhere in the dumped set, 1.72e-2 m/s^2, and all of it is flow blocking: a critical level sits at the reference level kref = 11 itself, so no level ever reaches the saturation test. ELVMAX = 3649 m and var = 283 m, the deepest launch layer of these tests; sector 3, od = 0.98, launch stress 2.82 Pa. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j61_i39_col18_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 3.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": 0.44954127073287964
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.47826087474823
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.46859902143478394
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 2.9024224281311035
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 0.9797979432908195
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.31781469095737047
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.2558144730820067
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.22670203789257423
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.13558256127283025
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 2.819912514474482
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.6532874360887887
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.7571099826633754
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.7622243580239425
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 0.00010877928135950263
+            }
+          ]
+        },
+        {
+          "id": "s1440_j91_i1_col2_wave_reaching_the_model_top",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 91 over the Front Range, tile column 2 of the dump that starts at i = 1. One of only twelve columns in the whole dumped set in which no critical level is ever found above the reference level, so the wave-saturation sweep runs uninterrupted from kref = 12 to the model top: 8 saturating and 30 no-wave-breaking levels. Wind-rose sector 2 (south), and the only regime here with a NEGATIVE along-wind asymmetry, oa = -0.48. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j91_i1_col2_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 2.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": -0.4830508530139923
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.5341880321502686
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.5652173757553101
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 1.8976845741271973
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 1.0580869314502217
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 8100.0
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 8100.0
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.2606047296351999
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.090760805544462
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.1141669720340394
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.08495698694910653
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 1.759015354567178
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.24726101499968442
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.9689489101399134
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.247641404308697
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 7.701490150053685e-05
+            }
+          ]
+        },
+        {
+          "id": "s2_j81_i76_col30_near_critical_richardson_number",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 81, tile column 30 of the dump that starts at i = 76. THE column FORTRAN_BUGS N85 was measured on. Its one saturating level sits at Ri = 0.25664, 1.6e-3 above the critical value ric = 0.25, so the saturation factor 2 sqrt(temc) - temc is only 1.301e-2 and a perturbation of Ri is amplified 37-fold in the stress. Weak orography: ELVMAX = 932 m, var = 13.9 m, Fr = 0.064, launch stress 0.012 Pa. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j81_i76_col30_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 3.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": 0.2649572789669037
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.5603864789009094
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.4637681245803833
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 3.268622875213623
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 0.8275862142319628
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.06406038085119556
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.0427884784474344
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.01323601162824616
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.004616698952737616
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 0.0120028204553503
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.8133767391433926
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.5817372948509157
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.7556197207288775
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 0.00010837158769931343
+            }
+          ]
+        },
+        {
+          "id": "s720_j101_i39_col3_daytime_mixed_layer_drag_off",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 720 = 06-25 21Z (15:00 local), global row j = 101, tile column 3 of the dump that starts at i = 39. The all-off branch: ELVMAX = 3304 m and var = 361 m clear the two orography gates by a wide margin, but the afternoon mixed layer is statically unstable below the reference level, so the low-level mean N^2 is -1.71e-5 s^-2 and the sixth condition of ldrag fires. Every dumped column of the 17Z, 19Z and 21Z rows is off this way. NOTE that the FIRST condition, omax <= 50 m, is not exercised by any test: with ELVMAX supplied it is 231-4227 m across the domain. That condition is precisely FORTRAN_BUGS B17 -- under WPS 4.3, which writes no ELVMAX, it is the only one that ever fires and it fires everywhere. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s720_j101_i39_col3_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 3.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": -0.681034505367279
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.4861111044883728
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.4861111044883728
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 1.799573540687561
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.0
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.0
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i39_col11_westerly_sector_strong_drag",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 11 of the dump that starts at i = 39. Wind-rose sector 1 (west) -- the W-E orographic axis read in the positive direction, so the asymmetry keeps its sign and is the largest of any regime here, oa = +0.86, which drives the shape coefficient coefm to 1.68. Launch stress 1.18 Pa and |dtaux3d| 1.59e-2 m/s^2, the second largest in the set. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i39_col11_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 1.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": 0.859649121761322
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.321739137172699
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.33760684728622437
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 4.883317947387695
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 1.0493185574281196
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 8100.0
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 8100.0
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.25154068649034805
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.2354494460374341
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.23604685084289403
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.0781773915252358
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 1.184540391654546
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.9999321214239301
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.011651289398122908
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.6799199485005787
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 0.00010369876225312214
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i39_col14_northwesterly_sector_saturation_and_blocking",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 14 of the dump that starts at i = 39. Wind-rose sector 4 (north-west), the fourth orographic axis in its positive direction; four saturating levels, sixteen no-wave-breaking levels and a flow-blocking layer. Its minimum saturation margin is 1.69e-2, the second-closest approach to the critical Richardson number in these regimes after the N85 column. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i39_col14_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 4.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": 0.4412955343723297
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.48792269825935364
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.5990338325500488
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 2.1412391662597656
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 1.2277228230764423
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.42700408081562796
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.3564768340639566
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.2807915392045493
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.2569883130826021
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 0.14882682167641756
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.9203076546532992
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": -0.39119537418858064
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.7731248448450634
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 0.00010945215091636194
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i114_col21_easterly_sector_widest_obstacle",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 21 of the dump that starts at i = 114. Wind-rose sector 5 (east) -- the W-E axis read in the NEGATIVE direction, so the sign flip 1 - 2 int((nwd-1)/4) fires and the stored asymmetry +0.228 is used as -0.228. The widest obstacle of any regime here, od = 4.07 from a cross-wind ridge fraction four times the along-wind one, over weak terrain (ELVMAX = 487 m, var = 16.7 m). Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i114_col21_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 5.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": -0.22751322388648987
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.12173912674188614
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.49572649598121643
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 4.07681131362915
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 4.072039197654721
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 8100.0
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 8100.0
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.21584501585138816
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.1038862467980057
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.159617857240858
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.055000700090021414
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 0.14115391628071117
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": -0.9588625521732029
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.28387075587297056
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.0928003078063375
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 6.7456809123848e-05
+            }
+          ]
+        },
+        {
+          "id": "s1040_j141_i76_col1_northerly_sector_rare_case",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1040 = 06-26 01Z, global row j = 141, tile column 1 of the dump that starts at i = 76. Wind-rose sector 6 (north), which only SEVEN of the 1473 drag-producing columns in the whole dumped set reach; it is the S-N axis read in the negative direction. Three saturating levels and a flow-blocking layer. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1040_j141_i76_col1_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 6.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": 0.1517857164144516
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.4871794879436493
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.5360000133514404
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 2.813007354736328
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 1.1002105519956498
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 8100.0
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 8100.0
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.3136408184390807
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.212002419860338
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.21674113510285298
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.13147461716811612
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 0.47810332616587764
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.2995959495841362
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": -0.954066175374004
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.5795220278260726
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 9.750135974235017e-05
+            }
+          ]
+        },
+        {
+          "id": "s2_j61_i1_col19_southeasterly_sector_deep_wave_column",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 61, tile column 19 of the dump that starts at i = 1. Wind-rose sector 8 (south-east), the fourth axis in its negative direction, so this is the second of the two sign-flip regimes. Three saturating levels, twenty-two no-wave-breaking levels and a three-layer blocking depth. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j61_i1_col19_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 8.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": 0.07058823853731155
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.27053138613700867
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.4589371979236603
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 4.244483470916748
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 1.6964286638861004
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 0.39036459593046563
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 1.255201490864672
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.3927593475364219
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.21421815258175236
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 0.5719457920801234
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": -0.7732057785548115
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.6341552049849057
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.2921875252047585
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 7.976466204967645e-05
+            }
+          ]
+        },
+        {
+          "id": "s2_j81_i39_col16_enhancement_factor_at_its_clamp",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 81, tile column 16 of the dump that starts at i = 39. The CLAMP regime: the Froude number reaches 5.38, the largest in the dumped set, which drives the asymmetry enhancement (oa + 2)^(ce Fr) to 12.9 and pins it at efacmax = 10 -- the only branch of the launch block that the other regimes leave untested. The convexity factor is correspondingly saturated at 0.986 and the non-hydrostatic correction has almost cancelled the stress, 1 + nhd = 5.1e-3, leaving a launch stress of only 5e-4 Pa. An eight-layer blocking depth. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j81_i39_col16_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "nwd",
+              "time": 0.0,
+              "expected": 3.0
+            },
+            {
+              "variable": "oa",
+              "time": 0.0,
+              "expected": 0.2680412232875824
+            },
+            {
+              "variable": "ol",
+              "time": 0.0,
+              "expected": 0.30917873978614807
+            },
+            {
+              "variable": "olp",
+              "time": 0.0,
+              "expected": 0.5410627722740173
+            },
+            {
+              "variable": "oc",
+              "time": 0.0,
+              "expected": 2.36346435546875
+            },
+            {
+              "variable": "od",
+              "time": 0.0,
+              "expected": 1.7499999277060843
+            },
+            {
+              "variable": "dxy",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dxyp",
+              "time": 0.0,
+              "expected": 11455.12985522207
+            },
+            {
+              "variable": "dx_eff",
+              "time": 0.0,
+              "expected": 16200.0
+            },
+            {
+              "variable": "area",
+              "time": 0.0,
+              "expected": 65610000.0
+            },
+            {
+              "variable": "fr",
+              "time": 0.0,
+              "expected": 5.380989647412566
+            },
+            {
+              "variable": "efac",
+              "time": 0.0,
+              "expected": 10.0
+            },
+            {
+              "variable": "gfac",
+              "time": 0.0,
+              "expected": 0.985597881124709
+            },
+            {
+              "variable": "nhd",
+              "time": 0.0,
+              "expected": -0.9949217068131375
+            },
+            {
+              "variable": "taub",
+              "time": 0.0,
+              "expected": 0.0005393327166815686
+            },
+            {
+              "variable": "xn",
+              "time": 0.0,
+              "expected": 0.8277203119107072
+            },
+            {
+              "variable": "yn",
+              "time": 0.0,
+              "expected": 0.5611408782564692
+            },
+            {
+              "variable": "coefm",
+              "time": 0.0,
+              "expected": 1.407211851607307
+            },
+            {
+              "variable": "xlinv",
+              "time": 0.0,
+              "expected": 8.686492911156217e-05
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
