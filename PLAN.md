@@ -564,6 +564,47 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       seed, which makes the free water a lagged state rather than a diagnostic;
       esm-spec 4.3.1.1 causal self-reference is the construct for the iteration.
       This is the next piece of work, and it is now specified rather than open.
+
+1.4f Noah stage 2, fourth tranche (done 2026-09-23): the frozen-soil sink.
+
+    `components/land_surface/noah/frozen_soil.esm` + `frozen_soil_templates.esm`,
+    **1084/1084** over all 84 cold-season steps.
+
+    - **N95 turned out to be resolvable, not merely a constraint.** FRH2O's
+      Newton seed is the CURRENT sh2o (the value SMFLX has just left), not the
+      previous time step's, so the answer IS a function of the current state --
+      just not the converged root. Since the loop never runs past two
+      iterations anywhere in the reference set, the two steps are written out
+      in CLOSED FORM with WRF's own exit test selecting between them. That
+      reproduces WRF to 4e-12 over all 332 layer-calls, needs no esm-spec
+      4.3.1.1 recurrence at all, and is far simpler than the ten-iteration
+      latch the earlier analysis implied. The observed
+      `third_iteration_needed` fires if a state ever demands more; it is zero
+      throughout and is marked untested.
+    - TMPAVG is transcribed as an expression template: eight branches over the
+      orderings of the upper-boundary, mid-layer and lower-boundary
+      temperatures about t0, with the profile clipped at freezing. That
+      clipping is what holds a thawing layer on the melting plateau, and it is
+      why FRH2O's warm path is only one or two steps wide.
+    - **HRT's evaluation guard is reproduced and itself asserted.** HRT calls
+      TMPAVG and SNKSRC only for a layer that holds ice or has any of its three
+      temperatures below t0; the tests assert that guard against the replay's
+      own `frz_called` at every layer, which is what makes restricting the
+      tavg and free assertions to those layers a tested claim rather than a
+      convenient omission. Four steps exist where the top layer is ice-free and
+      entirely above freezing, and WRF forms no tavg there at all.
+    - **The sink is authored but UNPINNED (FORTRAN_BUGS N97).** `tsnsr` has a
+      clean dt -> 0 limit -- exactly `-qtot`, the freezing plateau, on which the
+      layer's temperature tendency is identically zero -- but no reference step
+      measures it: the value comes from a difference that cancellation destroys
+      below ~1e-3 s (at 1e-6 s not one of the 332 calls returns `tsnsr`
+      bitwise equal to `-qtot`), while above ~1e-2 s the interval clamp binds
+      (80 of 332 at 0.01 s) and the answer becomes a finite-dt artefact. N97
+      records the instrumentation that would fix it: publish `qtot` together
+      with which clamp fired, from inside SNKSRC.
+    - **Still to do:** SNOPAC's energy balance (T12 and the melt block), and
+      the soil-moisture tendency on frozen columns, which needs the sink pinned
+      first and therefore needs N97's hook.
     - **Kernel replays.** New real64 drivers `kernels/{ntiedtke,noah}_driver`.
       Noah agrees with WRF to real32 round-off. Tiedtke's in-model `rthcuten`
       is cancellation-limited at ~3e-7 K/s (N84), so the real64 replay is the
