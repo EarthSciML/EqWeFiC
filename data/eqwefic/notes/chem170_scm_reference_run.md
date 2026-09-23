@@ -416,3 +416,65 @@ One per-level `dstc_dt` bound had to be loosened from `rel 1e-5` to
 truncation is up to 1.1e-10 K/s, which is a few times 1e-5 of the quietest deep
 layer's tendency, so those layers cannot be pinned relatively at
 `ESM_DT = 0.01 s`.  The `Linf` bound is unchanged and is the one that matters.
+
+
+## CBM-Z's state-dependent rate coefficients, and the sub-stepped reference (2026-09-23)
+
+Ten of CBM-Z's 142 rate **coefficients** read the state.  The lumped peroxy-peroxy
+reactions `{127:107}`..`{136:116}` of `cbmz_mosaic.eqn` are written
+pseudo-first-order, so `RCONST(127:136) = peroxy(k, CH3O2, ETHP, RO2, C2O3, ANO2,
+NAP, ISOPP, ISOPN, ISOPO2, XO2, TEMP, C_M)`.  WRF calls `Update_Rconst` **once**
+before `INTEGRATE`, so across the 60 s `chemdt` step those ten are frozen at the
+step's input state while the peroxy radicals themselves move.  **FORTRAN_BUGS
+N107.**  It is an operator split hidden inside what looks like a single
+integration, and it is first-order accurate in `chemdt`.
+
+This matters because a continuous `.esm` reaction system updates them with the
+state and therefore *cannot* reproduce the dumped `var_out` better than the size
+of that lag.  Established by construction rather than assumed: integrating the
+`.esm` document's own mass action with the peroxy coefficients held at their
+t = 0 values reproduces WRF's `var_out` to **4.9e-9**, and with them live it
+reproduces the `.esm`'s own answer to three digits.
+
+`kernels/cbmz_driver` therefore gained **`ESM_NSUB`** (WRF fork `dcf696af`): it
+splits the step into `nsub` equal sub-steps and refreshes `RCONST` before each.
+`ESM_NSUB=1` reproduces the previous one-shot behaviour bit for bit.  Convergence
+over the four stage-2 regimes, worst species `XPAR`, `|change|/|value|` over the
+species above 100 molec/cm^3:
+
+| step / level | 1 -> 10 | 10 -> 100 | 100 -> 1000 | 1000 -> 10000 |
+|---|---|---|---|---|
+| 364 / 1 (surface noon), 60 s | 1.4e-3 | 1.3e-4 | 7.0e-6 | 6.3e-7 |
+| 601 / 41 (mid-troposphere), 60 s | 1.8e-3 | 1.3e-4 | 8.8e-6 | 8.4e-7 |
+| 230 / 56 (upper troposphere), 60 s | 6.9e-5 | 4.1e-6 | 3.4e-7 | 3.3e-8 |
+| 1080 / 1 (night), 60 s | 4.8e-4 | 3.8e-5 | 2.5e-6 | 2.3e-7 |
+
+Clean first order, so Richardson puts `nsub = 10000` within about 1e-7 of the
+limit.  The **gap between WRF's own step and that limit** is 1.6e-3, 1.9e-3,
+7.3e-5 and 5.2e-4 respectively at 60 s, and about a tenth of that at 10 s.
+
+**The trajectory references for `components/gaschem/cbmz/cbmz.esm` are therefore
+`chem170_scm/replay/kptn_<step>_<dt>_10000.json`**, produced at RTOL 1e-9,
+ATOL 1e-3 molec/cm^3 (WRF itself runs KPP at RTOL 1e-3, ATOL 1.0, at which the
+trace species are not resolved at all).  `kptn_<step>_<dt>_1.json` is WRF's own
+step and is kept as the cross-check.  Recipe, from the repo root with the flats
+regenerated from the current dumps:
+
+    D=data/eqwefic/dumps/chem170_wrf; R=data/eqwefic/chem170_scm/replay
+    K=data/eqwefic/wrf-chem170/kernels/build/cbmz_driver
+    for s in 1 60 230 364 601 639 689 918 1080 1621 1730 1801 2101 2134 2400 2521; do
+      python3 tools/esm_dump.py $D/esm_dump_cbmz_kpp_$s.json --flat $R/kp_$s.flat
+      $K $R/kp_$s.flat $R/kp_$s.out.json            # WRF's own tolerances
+    done
+    # tight-tolerance flats (rtol 1e-9, atol 1e-3) -> kpt_<s>.flat, then
+    for s in 364 601 230 1080; do for dt in 10 60; do for n in 1 10000; do
+      ESM_DT=$dt ESM_NSUB=$n $K $R/kpt_$s.flat $R/kptn_${s}_${dt}_$n.json
+    done; done; done
+
+Two smaller things the same tranche turned up, both filed as **EarthSciAST #472**:
+a reaction system's `constraint_equations` never reach `flat.equations` in the Rust
+binding, so `D(X, t) = 0` cannot be used to give an unreacted species a zero
+tendency; and an inline assertion on a `constant: true` species errors rather than
+reading its parameter.  `HCl` and `NH3` -- inert in the CBM-Z gas phase once the
+three identity rows are gone -- are declared as reservoir species for that reason
+and are not asserted.
