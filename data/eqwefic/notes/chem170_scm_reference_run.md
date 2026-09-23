@@ -239,7 +239,7 @@ the driver switches it on for the dumped column). What each one records:
   the rate can be referenced.
 - **Nucleation.** The increment WRF applies is **not** the rate: sulfate differs by 1×–56×,
   number by 1.4×–79×, and ammonium by **363×–6.4e4×**. The cause is recorded as
-  FORTRAN_BUGS N95 — `qh2so4_avail` is an excess rate times `dtnuc`, and the composition
+  FORTRAN_BUGS B20 — `qh2so4_avail` is an excess rate times `dtnuc`, and the composition
   partition then divides `qnh3_cur` by that dt-scaled amount, so both the size and the
   neutralisation of the new particles move with the step. A component must say which of
   the two it transcribes; both are dumped.
