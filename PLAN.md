@@ -521,6 +521,49 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       (a finite-dt device whose two branches share the instantaneous
       right-hand side), and the urban and `opt_thcnd = 2` branches. A
       cold-season reference run is being produced separately for the first two.
+
+1.4e Noah stage 2, third tranche (done 2026-09-22), on the cold-season
+    reference data of `data/eqwefic/notes/noahcold_scm_reference_run.md`.
+
+    - `snow_cover.esm` -- SNFRAC (with the 0.98 cap SFLX applies after it),
+      ALCALC (including the snow-age albedo decay) and CSNOW. **268/268** over
+      the 67 pack steps of all four cold columns; both the partial-cover branch
+      and SNFRAC's saturation branch are covered, and residuals are 2.4e-9 or
+      better against replay floors of 2.2e-5 (cover) and 9.8e-8 (albedo).
+    - `soil_moisture.esm` gains **17 cold NOPAC tests** (227/227 total). These
+      pin, for the first time, every path that reads soil ice -- `sicemax`, the
+      `vkwgt` ice weighting of the diffusivity, the `sice` term in the storage
+      deficit -- and BOTH branches of the frozen-ground infiltration reduction
+      `fcr`. Its ACTIVE branch is reached at exactly one step in the whole
+      reference set (case A step 1, dice = 0.19 m against the 1e-2 m
+      threshold); every other cold step sits below it. No cold step has any
+      precipitation, so the water supply is DEW, which means the dew routing is
+      now pinned on a second, independent set of columns.
+    - **Two dt traps specific to snow**, both now in the test descriptions.
+      SNFRAC is called before the NOPAC/SNOPAC branch but AFTER this step's
+      snowfall has been added to the pack, so the cover is not an input-state
+      quantity: it moves by up to 2.4e-5 between ESM_DT = 0.01 s and 1e-6 s.
+      And ALCALC advances the snow-age accumulator BEFORE using it, so the age
+      that sets the albedo is the post-update one; the tests supply the
+      replay's `snotime1_out` rather than the input, which removes that
+      sensitivity exactly instead of bounding it.
+    - **FORTRAN_BUGS N96**, found by a 7 % emissivity failure: the `albbrd` and
+      `embrd` a caller passes to SFLX are overwritten by REDPRM's greenness
+      selection before anything uses them, so a dump of the ARGUMENTS records
+      values the scheme never applies. Components must take the REDPRM-selected
+      values that `soil_veg_parameters.esm` computes.
+    - **The frozen-soil sink was NOT written, and the reason is structural
+      (FORTRAN_BUGS N95).** FRH2O is not a root-find: it takes one or two
+      Newton steps from the PREVIOUS step's unfrozen water and exits as soon as
+      an increment falls below 0.005. Over the 332 layer-calls of the cold set
+      it exits after 1 iteration 257 times and 2 iterations 72 times, and the
+      answer it returns leaves a residual of up to 2.0e-3 in the scheme's own
+      freezing-point relation -- about 3e-4 relative in liquid water, three
+      orders above the replay floor. So a converged solver would NOT reproduce
+      WRF. The component must carry the early exit and the previous sh2o as its
+      seed, which makes the free water a lagged state rather than a diagnostic;
+      esm-spec 4.3.1.1 causal self-reference is the construct for the iteration.
+      This is the next piece of work, and it is now specified rather than open.
     - **Kernel replays.** New real64 drivers `kernels/{ntiedtke,noah}_driver`.
       Noah agrees with WRF to real32 round-off. Tiedtke's in-model `rthcuten`
       is cancellation-limited at ~3e-7 K/s (N84), so the real64 replay is the
