@@ -2485,6 +2485,58 @@ real exposure at esm 2.0.0, and clearing it needs a migration PR there.
       and phase change are each pinned exactly, so what remains is their SUM
       against the replay's `sh2o_out` -- a COUPLING claim, needing a small
       document under `couplings/` with explicit mount edges, not another
-      component test. Also outstanding for the snow pack: SNOWPACK's compaction
-      of the pack, and the UA_PHYS canopy-shading branch (off everywhere).
+      component test. Also outstanding for the snow pack: SNOW_NEW (the density
+      of freshly fallen snow) and the UA_PHYS canopy-shading branch (off
+      everywhere); SNOWPACK's compaction is section 1.4i.
+
+1.4i Noah stage 2, sixth tranche (done 2026-09-23): SNOWPACK's compaction.
+
+    `components/land_surface/noah/snow_compaction.esm`, **1659/1659** over 134
+    tests in two reference-step regimes, drawn from the 67 pack steps of the
+    cold-season set. Every assertion holds at **rel 3e-15** -- a few ulps of
+    binary64 -- against a published bound of 1e-9.
+
+    - The physics is Koren's 1995 approximate solution of Anderson's compaction
+      equation (NWS 19, eq. 3.29), which integrates the exponential densification
+      over the DEPTH of the pack rather than over time, so the pack-mean factor
+      is `(exp(x) - 1)/x` with `x = bfac esdcx` proportional to the step; plus
+      the melt-water retention branch (13 % of the pore space per day once the
+      snow surface reaches freezing), the two density limits, and the depth,
+      which is not integrated at all but is the quotient `esd/sndens`.
+    - **The reference step reverses direction here, for the first time in this
+      project.** Every earlier Noah quantity wanted a SMALL step, bounded below
+      by cancellation (N92's V in dt, the 1e-6 s surface closure). Compaction
+      wants the LARGEST: nothing is differenced, so no cancellation floor pushes
+      the step down, while the increment is proportional to `dtsec`, so a
+      smaller step puts LESS of a rel-1e-9 assertion's budget on the physics.
+      At WRF's own 60 s the density moves by 4.5e-9 to 9.4e-5 of itself; at
+      1e-6 s it moves by 7.5e-17, below binary64 resolution. So the primary
+      regime is 60 s, and a second regime at 1e-6 s pins the dt -> 0 tendency --
+      precisely where a naively written component would return pure round-off.
+    - **FORTRAN_BUGS N99, and five new grep-guarded splices.** The whole of the
+      compaction lives in `PEXP - 1`, and WRF adds the one before storing it, so
+      the signal is not recoverable from anything the routine leaves behind at
+      any step. The hook publishes the Taylor series BEFORE the addition,
+      together with SNOWPACK's arguments at entry -- which the driver-level dump
+      cannot carry either, because SFLX resets `SNDENS` to `SNEQV/SNOWH` and
+      SNOW_NEW moves it again before SNOPAC is reached -- and `BFAC`, `ESDCX`,
+      `TAVGC`, `DW` and which of the three density limits fired. Same move as
+      N97 and N98. The component then writes the increment as
+      `sndens_in pexp_m1 + dw (1 - dsx)`, an exact rearrangement in which
+      nothing cancels, and exposes `dsndens_dt = increment/dtsec` as the
+      operator-split observed a consumer integrates (the WSM6 shape); `dtsec` is
+      a parameter of the scheme, not the integrator's step.
+    - **The hook is bit-for-bit additive, verified rather than assumed.** All 84
+      cold dumps were replayed through both rebuilt precisions at all four step
+      sizes and every PRE-EXISTING field is identical; so are the 16 warm
+      `noah_esm/r/o_*` references at all four of their steps. The WRF dumps
+      themselves are untouched and no re-run was needed.
+    - **FORTRAN_BUGS N100**: SNOWPACK's `SNOWH` argument is `INTENT(INOUT)` but
+      write-only -- `SNOWHC = SNOWH*100.` at the top is a dead assignment -- so
+      the depth is a pure diagnostic and is not an input of the component.
+    - Coverage: 38 dry steps and 29 melt-water-retention steps, 9 of them below
+      the `esdcx` floor, and one pack-gone step (case D 553) that pins the zero
+      branch of the caller's `esd > 0` guard. Neither density limit fires
+      anywhere, and the `wet_capped` branch is never reached: untested, not
+      merely unused, and said so in their descriptions.
 
