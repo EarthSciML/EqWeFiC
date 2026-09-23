@@ -1,0 +1,3318 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "GWDOWaveSaturation",
+    "description": "The vertical structure of the orographic gravity-wave stress: how much of the launch stress taub survives to each interface as the wave propagates upward through shear and stratification. Lines 496-552 of `phys/physics_mmm/bl_gwdo.F90` (WRF 4.8, NCAR/MMM-physics CCPP kernel `bl_gwdo_run`).\n\nThe stress is constant from the surface up to the launch level kref. Above it the sweep asks, level by level, whether the wave is still stable. It reconstructs the wave's displacement amplitude from the stress it carries, hd = sqrt(tau / tem1), forms the wave Froude number fro = N hd / U, and evaluates Shutts's (1985) MINIMUM Richardson number of the perturbed flow, rim = Ri (1 - fro) / (1 + sqrt(Ri) fro)^2. If rim is still above the critical value the wave is stable and passes the stress on unchanged; if it has fallen to or below it the wave breaks, and the SATURATION HYPOTHESIS resets the amplitude to the largest one the flow can support, hd = U (2 sqrt(temc) - temc) / N with temc = 2 + 1/sqrt(Ri), whose stress tem1 hd^2 is what continues upward. A critical level -- Ri below critical, or a reversal of the projected wind -- terminates the wave once and for all: the flag is a running OR, so every interface above it carries zero stress.\n\nA RECURRENCE IS JUSTIFIED HERE, and it is the narrow kind esm-spec 4.3.1.1 reserves for genuinely sequential sweeps. The dependence is causal and one-directional: the amplitude at an interface is reconstructed from the stress the level below passed up, so tau[k+1] is a function of tau[k] and cannot be written as an aggregate over independent terms. But only the BRANCH TEST needs it. The saturated stress itself, tem1 hd_sat^2, depends on nothing but the local flow, so it is precomputed as an ordinary column array and the recurrence body carries just the Shutts test and the choice between three outcomes. The shared test is an expression template applied in both places, so the .esm never writes it twice.\n\nFORTRAN_BUGS N85 LIVES HERE. The saturated amplitude carries the factor 2 sqrt(temc) - temc, which is exactly zero at temc = 4, that is at Ri = 0.25 -- the SAME value the branch test `rim <= ric` compares against. So the columns that take the saturation branch marginally are precisely the ones where the factor is smallest, and a perturbation of Ri is amplified into the stress by d ln(factor) / d ln(Ri) = 1/(2 sqrt(temc) (sqrt(temc) - 1) (sqrt(Ri) + ...)), which reaches 37 at the worst column of the reference set. The stress goes as the factor SQUARED, so the amplification there is 74 in tau. It is exposed as its own observed, `satfac`, and asserted level by level wherever the branch is taken, so that a test which loses digits says WHERE it lost them. Column tolerances in this file are absolute, normalised by the profile's own maximum; a per-cell relative bound is meaningless on a quantity that passes through zero by construction.\n\nTHE TOP INTERFACE IS DROPPED TO ZERO. The Fortran's sweep runs k = 2 .. kte-1 and assigns taup(k+1), so taup(kte+1) -- the stress at the model top -- is never assigned and keeps its initialisation of zero, no matter what stress reached taup(kte) just below it. On a column whose wave survives to the top that is a step from a finite stress to nothing across one interface, and the momentum stage turns it into drag on the topmost layer. It is reproduced here, and recorded as FORTRAN_BUGS N104.",
+    "license": "MIT",
+    "tags": [
+      "wrf",
+      "gravity-wave-drag",
+      "gwdo",
+      "wave-saturation",
+      "richardson-number",
+      "recurrence",
+      "column"
+    ],
+    "references": [
+      {
+        "citation": "Shutts, G. (1985). Gravity-wave drag parametrization over complex terrain: the effect of critical-level absorption in directional wind-shear. Quart. J. Roy. Meteor. Soc. 121, 1005-1021."
+      },
+      {
+        "citation": "Kim, Y.-J., and A. Arakawa (1995). Improvement of orographic gravity wave parameterization using a mesoscale gravity wave model. J. Atmos. Sci. 52, 1875-1902.",
+        "doi": "10.1175/1520-0469(1995)052<1875:IOOGWP>2.0.CO;2"
+      },
+      {
+        "citation": "Hong, S.-Y., and co-authors (2025). Revision of the orographic gravity wave drag parameterization in the KIAPS Integrated Model. Wea. Forecasting."
+      },
+      {
+        "citation": "NCAR/MMM-physics bl_gwdo.F90 at commit 52cfbd7 (WRF 4.8 phys/physics_mmm submodule)."
+      }
+    ]
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 50,
+      "description": "Number of model layers (WRF kte); the stress profile lives on the NLEV+1 interfaces. Bound at the mount edge and passed down to the `oro` subsystem and on to the column beneath it."
+    }
+  },
+  "models": {
+    "GWDOWaveSaturation": {
+      "subsystems": {
+        "wrf": {
+          "ref": "../../../lib/wrf_constants.esm"
+        },
+        "par": {
+          "ref": "./gwdo_parameters.esm"
+        },
+        "oro": {
+          "ref": "./orographic_statistics.esm",
+          "bindings": {
+            "NLEV": "NLEV"
+          }
+        }
+      },
+      "variables": {
+        "ldrag": {
+          "type": "unknown",
+          "units": "1",
+          "description": "The column's off switch, read from the mounted column state; 1 means no drag anywhere in this column."
+        },
+        "kref": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Wave-launch level index, read from the mounted column state."
+        },
+        "velco": {
+          "type": "unknown",
+          "units": "m/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Projected wind speed at interface k+1/2, read from the mounted column state. Its SIGN is what detects a critical level."
+        },
+        "usqj": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "Richardson-number profile as this stage sees it, read from the mounted column state: the low-level mean below kref and the raw layer value at and above it. Only the k >= kref part is read here."
+        },
+        "bnv2": {
+          "type": "unknown",
+          "units": "1/s^2",
+          "shape": [
+            "lev"
+          ],
+          "description": "Squared Brunt-Vaisala frequency profile, read from the mounted column state."
+        },
+        "rho": {
+          "type": "unknown",
+          "units": "kg/m^3",
+          "shape": [
+            "lev"
+          ],
+          "description": "Air density, read from the mounted column state."
+        },
+        "velco_safe": {
+          "type": "unknown",
+          "units": "m/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "velco with its non-positive values replaced by 1 m/s. The Fortran never divides by a non-positive velco, because the critical-level flag has already terminated the wave there; the substitution is what lets the whole profile be formed as an array without a division by zero, and it can never reach an answer."
+        },
+        "brvf": {
+          "type": "unknown",
+          "units": "1/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Brunt-Vaisala frequency at interface k+1/2, sqrt(max(N^2, bnv2min))."
+        },
+        "tem1": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "The coefficient that relates the wave stress to the square of its displacement amplitude, coefm/dxy (rho[k+1] + rho[k]) N U / 2. Written with the Fortran's own left-to-right association, because the stress it produces is the quantity N85 amplifies and a reassociation is a different number in the last digits. Element NLEV would gather a density above the top of the column; it is never read (the sweep's last self-read is at NLEV-1) and is set to one there."
+        },
+        "tem1_safe": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "tem1 with its non-positive values replaced by 1, for the same reason as velco_safe: the amplitude sqrt(tau/tem1) is only ever asked for where the wave is still alive, and there tem1 is positive."
+        },
+        "srj": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "sqrt(Ri), floored at sqrt(ric). The Fortran takes this square root unguarded, which is safe only because the critical-level flag has already fired wherever Ri < ric (and Ri can be as low as rimin = -100); the floor reproduces the reachable values exactly and keeps the unreachable ones real."
+        },
+        "temc": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "2 + 1/sqrt(Ri), the combination whose square root the saturated amplitude is built from. It equals 4 exactly at the critical Richardson number."
+        },
+        "satfac": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "THE N85 QUANTITY: 2 sqrt(temc) - temc, the factor that sets the saturated wave amplitude. It vanishes at temc = 4, i.e. at Ri = ric = 0.25, which is the same value the branch test compares against -- so the levels that take the saturation branch marginally are exactly the levels where this is smallest, and the stress, which goes as its square, is correspondingly ill-conditioned there. On the worst column of the reference set it is 1.301e-2 at Ri = 0.25664, and a relative perturbation of Ri is amplified 37-fold into it."
+        },
+        "hd_sat": {
+          "type": "unknown",
+          "units": "m",
+          "description": "Saturated wave displacement amplitude U (2 sqrt(temc) - temc) / N: the largest amplitude the local flow can support without the wave overturning. It is what the saturation hypothesis resets the wave to.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "taup_sat": {
+          "type": "unknown",
+          "units": "Pa",
+          "shape": [
+            "lev"
+          ],
+          "description": "The stress the wave would carry above interface k+1/2 IF it breaks there: tem1 hd_sat^2. It depends only on the local flow, not on the stress arriving from below, so it is an ordinary column array and the recurrence does not have to carry it."
+        },
+        "crit": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "1 at a level that terminates the wave -- Richardson number below critical, or a non-positive projected wind -- and 0 otherwise."
+        },
+        "ncrit": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "Number of terminating levels at or below k and at or above the launch level: a forward prefix sum of `crit` over the window [kref, k], which is empty and therefore zero below kref."
+        },
+        "icrilv": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "The Fortran's running critical-level flag, 1 once any level from kref up to and including k has terminated the wave. It is a prefix reduction, not a recurrence: its terms do not depend on its own result. It is defined as zero at the TOP layer because the Fortran's sweep runs only to kte-1 and never evaluates the flag there; nothing reads it at that level either, since the sweep's last self-read is one layer below."
+        },
+        "dead": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "1 where no stress can pass upward from level k: the column is switched off, or the wave has already met a critical level."
+        },
+        "taup_wave": {
+          "type": "unknown",
+          "units": "Pa",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "Wave stress at the NLEV+1 interfaces, before the flow-blocking stress is added to it: taub from the surface to kref, then the saturation sweep, then zero above a critical level. The TOP interface is zero unconditionally, because the Fortran's sweep assigns taup(k+1) for k up to kte-1 only and never reaches taup(kte+1) (FORTRAN_BUGS N104)."
+        },
+        "fro": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "Wave Froude number N hd / U at interface k+1/2, reconstructed from the stress the profile actually carries there. Defined here for diagnosis; the sweep computes the same quantity from its own partial result through the shared `shutts_min_richardson` template."
+        },
+        "rim": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "Shutts's (1985) minimum Richardson number of the flow perturbed by the wave, Ri (1 - fro) / (1 + sqrt(Ri) fro)^2. The branch test of the sweep."
+        },
+        "tested": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "1 at each level where the Fortran actually evaluates the Shutts test: at or above the launch level, in a column with drag, with no critical level yet and a positive stress arriving from below."
+        },
+        "sat_code": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "The branch record of the sweep, in the diagnostic build's encoding: 0 where the test was not evaluated, 1 where the saturation hypothesis was applied, 2 where the wave passed unbroken. Asserting it pins every branch decision of the sweep at every level."
+        },
+        "satfac_taken": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "`satfac` at the levels where the saturation branch was actually taken, and zero elsewhere -- the form the diagnostic build publishes, so that the N85 factor can be pinned exactly where it governs."
+        },
+        "rim_tested": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "`rim` at the levels where it was actually evaluated, and zero elsewhere."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "ldrag",
+          "rhs": "oro.col.ldrag"
+        },
+        {
+          "lhs": "kref",
+          "rhs": "oro.col.kref"
+        },
+        {
+          "lhs": "velco",
+          "rhs": "oro.col.velco"
+        },
+        {
+          "lhs": "usqj",
+          "rhs": "oro.col.usqj"
+        },
+        {
+          "lhs": "bnv2",
+          "rhs": "oro.col.bnv2"
+        },
+        {
+          "lhs": "rho",
+          "rhs": "oro.col.rho"
+        },
+        {
+          "lhs": "velco_safe",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "velco",
+                  0.0
+                ]
+              },
+              "velco",
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "brvf",
+          "rhs": {
+            "op": "sqrt",
+            "args": [
+              {
+                "op": "max",
+                "args": [
+                  "bnv2",
+                  "par.bnv2min"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "tem1",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "rho",
+              "brvf",
+              "velco"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    "k",
+                    "NLEV"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "/",
+                                  "args": [
+                                    "oro.coefm",
+                                    "oro.dxy"
+                                  ]
+                                },
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "rho",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            "k",
+                                            1
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "rho",
+                                        "k"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "brvf",
+                                "k"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "velco",
+                            "k"
+                          ]
+                        }
+                      ]
+                    },
+                    0.5
+                  ]
+                },
+                1.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "tem1_safe",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "tem1",
+                  0.0
+                ]
+              },
+              "tem1",
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "srj",
+          "rhs": {
+            "op": "sqrt",
+            "args": [
+              {
+                "op": "max",
+                "args": [
+                  "usqj",
+                  "par.ric"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "temc",
+          "rhs": {
+            "op": "+",
+            "args": [
+              2.0,
+              {
+                "op": "/",
+                "args": [
+                  1.0,
+                  "srj"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "satfac",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  2.0,
+                  {
+                    "op": "sqrt",
+                    "args": [
+                      "temc"
+                    ]
+                  }
+                ]
+              },
+              "temc"
+            ]
+          }
+        },
+        {
+          "lhs": "hd_sat",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "velco",
+                  "satfac"
+                ]
+              },
+              "brvf"
+            ]
+          }
+        },
+        {
+          "lhs": "taup_sat",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "tem1",
+                  "hd_sat"
+                ]
+              },
+              "hd_sat"
+            ]
+          }
+        },
+        {
+          "lhs": "crit",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "<",
+                    "args": [
+                      "usqj",
+                      "par.ric"
+                    ]
+                  },
+                  {
+                    "op": "<=",
+                    "args": [
+                      "velco",
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "ncrit",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "reduce": "+",
+            "args": [
+              "crit"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "j": {
+                "from": "lev"
+              }
+            },
+            "filter": {
+              "op": "and",
+              "args": [
+                {
+                  "op": ">=",
+                  "args": [
+                    "j",
+                    "kref"
+                  ]
+                },
+                {
+                  "op": "<=",
+                  "args": [
+                    "j",
+                    "k"
+                  ]
+                }
+              ]
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "crit",
+                "j"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "icrilv",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "ncrit"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "op": "<",
+                      "args": [
+                        "k",
+                        "NLEV"
+                      ]
+                    },
+                    {
+                      "op": ">",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "ncrit",
+                            "k"
+                          ]
+                        },
+                        0.0
+                      ]
+                    }
+                  ]
+                },
+                1.0,
+                0.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "dead",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "ldrag",
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": ">",
+                    "args": [
+                      "icrilv",
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "taup_wave",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "m"
+            ],
+            "args": [
+              "taup_sat",
+              "dead"
+            ],
+            "ranges": {
+              "m": {
+                "from": "lev_nodes"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<=",
+                  "args": [
+                    "m",
+                    "kref"
+                  ]
+                },
+                "oro.taub",
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": ">",
+                      "args": [
+                        "m",
+                        "NLEV"
+                      ]
+                    },
+                    0.0,
+                    {
+                      "op": "ifelse",
+                      "args": [
+                        {
+                          "op": ">",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "dead",
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "m",
+                                    1
+                                  ]
+                                }
+                              ]
+                            },
+                            0.0
+                          ]
+                        },
+                        0.0,
+                        {
+                          "op": "ifelse",
+                          "args": [
+                            {
+                              "op": "<=",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "taup_wave",
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        "m",
+                                        1
+                                      ]
+                                    }
+                                  ]
+                                },
+                                0.0
+                              ]
+                            },
+                            0.0,
+                            {
+                              "op": "ifelse",
+                              "args": [
+                                {
+                                  "op": "<=",
+                                  "args": [
+                                    {
+                                      "op": "apply_expression_template",
+                                      "args": [],
+                                      "name": "shutts_min_richardson",
+                                      "bindings": {
+                                        "tp": {
+                                          "op": "index",
+                                          "args": [
+                                            "taup_wave",
+                                            {
+                                              "op": "-",
+                                              "args": [
+                                                "m",
+                                                1
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        "kz": {
+                                          "op": "-",
+                                          "args": [
+                                            "m",
+                                            1
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "par.ric"
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "taup_sat",
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        "m",
+                                        1
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "taup_wave",
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        "m",
+                                        1
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "fro",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "taup_wave",
+              "tem1_safe",
+              "brvf",
+              "velco_safe"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "wave_froude",
+              "bindings": {
+                "tp": {
+                  "op": "index",
+                  "args": [
+                    "taup_wave",
+                    "k"
+                  ]
+                },
+                "kz": "k"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "rim",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "taup_wave",
+              "tem1_safe",
+              "brvf",
+              "velco_safe",
+              "srj",
+              "usqj"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "shutts_min_richardson",
+              "bindings": {
+                "tp": {
+                  "op": "index",
+                  "args": [
+                    "taup_wave",
+                    "k"
+                  ]
+                },
+                "kz": "k"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "tested",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "dead",
+              "taup_wave"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "op": "and",
+                      "args": [
+                        {
+                          "op": ">=",
+                          "args": [
+                            "k",
+                            "kref"
+                          ]
+                        },
+                        {
+                          "op": "<",
+                          "args": [
+                            "k",
+                            "NLEV"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "and",
+                      "args": [
+                        {
+                          "op": "<=",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "dead",
+                                "k"
+                              ]
+                            },
+                            0.0
+                          ]
+                        },
+                        {
+                          "op": ">",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "taup_wave",
+                                "k"
+                              ]
+                            },
+                            0.0
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                1.0,
+                0.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "sat_code",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "tested",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": "<=",
+                    "args": [
+                      "rim",
+                      "par.ric"
+                    ]
+                  },
+                  1.0,
+                  2.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "satfac_taken",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "satfac",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "sat_code",
+                      1.0
+                    ]
+                  },
+                  1.0,
+                  0.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "rim_tested",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "rim",
+              "tested"
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "s2_j61_i39_col30_night_launch_over_the_sangre_de_cristo",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 2012-06-25 12:01Z, global row j = 61 across the Sangre de Cristo range, tile column 30 of the dump that starts at i = 39. Drag is ON (ELVMAX = 1770 m, var = 54 m); wind-rose sector 3 (south-west), aspect ratio od = 1.59, Froude number 0.42, launch stress 0.30 Pa. Above the reference level kref = 5 it has 8 saturating levels, 24 no-wave-breaking levels and a flow-blocking layer, so one column exercises the whole scheme. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j61_i39_col30_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.30133201943068155, 0.18903069863550917, 0.10106497015775476, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.08305012961000292, 0.06683338674385686, 0.034096949599816365, 0.011527276173909098, 0.0029903639836919814, 0.001870059219320042, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 3.0133201943068155e-10
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.37116403026198785, 0.39546132155295854, 0.49876709953612774, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7813089477541433, 0.7639571579108879, 0.7876206077576304, 0.7651669420707798, 0.7679466484188886, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 7.876206077576305e-10
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.9865680208812184, 1.1393302520260522, 1.1208052758842395, 0.9994406947045414, 0.7089964702531563, 0.9624767246337816, 1.144458712630627, 1.144781925733049, 1.0970951820411035, 0.9246735181933506, 0.4139510970506473, 0.18750288413649185, 0.1587996463736012, 0.20888842954531292, 0.30216277008164316, 0.773923878365459, 0.9619502933462032, 0.9960243412095559, 1.3192337446486184, 3.6147500282273057, 3.265240901081831, 2.91417846421808, 5.317371772654555, 1.9046505026095455, 1.191293070441977, 0.9656073302859947, 0.4404736586675254, 0.12284141870628836, -0.04264035565590433, -0.16000789912969438, -0.17252058730042358, 0.021232896106781605, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.317371772654555e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "s880_j141_i39_col22_evening_saturating_wave_over_wyoming",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 880 = 06-25 23Z, global row j = 141 over the southern Wyoming ranges, tile column 22 of the dump that starts at i = 39. The strongest saturating column in the dumped set: launch stress 2.06 Pa, |dtaux3d| up to 1.6e-2 m/s^2, six saturating levels and no flow blocking. Wind-rose sector 7 (north-east) and the widest cross-wind orography of the base regimes, od = 2.73. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s880_j141_i39_col22_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.055298837837352, 2.055298837837352, 2.055298837837352, 2.055298837837352, 2.055298837837352, 2.055298837837352, 0.37654111792094447, 0.09861864787446531, 0.04503990637415827, 0.029891237634420188, 0.007702867283030829, 0.0009916586784162863, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.0552988378373523e-09
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.31991112568105384, 0.16327436001070428, 0.14763503758122676, 0.20743388665420293, 0.27220258106033146, 0.3043474384756859, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 3.1991112568105386e-10
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.05855985723871825, 0.17278449516213187, 0.21260485891492883, 0.22312827198073454, 0.11947665500867527, 0.03101767293904636, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.2312827198073454e-10
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j61_i39_col18_predawn_flow_blocking_only",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 61, tile column 18 of the dump that starts at i = 39. The largest |dtaux3d| anywhere in the dumped set, 1.72e-2 m/s^2, and all of it is flow blocking: a critical level sits at the reference level kref = 11 itself, so no level ever reaches the saturation test. ELVMAX = 3649 m and var = 283 m, the deepest launch layer of these tests; sector 3, od = 0.98, launch stress 2.82 Pa. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j61_i39_col18_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 2.819912514474482, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.8199125144744824e-09
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j91_i1_col2_wave_reaching_the_model_top",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 91 over the Front Range, tile column 2 of the dump that starts at i = 1. One of only twelve columns in the whole dumped set in which no critical level is ever found above the reference level, so the wave-saturation sweep runs uninterrupted from kref = 12 to the model top: 8 saturating and 30 no-wave-breaking levels. Wind-rose sector 2 (south), and the only regime here with a NEGATIVE along-wind asymmetry, oa = -0.48. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j91_i1_col2_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.759015354567178, 1.113055043443713, 0.5086661541946926, 0.24890233481873497, 0.10414730273989237, 0.04162240349348047, 0.017024190971624498, 0.006052721484164156, 0.0024926199732694496, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.7590153545671782e-09
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.731182169297321, 0.7637866143014156, 0.7878542343388983, 0.7835013367503554, 0.7841430231980633, 0.7879533518807262, 0.7747491878532369, 0.7974889827907012, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 7.974889827907013e-10
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.444537404719773, 0.42698515944898136, 0.2891916531308689, 0.26457199467340664, 0.3085326317923775, 0.5740545683179479, 0.9591085455965173, 1.0624652283012956, 0.8725979229423173, 1.3925692141310468, 4.2195507155848695, 4.12518256899076, 4.175069779462238, 3.712359687389418, 2.547150959757595, 2.598207062211038, 3.032887984808127, 7.13632518417027, 6.741771945186685, 7.426566304995553, 3.467644552031135, 5.903641438631158, 9.00430030691926, 5.405249566333432, 2.622245044843435, 2.569050350723959, 4.540877763787262, 3.0282438775306475, 1.2389074605194241, 0.45115098542165327, 0.0538594643907161, -0.0725132453563709, -0.0795924034433101, -0.11448999267639436, -0.12523418046935195, -0.12453240182709467, -0.13780859225531675, -0.13411946208265138, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 9.00430030691926e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "s2_j81_i76_col30_near_critical_richardson_number",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 81, tile column 30 of the dump that starts at i = 76. THE column FORTRAN_BUGS N85 was measured on. Its one saturating level sits at Ri = 0.25664, 1.6e-3 above the critical value ric = 0.25, so the saturation factor 2 sqrt(temc) - temc is only 1.301e-2 and a perturbation of Ri is amplified 37-fold in the stress. Weak orography: ELVMAX = 932 m, var = 13.9 m, Fr = 0.064, launch stress 0.012 Pa. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j81_i76_col30_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.0120028204553503, 0.007445029713597852, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.2002820455350301e-11
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.013008677236386212, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.3008677236386212e-11
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 1.1642149267127637, 0.9617798953869948, 2.1925832229856743, 4.6021567390317895, 3.6025845537744505, 2.159878159347818, 0.797382185932267, 0.6712478758123415, 0.2482337814202918, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 4.602156739031789e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "s720_j101_i39_col3_daytime_mixed_layer_drag_off",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 720 = 06-25 21Z (15:00 local), global row j = 101, tile column 3 of the dump that starts at i = 39. The all-off branch: ELVMAX = 3304 m and var = 361 m clear the two orography gates by a wide margin, but the afternoon mixed layer is statically unstable below the reference level, so the low-level mean N^2 is -1.71e-5 s^-2 and the sixth condition of ldrag fires. Every dumped column of the 17Z, 19Z and 21Z rows is off this way. NOTE that the FIRST condition, omax <= 50 m, is not exercised by any test: with ELVMAX supplied it is 231-4227 m across the domain. That condition is precisely FORTRAN_BUGS B17 -- under WPS 4.3, which writes no ELVMAX, it is the only one that ever fires and it fires everywhere. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s720_j101_i39_col3_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i39_col11_westerly_sector_strong_drag",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 11 of the dump that starts at i = 39. Wind-rose sector 1 (west) -- the W-E orographic axis read in the positive direction, so the asymmetry keeps its sign and is the largest of any regime here, oa = +0.86, which drives the shape coefficient coefm to 1.68. Launch stress 1.18 Pa and |dtaux3d| 1.59e-2 m/s^2, the second largest in the set. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i39_col11_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 1.184540391654546, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.1845403916545461e-09
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i39_col14_northwesterly_sector_saturation_and_blocking",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 14 of the dump that starts at i = 39. Wind-rose sector 4 (north-west), the fourth orographic axis in its positive direction; four saturating levels, sixteen no-wave-breaking levels and a flow-blocking layer. Its minimum saturation margin is 1.69e-2, the second-closest approach to the critical Richardson number in these regimes after the N85 column. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i39_col14_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.14882682167641756, 0.07817172164526318, 0.07817172164526318, 0.06986698461150587, 0.06986698461150587, 0.02229976412745959, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0007832092640097725, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.4882682167641757e-10
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.15129290796098527, 0.0, 0.1602224863022612, 0.0, 0.09975928133401002, 0.016847662982039324, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.6022248630226122e-10
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.25767876034942855, 0.2502444444406474, 0.219189424383152, 0.25003178070181514, 0.24476651253429577, 0.2578312922425021, 0.21121949108245774, 0.21527237395602114, 0.38893890959968475, 0.5034278927882708, 0.7109520275700867, 0.9153877675445061, 2.238313837757806, 3.757480332184428, 6.620729962073646, 9.196709448442911, 12.145534978470883, 13.29473666532886, 4.618068577945559, 1.7658484117187587, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.3294736665328862e-08
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1440_j81_i114_col21_easterly_sector_widest_obstacle",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1440 = 06-26 06Z, global row j = 81, tile column 21 of the dump that starts at i = 114. Wind-rose sector 5 (east) -- the W-E axis read in the NEGATIVE direction, so the sign flip 1 - 2 int((nwd-1)/4) fires and the stored asymmetry +0.228 is used as -0.228. The widest obstacle of any regime here, od = 4.07 from a cross-wind ridge fraction four times the along-wind one, over weak terrain (ELVMAX = 487 m, var = 16.7 m). Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1440_j81_i114_col21_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.14115391628071117, 0.14115391628071117, 0.14115391628071117, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.4115391628071117e-10
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "s1040_j141_i76_col1_northerly_sector_rare_case",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 1040 = 06-26 01Z, global row j = 141, tile column 1 of the dump that starts at i = 76. Wind-rose sector 6 (north), which only SEVEN of the 1473 drag-producing columns in the whole dumped set reach; it is the S-N axis read in the negative direction. Three saturating levels and a flow-blocking layer. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s1040_j141_i76_col1_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.47810332616587764, 0.1628663554780453, 0.0400400509100349, 0.005020411862819878, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 4.781033261658776e-10
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4909174320812193, 0.3605705018474108, 0.3884856279868836, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 4.909174320812193e-10
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0503062633884391, 0.07058271221228227, -0.018803484813200065, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 7.058271221228227e-11
+              }
+            }
+          ]
+        },
+        {
+          "id": "s2_j61_i1_col19_southeasterly_sector_deep_wave_column",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 61, tile column 19 of the dump that starts at i = 1. Wind-rose sector 8 (south-east), the fourth axis in its negative direction, so this is the second of the two sign-flip regimes. Three saturating levels, twenty-two no-wave-breaking levels and a three-layer blocking depth. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j61_i1_col19_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.5719457920801234, 0.11279500275013826, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.026485890600783452, 0.00784990078729927, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.719457920801234e-10
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1474629172182862, 0.11098321627072849, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.688853167810572, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 6.88853167810572e-10
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.44610140936886966, 0.44316831584791655, 0.4460938300605607, 0.3839920747470118, 0.25182991549856754, 0.1618859824367366, 0.1920114640639697, 1.1917593124042953, 1.076619417163718, 1.1300358147705918, 1.374827807983941, 1.6480391713172304, 2.0323261443054395, 2.1783580198168524, 0.5289824821517463, 1.4215594726629386, 0.6826727724267933, 1.5351316406869273, 3.733134664052297, 2.524031965188223, 1.3486518355663932, 2.5718586488241253, 2.134752354696949, 1.719696610696326, -0.0926689706227119, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 3.7331346640522974e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "s2_j81_i39_col16_enhancement_factor_at_its_clamp",
+          "description": "Reference run: WRF 4.8 real-terrain simulation of data/eqwefic/notes/gwdo_real_reference_run.md (Last Chance Gulch d01, Colorado Rockies, 8.1 km, 150 x 180 x 50, dt = 45 s, gwd_opt = 1 with ELVMAX supplied by WPS util/compute_gwdo.py -- without it GWDO is silently off everywhere, FORTRAN_BUGS B17). Step 2 = 06-25 12:01Z, global row j = 81, tile column 16 of the dump that starts at i = 39. The CLAMP regime: the Froude number reaches 5.38, the largest in the dumped set, which drives the asymmetry enhancement (oa + 2)^(ce Fr) to 12.9 and pins it at efacmax = 10 -- the only branch of the launch block that the other regimes leave untested. The convexity factor is correspondingly saturated at 0.986 and the non-hydrostatic correction has almost cancelled the stress, 1 + nhd = 5.1e-3, leaving a launch stress of only 5e-4 Pa. An eight-layer blocking depth. Reference build: the real64 (kind_phys = real64) replay of the same dumped row through kernels/gwdo_diag_driver of WRF fork branch earthsciml-instrumented-gwdo, with the six scalar constants g, cp, R_d, R_v, eps_1 and pi supplied at binary64 precision instead of WRF's real32 module values (gwdo_real/mkflat64.py). They are subroutine arguments, not internal parameters, so that is what a double-precision kernel reference means for this scheme, and it is exactly what lib/wrf_constants.esm carries; promoting them flips no branch on any of the 140 dumped rows and moves the outputs by a median 2.7e-8 of the row maximum. Every assertion is on an algebraic observed at t = 0 and the document declares no ODE state, so the empty time_span is a single static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/s2_j81_i39_col16_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "taup_wave",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev_nodes"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0005393327166815686, 0.0005393327166815686, 0.0005393327166815686, 0.0005393327166815686, 0.0005393327166815686, 0.0005393327166815686, 0.0005393327166815686, 0.0005393327166815686, 0.0005393327166815686, 0.0005393327166815686, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.393327166815686e-13
+              }
+            },
+            {
+              "variable": "sat_code",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "icrilv",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "satfac_taken",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "rim_tested",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        }
+      ],
+      "expression_templates": {
+        "wave_froude": {
+          "params": [
+            "tp",
+            "kz"
+          ],
+          "description": "Froude number of the wave itself at interface kz + 1/2, given the stress tp it carries there: the displacement amplitude is recovered from the stress as hd = sqrt(tp / tem1), and fro = N hd / U. Reads the consuming model's `brvf`, `tem1_safe` and `velco_safe` by bare name, the keyed-factor convention the EarthSciDiscretizations column rules use for `dz`.",
+          "body": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "brvf",
+                      "kz"
+                    ]
+                  },
+                  {
+                    "op": "sqrt",
+                    "args": [
+                      {
+                        "op": "max",
+                        "args": [
+                          {
+                            "op": "/",
+                            "args": [
+                              "tp",
+                              {
+                                "op": "index",
+                                "args": [
+                                  "tem1_safe",
+                                  "kz"
+                                ]
+                              }
+                            ]
+                          },
+                          0.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "velco_safe",
+                  "kz"
+                ]
+              }
+            ]
+          }
+        },
+        "shutts_min_richardson": {
+          "params": [
+            "tp",
+            "kz"
+          ],
+          "description": "Shutts's (1985) minimum Richardson number of the flow once the wave of stress tp is superimposed on it: Ri (1 - fro) / (1 + sqrt(Ri) fro)^2. Applied TWICE -- inside the causal sweep, on the stress the sweep has just published for the level below, and afterwards on the finished profile so that the branch record can be asserted level by level. Writing it once is the reason it is a template.",
+          "body": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "usqj",
+                      "kz"
+                    ]
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "apply_expression_template",
+                        "args": [],
+                        "name": "wave_froude",
+                        "bindings": {
+                          "tp": "tp",
+                          "kz": "kz"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "^",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "*",
+                        "args": [
+                          {
+                            "op": "index",
+                            "args": [
+                              "srj",
+                              "kz"
+                            ]
+                          },
+                          {
+                            "op": "apply_expression_template",
+                            "args": [],
+                            "name": "wave_froude",
+                            "bindings": {
+                              "tp": "tp",
+                              "kz": "kz"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  2
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
