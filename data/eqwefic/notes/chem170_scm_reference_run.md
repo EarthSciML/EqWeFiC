@@ -379,3 +379,40 @@ Two consequences worth stating plainly:
 Each 48 h dumped run is ~4.5 min and the build 11–16 min, so the chemistry was cheap;
 the expensive part was rebuilding WRF-Chem three times (the KPP interface's `.inc`
 dependencies are not in the makefile, so the hooks needed a forced re-`cpp`).
+
+## Recapture of 2026-09-22 19:58, and what it means for anything replayed from these dumps
+
+The dumps in `data/eqwefic/dumps/chem170_wrf` were REGENERATED when MOSAIC's
+nucleation bug B20 was fixed.  The Noah column state moved with them: 45 of the
+scalar `noah` inputs at step 60 differ from the pre-recapture dumps, by up to
+1e-3 relative (`ett` 1.0e-3, `sheat` 9.5e-4, the surface exchange coefficients
+~1e-4).  That is the chemistry-to-meteorology sensitivity this file already
+documents, not an error.
+
+**The trap, hit on 2026-09-22 and recorded so nobody re-derives it.**  The
+`.flat` kernel-driver inputs under `data/eqwefic/noah_esm/r/` are DERIVED from
+these JSON dumps and are not regenerated automatically.  A stale `.flat`
+replayed against a fresh JSON dump produces a difference that looks exactly
+like a driver bug: at step 60 it showed up as a dt-INDEPENDENT +1.5e-9 offset
+in `cmc_out`, i.e. an implied `dcmc/dt` that diverged as dt fell and had the
+wrong sign, while the same driver matched WRF at dt = 60 s to 3e-6.  It was
+neither the driver nor SFLX.  The `kernels/build` and `kernels/build_presplice`
+drivers were shown BIT-IDENTICAL at dt = 60, 0.01 and 1e-6 s on that column,
+which cleared the `noah_esm_*.inc` splices; the offset was exactly the
+difference between the stale flat's `cmc` and the recaptured dump's.
+
+So: **after any recapture, regenerate the `.flat` inputs and every `o_*` replay
+before refilling a test**, e.g.
+
+    for s in <steps>; do
+      python3 tools/esm_dump.py dumps/chem170_wrf/esm_dump_noah_$s.json --flat noah_esm/r/in_$s.txt
+      for dt in 0.02 0.01 1e-4 1e-6; do ESM_DT=$dt <kernels>/noah_driver noah_esm/r/in_$s.txt noah_esm/r/o_${s}_$dt.json; done
+    done
+
+The Noah components' warm tests were refilled against the recaptured dumps on
+2026-09-22 and are green at 1087/1087 over `components/land_surface` plus `lib`.
+One per-level `dstc_dt` bound had to be loosened from `rel 1e-5` to
+`rel 1e-3, abs 5e-10` in the process: the reference's own implicit-solve
+truncation is up to 1.1e-10 K/s, which is a few times 1e-5 of the quietest deep
+layer's tendency, so those layers cannot be pinned relatively at
+`ESM_DT = 0.01 s`.  The `Linf` bound is unchanged and is the one that matters.
