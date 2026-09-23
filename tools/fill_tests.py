@@ -137,10 +137,15 @@ def _fields_library(test: dict[str, Any], ns: dict[str, Any], esm_name: str) -> 
     templates = {}
     for op_name, spec in test["fields"].items():
         vals = np.asarray(_eval(spec["expr"], ns), dtype=float).reshape(-1)
+        # A field with no "axis" is a SCALAR input: the body is a bare literal, not a
+        # column gather.  esm-spec 6.6 parameter_overrides admit scalars, but only of the
+        # model under test -- a scalar a MOUNTED component reads has no other way in, so
+        # it travels through the same injected template library as the profiles.
+        body = _const_gather(vals, spec["axis"]) if spec.get("axis") else float(vals[0])
         templates[op_name] = {
             "params": [],
             "match": {"op": op_name, "args": []},
-            "body": _const_gather(vals, spec["axis"]),
+            "body": body,
         }
     return {
         # 1.1.0: the inline column literals below use the `faq` op, which arrives at 1.1.0.
@@ -169,6 +174,12 @@ def _assertions(test: dict[str, Any], ns: dict[str, Any]) -> list[dict[str, Any]
             d = dict(base, reduce=a["reduce"], expected=0.0, reference=_const_gather(arr, a["axis"]))
             if "tolerance" in a:
                 d["tolerance"] = a["tolerance"]
+            elif "tol_rel_max" in a:
+                # Normalise by the COLUMN maximum rather than per cell.  A per-cell relative
+                # tolerance is not supportable wherever the quantity is a difference that
+                # nearly cancels (FORTRAN_BUGS N85 for GWDO); the honest bound is a fraction
+                # of the profile's own amplitude.  An identically-zero profile keeps abs = 0.
+                d["tolerance"] = {"abs": float(a["tol_rel_max"]) * float(np.abs(arr).max())}
             out.append(d)
         elif "coords" in a:
             arr = np.asarray(val, dtype=float).reshape(-1)

@@ -1,0 +1,69 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "gwdo_templates",
+    "description": "The three column operations GWDO (`phys/physics_mmm/bl_gwdo.F90`) performs more than once, factored out so that no component repeats them. (1) `level_index_above` is the level search the scheme runs THREE times -- for the wave-launch reference level `kref` (threshold 2 var above the lowest model level), for the level of the maximum sub-grid peak `komax` (threshold ELVMAX), and for the top of the flow-blocking search `kbomax` (threshold ELVMAX + 2 var). It is a set-membership minimum over the level index, not a scan: the answer depends only on WHICH levels clear the threshold and not on the order they are visited in, so it is an aggregate (esm-spec 4.3.1) and NOT a recurrence. (2) `weighted_mean_below` is the pressure-weighted vertical mean over the sub-column below a given level index, which the scheme takes FIVE times -- of u, v and rho against the layer masses del/(p_i,1 - p_i,kref), and of N^2 and Ri against the half-level thicknesses (p_l,k - p_l,k+1)/(p_l,1 - p_l,kref). The weights are supplied by the caller already normalised, exactly as the Fortran precomputes `delks` and `delks1`, so the template is the bare Riemann sum and carries the caller's dimensions. (3) `pick4` selects one of four sector-indexed orographic statistics by the wind-rose quadrant index, which happens four times in one loop (oa, ol, olp and the along/cross-wind grid lengths).",
+    "license": "MIT",
+    "tags": ["wrf", "gravity-wave-drag", "gwdo", "expression-templates", "column"],
+    "references": [
+      { "citation": "NCAR/MMM-physics bl_gwdo.F90 at commit 52cfbd7 (WRF 4.8 phys/physics_mmm submodule), lines 267-377 and 433-459." }
+    ]
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 50,
+      "description": "Number of model layers (WRF kte), bound at the import edge. `level_index_above` needs it for the sentinel its minimum falls back to when no level clears the threshold."
+    }
+  },
+  "expression_templates": {
+    "level_index_above": {
+      "params": ["z", "thr"],
+      "description": "One level above the LOWEST model level k >= 2 whose coordinate z[k] reaches the threshold thr, and 0 when no level does: `min { k in [2, NLEV] : z[k] >= thr } + 1`, else 0. This is exactly the Fortran's `do k = kts+1, kte / if (flag .and. z(k) >= thr) then kref = k+1; flag = .false.` with the `flag` guard turning the scan into a first-hit search and `kref` left at its initialisation 0 when nothing hits. The empty case is written out rather than left to the minimum's identity because the two answers differ: WRF's 0 is then raised to kgwdmin by the caller's clamp, while an unguarded minimum would return NLEV and be raised to kgwdmax instead. On the reference column set the empty case never occurs (the largest threshold, ELVMAX + 2 var, is 5.4 km against a 20 km column), so it is written for faithfulness, not for coverage.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          { "op": ">", "args": [
+            { "op": "faq", "output_idx": [], "reduce": "+", "args": ["z"],
+              "ranges": { "k": { "from": "lev" } },
+              "filter": { "op": ">=", "args": ["k", 2] },
+              "expr": { "op": "ifelse", "args": [
+                { "op": ">=", "args": [{ "op": "index", "args": ["z", "k"] }, "thr"] }, 1.0, 0.0 ] } },
+            0.0 ] },
+          { "op": "+", "args": [
+            { "op": "faq", "output_idx": [], "reduce": "min", "args": ["z"],
+              "ranges": { "k": { "from": "lev" } },
+              "filter": { "op": ">=", "args": ["k", 2] },
+              "expr": { "op": "ifelse", "args": [
+                { "op": ">=", "args": [{ "op": "index", "args": ["z", "k"] }, "thr"] }, "k", "NLEV" ] } },
+            1.0 ] },
+          0.0
+        ]
+      }
+    },
+    "weighted_mean_below": {
+      "params": ["f", "w", "ktop"],
+      "description": "Weighted vertical mean of the layer field f over the sub-column strictly below level index ktop: sum_{k < ktop} f[k] w[k], with w the caller's already-normalised weights (sum_{k < ktop} w[k] = 1 by construction in every GWDO use). The filter k < ktop is the Fortran's `if (k < kref(i))` guard; the Fortran's additional `k <= kgwdmax` loop bound is subsumed, because kref is itself clamped to kgwdmax.",
+      "body": {
+        "op": "faq", "output_idx": [], "reduce": "+", "args": ["f", "w"],
+        "ranges": { "k": { "from": "lev" } },
+        "filter": { "op": "<", "args": ["k", "ktop"] },
+        "expr": { "op": "*", "args": [
+          { "op": "index", "args": ["f", "k"] },
+          { "op": "index", "args": ["w", "k"] } ] }
+      }
+    },
+    "pick4": {
+      "params": ["a1", "a2", "a3", "a4", "j"],
+      "description": "The j-th of four sector-indexed quantities, j in 1..4: the Fortran's `oa4(i, mod(nwd-1,4)+1)` gather. Written as a nested conditional rather than an `index` into an assembled array because the four operands are separate scalar quantities of the column, not an array the document carries.",
+      "body": {
+        "op": "ifelse", "args": [
+          { "op": "==", "args": ["j", 1] }, "a1",
+          { "op": "ifelse", "args": [
+            { "op": "==", "args": ["j", 2] }, "a2",
+            { "op": "ifelse", "args": [
+              { "op": "==", "args": ["j", 3] }, "a3", "a4" ] } ] } ]
+      }
+    }
+  }
+}
