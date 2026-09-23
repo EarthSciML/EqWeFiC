@@ -2365,7 +2365,7 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
 ## 6.9 Pairwise coupling libraries (2026-09-17)
 
 Strategy (e) of `data/eqwefic/design/assembly_composition.md` is implemented.
-`couplings/lib/` holds six libraries — `sfclayrev_ysu` (8 edges), `sfclayrev_slab`
+`couplings/lib/` holds seven libraries (the seventh, `noah_soilwater_frozen`, added 2026-09-23 with section 1.4j) — `sfclayrev_ysu` (8 edges), `sfclayrev_slab`
 (2), `slab_ysu` (2), `dudhia_slab` (1), `rrtm_lw_slab` (1) and `rrtm_lw_chain`
 (35, four roles) — and the 15 assemblies import them instead of repeating the
 edges: **393 inline edges replaced by 25 imports, a net -2913 lines**. The
@@ -2643,6 +2643,12 @@ real exposure at esm 2.0.0, and clearing it needs a migration PR there.
       `supersaturation_active` is asserted zero in all three -- a precondition of
       the claim, since SSTEP's redistribution is a post-step projection that no
       tendency can carry.
+    - **The 25 edges are factored into `couplings/lib/noah_soilwater_frozen.esm`**
+      (roles Col, Sm, Frz), the section 6.9 pattern, so the three documents carry
+      one `coupling_import` each instead of 75 repeated `variable_map` entries.
+      The load-bearing edges are the SHARED ones -- `smcmax` and `bexp` reach both
+      mounts from one assembly copy -- because that is what makes the pair a
+      coupling rather than two independent evaluations in one file.
     - **Still to do:** the snow-covered SNOPAC columns, where the water supply
       includes snowmelt and the snow-energy component joins as a third mount;
       and the heat budget that produces `qtot`, which is consumer-supplied here.

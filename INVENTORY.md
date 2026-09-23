@@ -115,6 +115,7 @@ Swapping a scheme changes one mount and the imports naming it.
 | `dudhia_slab.esm` | Sw, Lsm | 1 | Dudhia → slab: `gsw` (net surface shortwave) | `scm_physics_column{,_night}` |
 | `rrtm_lw_slab.esm` | Heat, Lsm | 1 | RRTM → slab: `glw` (downward surface longwave) | `scm_physics_column{,_night}` |
 | `rrtm_lw_chain.esm` | Col, Setcoef, GasOpt, Rtrn | 35 | the RRTM longwave internal chain: MM5ATM column → SETCOEF → gas optics → RTRN. An internal chain, not a scheme pair: its external surface is the same however the stages are split, which is what makes bundling it safe | `rrtm_lw_column{,_call1,_call240,_call1440,_call2400}`, `radiation_column{,_night}`, `physics_column{,_night}`, `scm_physics_column{,_night}` |
+| `noah_soilwater_frozen.esm` | Col, Sm, Frz | 25 | Noah's two soil-water processes from ONE assembly column state: the shared soil parameters (`smcmax`, `bexp`) into both mounts from a single copy, all of SMFLX's forcing into the transport and all of SNKSRC's into the phase change, and `dsh2o_dt`/`dsmc_dt`/`supersaturation_active` and `dsh2o_dt_phase`/`phase_active` back out for summation. The shared edges are the load-bearing ones; the column fields themselves are not edges, because both components take them through `input_<name>` rewrite-target ops that only a MOUNT-edge template library can lower | `frozen_soil_column{,_guard,_dew}` |
 
 Not yet factored: the column-state ↔ scheme edges (`ScmPhysicsColumn` ↔ Sfc 52, ↔ Lsm 30,
 ↔ Pbl 16, ↔ RRTM 12, ↔ Sw 8). These pin a naming convention for the state carrier rather than
