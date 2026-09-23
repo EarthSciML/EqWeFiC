@@ -1,0 +1,1378 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "MosaicNucleationWexler",
+    "description": "MOSAIC's binary H2SO4-H2O nucleation as WRF-Chem runs it: SUBROUTINE wexler_nuc_mosaic_1box of chem/module_mosaic_newnuc.F (WRF v4.8.0), which is the branch mosaic_newnuc_1clm takes because `newnuc_method` is fixed at 2. The scheme is an INSTANTANEOUS PROJECTION, not a rate: the vapour is relaxed to the critical concentration and the excess becomes new particles in the smallest bin, so what this component exposes is the INCREMENT PER CALL. It is the same increment whatever sub-step it is applied over, verified at dtnuc = 60, 6 and 0.6 s, so a consumer integrating a column adds it once per MOSAIC sub-step in the operator-split way (the convention in CLAUDE.md for WSM6's in-place stages), and there is no dt -> 0 rate to divide by.\n\nThis component transcribes the CORRECTED scheme. Stock WRF 4.8 multiplies the available vapour by the time step and then uses the product as a mixing ratio, which strips essentially all H2SO4 every step and leaves the new particles far too acidic; that is EqWeFiC FORTRAN_BUGS B20, fixed on the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 (commit 8c0dd5b) with WRF's own newer copy of the routine, chem/module_mosaic_newnucb.F:1668, as the authority for the intended line. The reference values below come from the corrected build; the stock-WRF dumps are kept at data/eqwefic/dumps/chem170_wrf_stockB20 for comparison.\n\nOnly the ammonium-sulfate/bisulfate/sulfuric-acid composition branch is transcribed, which is the whole routine. The ternary (Napari) route in the same file is unreachable at `newnuc_method = 2` and is not transcribed.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-09-22T00:00:00Z",
+    "tags": [
+      "mosaic",
+      "aerosol",
+      "nucleation",
+      "wrf-chem",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "Wexler, A. S., Lurmann, F. W. and Seinfeld, J. H. (1994). Modelling urban and regional aerosols -- I. model development. Atmospheric Environment 28(3), 531-546."
+      },
+      {
+        "citation": "Zaveri, R. A., Easter, R. C., Fast, J. D. and Peters, L. K. (2008). Model for Simulating Aerosol Interactions and Chemistry (MOSAIC). J. Geophys. Res. 113, D13204."
+      }
+    ]
+  },
+  "models": {
+    "MosaicNucleationWexler": {
+      "subsystems": {
+        "par": {
+          "ref": "./mosaic_nucleation_parameters.esm"
+        }
+      },
+      "variables": {
+        "temp": {
+          "type": "parameter",
+          "units": "K",
+          "default": 298.366,
+          "description": "Air temperature of the grid cell, MOSAIC's `temp_box` = rsub(ktemp,k,m)."
+        },
+        "rh": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.61123,
+          "description": "Relative humidity as a fraction, MOSAIC's `rh_box` = relhumclm(k)."
+        },
+        "cair": {
+          "type": "parameter",
+          "units": "mol/cm^3",
+          "default": 3.57527e-05,
+          "description": "Air molar density, MOSAIC's `cair_box` = cairclm(k)."
+        },
+        "q_h2so4": {
+          "type": "parameter",
+          "units": "mol/mol",
+          "default": 4.98006e-11,
+          "description": "Gas-phase H2SO4 mixing ratio entering the call, `qh2so4_cur`. The caller passes max(0, rsub(kh2so4,k,m)), so a consumer floors it at zero."
+        },
+        "q_nh3": {
+          "type": "parameter",
+          "units": "mol/mol",
+          "default": 5.84783e-12,
+          "description": "Gas-phase NH3 mixing ratio entering the call, `qnh3_cur`, floored at zero the same way."
+        },
+        "vol_part": {
+          "type": "parameter",
+          "units": "cm^3",
+          "default": 3.12089e-17,
+          "description": "Single-particle volume the new mass is placed in: the lower volume bound of the first size bin, `volumlo_sect(1)` (:1000)."
+        },
+        "dens_in": {
+          "type": "parameter",
+          "units": "g/cm^3",
+          "default": 1.8,
+          "description": "Particle dry density the caller carries in, `dens_nh4so4a`. MOSAIC passes dens_so4_aer = 1.8, which is inside the reuse band, so the composition-derived density is overridden in every WRF-Chem run."
+        },
+        "c_crit": {
+          "type": "unknown",
+          "units": "ug/m^3",
+          "description": "Critical H2SO4 concentration above which new particles form, 0.16*exp(0.1*T - 3.5*RH - 27.7) (:1002)."
+        },
+        "q_crit": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "The same critical concentration as a mixing ratio (:1006)."
+        },
+        "q_avail": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "H2SO4 vapour available to make new particles, `qh2so4_avail = qh2so4_cur - qh2so4_crit` (:1016 of the fork; stock WRF multiplies this by dtnuc, EqWeFiC FORTRAN_BUGS B20)."
+        },
+        "q_avail_safe": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "q_avail floored at the guard threshold, so the composition ratio below never divides by zero when the cell is not nucleating."
+        },
+        "nucleating": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 where the guard `qh2so4_avail > 4e-18 mol/mol` passes, 0 elsewhere (:1019)."
+        },
+        "nh3_per_h2so4": {
+          "type": "unknown",
+          "units": "1",
+          "description": "(NH3/H2SO4) gas molar ratio the composition is built from."
+        },
+        "frac_ammsulf": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Mole fraction of ammonium sulfate in the new particles, `dum_n1` (:1027-1037)."
+        },
+        "frac_ammbisulf": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Mole fraction of ammonium bisulfate, `dum_n2`."
+        },
+        "frac_sulfacid": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Mole fraction of sulfuric acid, `dum_n3`."
+        },
+        "mass_ammsulf": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "dum_m1 = dum_n1*mw_ammsulf."
+        },
+        "mass_ammbisulf": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "dum_m2 = dum_n2*mw_ammbisulf."
+        },
+        "mass_sulfacid": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "dum_m3 = dum_n3*mw_sulfacid."
+        },
+        "dens_composition": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "Density implied by that composition (:1039)."
+        },
+        "dens_part": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "Density actually used: the caller's value when it lies within 0.2 of 1.8 g/cm3, else the composition density (:1040-1044)."
+        },
+        "mass_part": {
+          "type": "unknown",
+          "units": "g",
+          "description": "Mass of one new particle, vol_part*dens_part (:1045)."
+        },
+        "nh4_per_so4": {
+          "type": "unknown",
+          "units": "1",
+          "description": "(mole aerosol NH4)/(mole aerosol SO4) of the new particles, 2*dum_n1 + dum_n2 (:1051)."
+        },
+        "h2so4_removed": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "H2SO4 actually taken from the gas in this call, before the sign is flipped."
+        },
+        "dq_h2so4": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "Increment applied to gas H2SO4 (negative). PER CALL, not per second: with B20 fixed this is a projection and is the same whatever the step is."
+        },
+        "dq_nh3": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "Increment applied to gas NH3 (negative), capped both by the available ammonia and by the sulfate it can neutralise."
+        },
+        "dq_so4a": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "Increment applied to aerosol sulfate in the first bin."
+        },
+        "dq_nh4a": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "Increment applied to aerosol ammonium in the first bin."
+        },
+        "dq_num": {
+          "type": "unknown",
+          "units": "1/mol",
+          "description": "Increment applied to aerosol number in the first bin, particles per mole of air (:1053)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "c_crit",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "par.crit_c0",
+              {
+                "op": "exp",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.crit_ct",
+                              "temp"
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.crit_crh",
+                              "rh"
+                            ]
+                          }
+                        ]
+                      },
+                      "par.crit_c1"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "q_crit",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "c_crit",
+                      "par.ugm3_to_gcm3"
+                    ]
+                  },
+                  "par.mw_h2so4"
+                ]
+              },
+              "cair"
+            ]
+          }
+        },
+        {
+          "lhs": "q_avail",
+          "rhs": {
+            "op": "-",
+            "args": [
+              "q_h2so4",
+              "q_crit"
+            ]
+          }
+        },
+        {
+          "lhs": "q_avail_safe",
+          "rhs": {
+            "op": "max",
+            "args": [
+              "q_avail",
+              "par.q_avail_min"
+            ]
+          }
+        },
+        {
+          "lhs": "nucleating",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "q_avail",
+                  "par.q_avail_min"
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "nh3_per_h2so4",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "q_nh3",
+              "q_avail_safe"
+            ]
+          }
+        },
+        {
+          "lhs": "frac_ammsulf",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">=",
+                "args": [
+                  "q_nh3",
+                  "q_avail"
+                ]
+              },
+              {
+                "op": "max",
+                "args": [
+                  0.0,
+                  {
+                    "op": "min",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "-",
+                        "args": [
+                          "nh3_per_h2so4",
+                          1.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "frac_ammbisulf",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">=",
+                "args": [
+                  "q_nh3",
+                  "q_avail"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "frac_ammsulf"
+                ]
+              },
+              {
+                "op": "max",
+                "args": [
+                  0.0,
+                  {
+                    "op": "min",
+                    "args": [
+                      1.0,
+                      "nh3_per_h2so4"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "frac_sulfacid",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">=",
+                "args": [
+                  "q_nh3",
+                  "q_avail"
+                ]
+              },
+              0.0,
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "frac_ammbisulf"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "mass_ammsulf",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "frac_ammsulf",
+              "par.mw_ammsulf"
+            ]
+          }
+        },
+        {
+          "lhs": "mass_ammbisulf",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "frac_ammbisulf",
+              "par.mw_ammbisulf"
+            ]
+          }
+        },
+        {
+          "lhs": "mass_sulfacid",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "frac_sulfacid",
+              "par.mw_sulfacid"
+            ]
+          }
+        },
+        {
+          "lhs": "dens_composition",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  "mass_ammsulf",
+                  "mass_ammbisulf",
+                  "mass_sulfacid"
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "mass_ammsulf",
+                      "par.dens_ammsulf"
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      "mass_ammbisulf",
+                      "par.dens_ammbisulf"
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      "mass_sulfacid",
+                      "par.dens_sulfacid"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "dens_part",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": ">=",
+                    "args": [
+                      "dens_in",
+                      "par.dens_in_lo"
+                    ]
+                  },
+                  {
+                    "op": "<=",
+                    "args": [
+                      "dens_in",
+                      "par.dens_in_hi"
+                    ]
+                  }
+                ]
+              },
+              "dens_in",
+              "dens_composition"
+            ]
+          }
+        },
+        {
+          "lhs": "mass_part",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "vol_part",
+              "dens_part"
+            ]
+          }
+        },
+        {
+          "lhs": "nh4_per_so4",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  2.0,
+                  "frac_ammsulf"
+                ]
+              },
+              "frac_ammbisulf"
+            ]
+          }
+        },
+        {
+          "lhs": "h2so4_removed",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "nucleating",
+              {
+                "op": "min",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "par.frac_max",
+                      "q_h2so4"
+                    ]
+                  },
+                  "q_avail"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "dq_h2so4",
+          "rhs": {
+            "op": "neg",
+            "args": [
+              "h2so4_removed"
+            ]
+          }
+        },
+        {
+          "lhs": "dq_nh3",
+          "rhs": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "nucleating",
+                  {
+                    "op": "min",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "par.frac_max",
+                          "q_nh3"
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          "h2so4_removed",
+                          "nh4_per_so4"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "dq_so4a",
+          "rhs": {
+            "op": "neg",
+            "args": [
+              "dq_h2so4"
+            ]
+          }
+        },
+        {
+          "lhs": "dq_nh4a",
+          "rhs": {
+            "op": "neg",
+            "args": [
+              "dq_nh3"
+            ]
+          }
+        },
+        {
+          "lhs": "dq_num",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "dq_so4a",
+                      "par.mw_so4a"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "dq_nh4a",
+                      "par.mw_nh4a"
+                    ]
+                  }
+                ]
+              },
+              "mass_part"
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "chem170_step1_lev14",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 1, column i = its, j = jts, level 14. Regime: T = 298.37 K, RH = 0.611, NH4/SO4 of the new particles 1.373. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 11.69 here, so 1e-6 becomes about 2e-05. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 298.3657531738281,
+            "rh": 0.611230194568634,
+            "cair": 3.575273512979038e-05,
+            "q_h2so4": 4.98005699178794e-11,
+            "q_nh3": 5.847829599031629e-12,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 4.554065111128658e-11,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 1.3727561235427856,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -4.259918806592822e-12,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -5.8472445635393555e-12,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 4.259918806592822e-12,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 5.8472445635393555e-12,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 9153411.0,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev30",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 1, column i = its, j = jts, level 30. Regime: T = 280.25 K, RH = 0.679, NH4/SO4 of the new particles 0.1176. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 1.165 here, so 1e-6 becomes about 2e-06. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 280.24920654296875,
+            "rh": 0.6794419288635254,
+            "cair": 2.9748356610070914e-05,
+            "q_h2so4": 4.978997075744118e-11,
+            "q_nh3": 5.027596828438563e-12,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 7.043197622347286e-12,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 0.11761348694562912,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -4.274677140037042e-11,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -5.027094192311399e-12,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 4.274677140037042e-11,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 5.027094192311399e-12,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 74661288.0,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_step230_lev48",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 230, column i = its, j = jts, level 48. Regime: T = 246.20 K, RH = 0.716, NH4/SO4 of the new particles 0.08233. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 110.4 here, so 1e-6 becomes about 0.0001. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 246.20028686523438,
+            "rh": 0.7164939641952515,
+            "cair": 1.7645164916757494e-05,
+            "q_h2so4": 3.495524995757865e-13,
+            "q_nh3": 2.606707366879259e-16,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 3.4638649370685726e-13,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 0.0823342576622963,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -3.1660058689292336e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -2.606446639550182e-16,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 3.1660058689292336e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 2.606446639550182e-16,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 5493.9443359375,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_step230_lev55",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 230, column i = its, j = jts, level 55. Regime: T = 233.00 K, RH = 0.565, NH4/SO4 of the new particles 0.00309. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 41.86 here, so 1e-6 becomes about 5e-05. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 233.0,
+            "rh": 0.5646762847900391,
+            "cair": 1.0315047802578192e-05,
+            "q_h2so4": 2.7586957783258537e-13,
+            "q_nh3": 2.036462916132268e-17,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 2.6927884835131755e-13,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 0.0030898901168257,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -6.590729481267821e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -2.0362592642654575e-17,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 6.590729481267821e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 2.0362592642654575e-17,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 11269.5068359375,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_step639_lev51",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 639, column i = its, j = jts, level 51. Regime: T = 237.74 K, RH = 0.682, NH4/SO4 of the new particles 0.01971. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 187.2 here, so 1e-6 becomes about 0.0002. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 237.74461364746094,
+            "rh": 0.6817671656608582,
+            "cair": 1.4675018974230625e-05,
+            "q_h2so4": 2.029992114075535e-13,
+            "q_nh3": 2.136964367940726e-17,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 2.0191494147243222e-13,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 0.0197087861597538,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -1.0842699351212848e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -2.1367506244704422e-17,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 1.0842699351212848e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 2.1367506244704422e-17,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 1859.7694091796875,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1730_lev46",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 1730, column i = its, j = jts, level 46. Regime: T = 254.89 K, RH = 0.764, NH4/SO4 of the new particles 0.12. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 87.6 here, so 1e-6 becomes about 0.0001. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 254.8857421875,
+            "rh": 0.7643101215362549,
+            "cair": 1.9147964849253185e-05,
+            "q_h2so4": 6.509874020052542e-13,
+            "q_nh3": 8.916580310474459e-16,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 6.435562803150385e-13,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 0.11998969316482544,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -7.431121690215647e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -8.915688808297474e-16,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 7.431121690215647e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 8.915688808297474e-16,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 12984.8173828125,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1730_lev52",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 1730, column i = its, j = jts, level 52. Regime: T = 233.00 K, RH = 0.624, NH4/SO4 of the new particles 0.0006678. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 21.76 here, so 1e-6 becomes about 3e-05. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 233.0,
+            "rh": 0.6236783266067505,
+            "cair": 1.3735280845139641e-05,
+            "q_h2so4": 1.7241660573222295e-13,
+            "q_nh3": 5.290978897314799e-18,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 1.6449412361743687e-13,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 0.0006678436184301972,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -7.922482114786078e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -5.290449915313071e-18,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 7.922482114786078e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 5.290449915313071e-18,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 13540.52734375,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1801_lev45",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 1801, column i = its, j = jts, level 45. Regime: T = 256.85 K, RH = 0.673, NH4/SO4 of the new particles 0.3933. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 138.5 here, so 1e-6 becomes about 0.0002. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 256.8538818359375,
+            "rh": 0.6729257702827454,
+            "cair": 2.0006858903798275e-05,
+            "q_h2so4": 1.0400634346818816e-12,
+            "q_nh3": 2.9541343414589633e-15,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 1.03255294939264e-12,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 0.39333468675613403,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -7.510485289241586e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -2.9538389387186084e-15,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 7.510485289241586e-15,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 2.9538389387186084e-15,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 13781.2373046875,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1801_lev50",
+          "description": "Reference: the em_scm_xy chem_opt = 170 (CBMZ_MOSAIC_KPP) single-column run of data/eqwefic/chem170_scm -- Weisman-Klemp sounding, 37.6 N 96.7 W, 1997-06-20 12 UTC + 48 h, dt = 60 s -- built from the ctessum-claude/WRF fork branch earthsciml-instrumented-chem170 with FORTRAN_BUGS B20 FIXED, GNU gfortran 13.3 REAL*4 build. Dumped by the MOSAIC rate hooks (module_esm_mosaic_rates.F) at model step 1801, column i = its, j = jts, level 50. Regime: T = 240.71 K, RH = 0.679, NH4/SO4 of the new particles 0.004423. Single-precision reference, tolerances measured against zero-tolerance runs. Tolerances are measured, not assumed (zero-tolerance run over all nine cases): dens_part 2.7e-8, dq_nh3 and dq_nh4a <= 4.5e-8, q_crit <= 1.3e-6, and the four quantities that ride on the excess -- nh4_per_so4, dq_h2so4, dq_so4a, dq_num -- <= 5.5e-5. The last group is CANCELLATION-LIMITED, not a transcription gap: WRF evaluates 0.1*T - 3.5*RH - 27.7 in real32, where 0.1*T - 27.7 is itself a difference of nearly equal numbers, giving q_crit to about 1e-6; the excess q_h2so4 - q_crit then amplifies that by q_h2so4/(q_h2so4 - q_crit), which is 26.31 here, so 1e-6 becomes about 3e-05. The bounds below are those measurements with a factor-of-two margin.",
+          "parameter_overrides": {
+            "temp": 240.70779418945312,
+            "rh": 0.6791037321090698,
+            "cair": 1.5707151760580018e-05,
+            "q_h2so4": 2.6620293968292186e-13,
+            "q_nh3": 4.4746838161868464e-17,
+            "vol_part": 3.1208925632862246e-17,
+            "dens_in": 1.8
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "q_crit",
+              "time": 0.0,
+              "expected": 2.5608673710243723e-13,
+              "tolerance": {
+                "rel": 2e-06
+              }
+            },
+            {
+              "variable": "nh4_per_so4",
+              "time": 0.0,
+              "expected": 0.004423283971846104,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dens_part",
+              "time": 0.0,
+              "expected": 1.7999999523162842,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_h2so4",
+              "time": 0.0,
+              "expected": -1.0116202580484623e-14,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh3",
+              "time": 0.0,
+              "expected": -4.474236146039333e-17,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_so4a",
+              "time": 0.0,
+              "expected": 1.0116202580484623e-14,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            },
+            {
+              "variable": "dq_nh4a",
+              "time": 0.0,
+              "expected": 4.474236146039333e-17,
+              "tolerance": {
+                "rel": 1e-07
+              }
+            },
+            {
+              "variable": "dq_num",
+              "time": 0.0,
+              "expected": 17302.044921875,
+              "tolerance": {
+                "rel": 0.0001
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
