@@ -2451,3 +2451,40 @@ real exposure at esm 2.0.0, and clearing it needs a migration PR there.
       now pinned exactly -- but it is a COUPLING claim (their sum against the
       replay's `sh2o_out`), so it needs a document under `couplings/` rather
       than another component test.
+
+1.4h Noah stage 2, fifth tranche (done 2026-09-23): SNOPAC's energy balance.
+
+    `components/land_surface/noah/snow_energy.esm`, **804/804** over the 67
+    pack steps of the cold-season set, both branches covered (38 sub-freezing,
+    29 melting). Residuals 1e-11 to 1e-13 relative against 1e-9 bounds.
+
+    - The closure is a linearised balance over a slab of thickness
+      `snowh + half the top soil layer`: `t12 = (sfctmp + t12a + t12b)/denom`,
+      where `denom = 1 + df1/(dtot rr rch)` measures how strongly the soil holds
+      the snow surface against the atmosphere. `t12` is the temperature the
+      surface WOULD reach with no melting, and its position relative to 273.15 K
+      selects the branch. On the melt branch the surface is pinned to a
+      cover-weighted blend of the freezing point and `t12`, weight
+      `max(0.01, sncovr^2)`, so a full pack holds 273.15 K and a thin one runs
+      warm.
+    - **The melt rate is referenced BEFORE its limiter**, against the
+      `sno_ex_raw` publisher added on the N97 pass for exactly this. That is
+      what the coordinator's instruction asked for and it is worth the number:
+      `ex` reproduces to **2.4e-11** relative, against the **5.0e-4** floor the
+      cold-season notes give for the differenced `snomlt` -- seven orders
+      better. Differencing the pack would have measured the projection rather
+      than the rate.
+    - **FORTRAN_BUGS N98**: SNOPAC manufactures a rate from an amount when a
+      step's melt would overshoot the pack (`ex = esd/dt`) and then back-computes
+      the melt ENERGY to match, so the reported `flx3` is no longer the balance's
+      residual. That and the sublimation-exhaustion test are PROJECTIONS,
+      reported as the indicators `pack_exhausted` and `melt_limited` rather than
+      folded into the rate. Both branches are untested: the reference set never
+      reaches either at the replay step size.
+    - **Still to do:** the soil-moisture tendency on frozen columns. Transport
+      and phase change are each pinned exactly, so what remains is their SUM
+      against the replay's `sh2o_out` -- a COUPLING claim, needing a small
+      document under `couplings/` with explicit mount edges, not another
+      component test. Also outstanding for the snow pack: SNOWPACK's compaction
+      of the pack, and the UA_PHYS canopy-shading branch (off everywhere).
+
