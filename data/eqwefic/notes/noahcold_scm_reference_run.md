@@ -252,3 +252,53 @@ a pack in (`sneqv` = 1.252e-06 m) and none out (`sneqv_out` = 0), with `snomlt` 
 1.25e-06 -- SNOPAC's `ESD - ESNOW2 <= ESDMIN` branch.  Of case D's 23 dumped steps, 7
 have a pack (3 sub-freezing, 4 melt) and **16 are bare ground over frozen soil**, which
 is the `NOPAC`-with-a-frozen-sink regime that no other case supplies in quantity.
+
+## The N97 hook, 2026-09-23: publishing the sink without a cancelling difference
+
+The dumps under `dumps/noahcold_wrf` are UNCHANGED by this work and no WRF re-run
+was needed.  The four new hooks are in the **kernel driver's build-time copy** of
+`module_sf_noahlsm.F`, which `kernels/noah_cold_splice.py` makes and which the WRF
+run never touches, so only the derived `replay/case*/r64*` passes were regenerated.
+That is why the CLAUDE.md recapture rule did not bite here: nothing that the tests
+cite as their reference state moved.
+
+**What was wrong.**  `SNKSRC` returns its latent sink as
+`tsnsr = -rho_w hlice dz (xh2o - sh2o)/dt`, and the difference is of size
+`qtot dt/(rho_w hlice dz)`.  At the 1e-6 s step a dt -> 0 reference wants, that is
+~1e-13 against an `sh2o` of order 0.1, so cancellation eats it: not one of the 332
+layer-calls returned `tsnsr` bitwise equal to its exact limit `-qtot`, and the
+worst was off by 5.9e-3.  Going up to 1e-2 s trades that for the interval clamp
+binding at 80 of the 332 calls, which makes the answer a finite-dt artefact.  There
+is no clean window between the two.
+
+**What the hook publishes** (`noah_esm_snksrc_raw.inc`, an extension of
+`noah_esm_snksrc.inc`, `noah_esm_hrt_sice1.inc`, `noah_esm_hrt_sicek.inc`,
+`noah_esm_snopac_exraw.inc`; 14 cold-path includes in total, each still
+grep-guarded so a source change cannot silently drop one):
+
+| field | what it is |
+|---|---|
+| `frz_xh2o_raw` | the energy-driven `xh2o` BEFORE any clamp |
+| `frz_sh2o_pre` | the `sh2o` it was formed from, inside SNKSRC |
+| `frz_dz` | the layer thickness the conversion uses |
+| `frz_clamp` | which clamp fired: 0 none, 1 held at sh2o, 2 stopped at free, 3 floored at 0, 4 capped at smc |
+| `frz_sice`, `frz_sh2o_hrt` | HRT's own per-layer ice and liquid water at the point it decides whether to evaluate the phase change, published for EVERY layer, called or not |
+| `sno_ex_raw`, `sno_melt_block`, `sno_esd_in` | SNOPAC's melt rate before its dt-dependent pack-exhaustion limiter, and the state that limiter reads |
+
+**What it bought.**  Over the reference set the clamp decision is: **no clamp at
+193 layer-calls, held at `sh2o` at 139**, and the other three clamps never fire --
+so those three are untested, not merely unused.  `frozen_soil.esm`'s activity
+switch, asserted against the published decision at ZERO tolerance, matches at
+**all 332 layer-calls**; before the hook the same switch appeared to disagree 96
+times, which was an artefact of comparing against the cancelling difference.
+
+**Two things the hook exposed that were quietly wrong in the tests.**
+`frz_sh2o_in` is captured by the driver BEFORE `SFLX`, not the value `SNKSRC`
+receives -- they differ at 193 of the 332 layer-calls because `SMFLX` has already
+moved the water.  And HRT's `SMC` has been advanced by `SSTEP` as well, so taking
+`smc` from the dumped arguments while taking `sh2o` from inside HRT gives an ice
+content that is neither, which made the evaluation guard and the equilibrium
+comparison disagree with WRF at a handful of steps.  Supplying the consistent pair
+`frz_sh2o_hrt` and `frz_sh2o_hrt + frz_sice` fixed both, and took every assertion
+in the component from 4.2e-12 to **exact at zero tolerance**.
+

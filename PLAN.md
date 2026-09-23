@@ -602,9 +602,7 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       (80 of 332 at 0.01 s) and the answer becomes a finite-dt artefact. N97
       records the instrumentation that would fix it: publish `qtot` together
       with which clamp fired, from inside SNKSRC.
-    - **Still to do:** SNOPAC's energy balance (T12 and the melt block), and
-      the soil-moisture tendency on frozen columns, which needs the sink pinned
-      first and therefore needs N97's hook.
+    - **The sink was pinned on 2026-09-23 by the N97 hook** (section 1.4g).
     - **Kernel replays.** New real64 drivers `kernels/{ntiedtke,noah}_driver`.
       Noah agrees with WRF to real32 round-off. Tiedtke's in-model `rthcuten`
       is cancellation-limited at ~3e-7 K/s (N84), so the real64 replay is the
@@ -2421,3 +2419,35 @@ real exposure at esm 2.0.0, and clearing it needs a migration PR there.
 5. Fire code: NCAR `fire_behavior` (Community Fire Behavior Model), the more
    recent and actively developed line; WRF-SFIRE extras are optional rows.
 6. netCDF/WRF builds: apptainer with a pulled toolchain image (see 0.5).
+
+1.4g The N97 instrumentation hook (done 2026-09-23).
+
+    Four new grep-guarded splices on `earthsciml-instrumented-noahcold`, in the
+    build-time copy the kernel driver already uses, so `dumps/noahcold_wrf` is
+    UNCHANGED and no WRF re-run was needed -- only the derived replays. They
+    publish SNKSRC's raw pre-clamp `xh2o`, the `sh2o` and `dz` behind it, WHICH
+    of its five clamps fired, HRT's own per-layer `sice` and `sh2o` at the
+    evaluation guard, and SNOPAC's melt rate before its dt-dependent
+    pack-exhaustion limiter.
+
+    - `frozen_soil.esm` is **1529/1529 with every assertion EXACT at zero
+      tolerance**, up from 1084 with `free` at 4.2e-12. Its activity switch is
+      asserted against the published clamp decision and matches at all 332
+      layer-calls; before the hook the same switch appeared to disagree 96
+      times, which was an artefact of comparing against the cancelling
+      difference rather than a defect in the component.
+    - Clamp census: no clamp 193, held at `sh2o` 139, and the stopped-at-free,
+      floored-at-zero and capped-at-smc branches never fire -- untested, not
+      merely unused.
+    - **Two quietly wrong inputs the hook exposed.** `frz_sh2o_in` is captured
+      before SFLX, not the value SNKSRC receives (they differ at 193 of 332
+      calls); and HRT's `smc` has been advanced by SSTEP, so pairing the dumped
+      `smc` with an in-HRT `sh2o` gives an ice content that is neither. Both are
+      now supplied as a consistent pair, which is what took the component to
+      exact.
+    - **Still to do:** SNOPAC's energy balance (`T12` and the melt block), and
+      the soil-moisture tendency on frozen columns. The latter is no longer
+      blocked on instrumentation -- both halves, transport and phase change, are
+      now pinned exactly -- but it is a COUPLING claim (their sum against the
+      replay's `sh2o_out`), so it needs a document under `couplings/` rather
+      than another component test.
