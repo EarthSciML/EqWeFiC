@@ -1,0 +1,1109 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "MosaicGasParticleMassTransfer",
+    "description": "MOSAIC's gas-particle mass-transfer coefficient for ONE condensing gas and ONE size bin: SUBROUTINE aerosolmtc and the three functions it calls -- mean_molecular_speed, gas_diffusivity (the Fuller fit) and fuchs_sutugin -- in chem/module_mosaic_therm.F of WRF v4.8.0, on the sectional (msection) path WRF-Chem uses. Gases and bins are independent here, so a consumer maps the component over both rather than the component owning either index.\n\nIt also exposes cond_rate = gas*kg, which is the exact dt -> 0 limit of ASTEM's analytical non-volatile solution: that routine advances the gas by gas*(1 - exp(-sum_bins(kg)*dt)) and shares it over bins as kg/sum(kg), so the instantaneous per-bin rate is gas*kg with nothing approximated. The SEMI-VOLATILE branch of ASTEM is a different calculation -- its flux is kg*(gas - surface value) with the surface value from the particle's own thermodynamics, and it sub-steps adaptively -- so this component is not the whole of gas-particle transfer; it is the coefficient both branches are built on.\n\nWhat cannot be pinned by the reference. dp_wet and num_a are inputs: they come from calc_dry_n_wet_aerosol_props and MOSAIC's own size framework, which is a separate piece of physics. The Gauss-Hermite modal path in the same routine (msize_framework = mmodal) is not transcribed, because WRF-Chem runs the sectional one.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-09-23T00:00:00Z",
+    "tags": [
+      "mosaic",
+      "aerosol",
+      "condensation",
+      "mass-transfer",
+      "wrf-chem",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "Fuchs, N. A. and Sutugin, A. G. (1971). High-dispersed aerosols. Topics in Current Aerosol Research, Pergamon."
+      },
+      {
+        "citation": "Fuller, E. N., Schettler, P. D. and Giddings, J. C. (1966). A new method for prediction of binary gas-phase diffusion coefficients. Ind. Eng. Chem. 58(5), 18-27."
+      },
+      {
+        "citation": "Zaveri, R. A., Easter, R. C., Fast, J. D. and Peters, L. K. (2008). Model for Simulating Aerosol Interactions and Chemistry (MOSAIC). J. Geophys. Res. 113, D13204."
+      }
+    ]
+  },
+  "models": {
+    "MosaicGasParticleMassTransfer": {
+      "subsystems": {
+        "par": {
+          "ref": "./mosaic_mass_transfer_parameters.esm"
+        }
+      },
+      "variables": {
+        "t_k": {
+          "type": "parameter",
+          "units": "K",
+          "default": 305.6,
+          "description": "Cell temperature MOSAIC works in, `t_k`."
+        },
+        "p_atm": {
+          "type": "parameter",
+          "units": "atm",
+          "default": 0.96,
+          "description": "Cell pressure in atmospheres, `p_atm`."
+        },
+        "dp_wet": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 6e-06,
+          "description": "Wet diameter of this size bin, `dp_wet_a(ibin)` from calc_dry_n_wet_aerosol_props."
+        },
+        "num_conc": {
+          "type": "parameter",
+          "units": "1/cm^3",
+          "default": 35.0,
+          "description": "Number concentration of this bin, `num_a(ibin)`."
+        },
+        "mw_gas": {
+          "type": "parameter",
+          "units": "g/mol",
+          "default": 98.0,
+          "description": "Molecular weight of the condensing gas (98 H2SO4, 96 MSA, 63 HNO3, 36.5 HCl, 17 NH3)."
+        },
+        "v_molar": {
+          "type": "parameter",
+          "units": "cm^3/mol",
+          "default": 42.88,
+          "description": "Fuller diffusion molar volume of that gas (42.88 H2SO4, 58 MSA, 24.11 HNO3, 21.48 HCl, 14.9 NH3)."
+        },
+        "accom": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.1,
+          "description": "Accommodation coefficient; MOSAIC uses 0.1 for every gas."
+        },
+        "gas_conc": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Gas-phase concentration of that species in MOSAIC's internal units, used only for the condensation rate below."
+        },
+        "speed": {
+          "type": "unknown",
+          "units": "cm/s",
+          "description": "Mean molecular speed of the gas, 1.455e4*sqrt(T/mw) (function mean_molecular_speed)."
+        },
+        "dg": {
+          "type": "unknown",
+          "units": "cm^2/s",
+          "description": "Gas diffusivity, the Fuller fit of function gas_diffusivity."
+        },
+        "freepath": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Gas mean free path, 3*dg/speed."
+        },
+        "knudsen": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Knudsen number of this bin for this gas, 2*freepath/dp_wet."
+        },
+        "fuchs_sutugin": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Transition-regime correction, 0.75*a*(1+Kn) / (Kn^2 + Kn + 0.283*Kn*a + 0.75*a)."
+        },
+        "cdum": {
+          "type": "unknown",
+          "units": "1/cm^2",
+          "description": "The geometric factor 2*pi*dp_wet*num_a that aerosolmtc forms once per bin (surface area per unit volume, up to the factor of 2)."
+        },
+        "kg": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "First-order mass-transfer coefficient of this gas to this bin, kg = cdum*dg*fkn -- what ASTEM condenses with."
+        },
+        "cond_rate": {
+          "type": "unknown",
+          "units": "nmol/(m^3*s)",
+          "description": "Condensation rate of a NON-VOLATILE gas onto this bin at the state the stage starts from, gas*kg. This is the exact dt -> 0 limit of ASTEM_non_volatiles' analytical solution, whose increment over a step is gas*(1 - exp(-sum_bins(kg)*dt)) shared over bins as kg/sum(kg)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "speed",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "par.speed_c0",
+              {
+                "op": "^",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "t_k",
+                      "mw_gas"
+                    ]
+                  },
+                  0.5
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "dg",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "par.dg_c0",
+                  {
+                    "op": "^",
+                    "args": [
+                      "t_k",
+                      "par.dg_texp"
+                    ]
+                  },
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "/",
+                            "args": [
+                              1.0,
+                              "mw_gas"
+                            ]
+                          },
+                          "par.dg_mw_add"
+                        ]
+                      },
+                      0.5
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "p_atm",
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "^",
+                            "args": [
+                              "v_molar",
+                              "par.dg_vm_exp"
+                            ]
+                          },
+                          "par.dg_vm_add"
+                        ]
+                      },
+                      2.0
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "freepath",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "par.freepath_c0",
+                  "dg"
+                ]
+              },
+              "speed"
+            ]
+          }
+        },
+        {
+          "lhs": "knudsen",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  2.0,
+                  "freepath"
+                ]
+              },
+              "dp_wet"
+            ]
+          }
+        },
+        {
+          "lhs": "fuchs_sutugin",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "par.fs_c0",
+                  "accom",
+                  {
+                    "op": "+",
+                    "args": [
+                      1.0,
+                      "knudsen"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "knudsen",
+                      "knudsen"
+                    ]
+                  },
+                  "knudsen",
+                  {
+                    "op": "*",
+                    "args": [
+                      "par.fs_c1",
+                      "knudsen",
+                      "accom"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "par.fs_c0",
+                      "accom"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "cdum",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "par.two_pi",
+              "dp_wet",
+              "num_conc"
+            ]
+          }
+        },
+        {
+          "lhs": "kg",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "cdum",
+              "dg",
+              "fuchs_sutugin"
+            ]
+          }
+        },
+        {
+          "lhs": "cond_rate",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "gas_conc",
+              "kg"
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "chem170_step1_lev1_bin1_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 1, size bin 1 of 8, gas H2SO4. Regime: T = 306.17 K, p = 0.9657 atm, wet diameter 6.13e-06 cm, number 35.83 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.1650695800781,
+            "p_atm": 0.9656776189804077,
+            "dp_wet": 6.129607299953932e-06,
+            "num_conc": 35.82890319824219,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 1.9570372794441138
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 2.6988814170181286e-06
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 5.281811809254577e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bin1_hno3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 1, size bin 1 of 8, gas HNO3. Regime: T = 306.17 K, p = 0.9657 atm, wet diameter 6.13e-06 cm, number 35.83 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.1650695800781,
+            "p_atm": 0.9656776189804077,
+            "dp_wet": 6.129607299953932e-06,
+            "num_conc": 35.82890319824219,
+            "mw_gas": 63.0,
+            "v_molar": 24.11,
+            "accom": 0.1,
+            "gas_conc": 2.7401189206297447
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 3.36739049089374e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bin1_nh3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 1, size bin 1 of 8, gas NH3. Regime: T = 306.17 K, p = 0.9657 atm, wet diameter 6.13e-06 cm, number 35.83 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.1650695800781,
+            "p_atm": 0.9656776189804077,
+            "dp_wet": 6.129607299953932e-06,
+            "num_conc": 35.82890319824219,
+            "mw_gas": 17.0,
+            "v_molar": 14.9,
+            "accom": 0.1,
+            "gas_conc": 0.19568194857308127
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 6.470936114055803e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bin4_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 1, size bin 4 of 8, gas H2SO4. Regime: T = 306.17 K, p = 0.9657 atm, wet diameter 4.913e-05 cm, number 4.597 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.1650695800781,
+            "p_atm": 0.9656776189804077,
+            "dp_wet": 4.912723306915723e-05,
+            "num_conc": 4.596672058105469,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 1.9570372794441138
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 2.046929148491472e-05
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 4.0059167076833546e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev1_bin7_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 1, size bin 7 of 8, gas H2SO4. Regime: T = 306.17 K, p = 0.9657 atm, wet diameter 0.0003513 cm, number 0.00428 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.1650695800781,
+            "p_atm": 0.9656776189804077,
+            "dp_wet": 0.00035130305332131684,
+            "num_conc": 0.00427962513640523,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 1.9570372794441138
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 5.790836894448148e-07
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 1.1332883786963066e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bin1_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 25, size bin 1 of 8, gas H2SO4. Regime: T = 286.62 K, p = 0.7382 atm, wet diameter 6.813e-06 cm, number 35.82 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 286.6180725097656,
+            "p_atm": 0.7382122278213501,
+            "dp_wet": 6.813042091380339e-06,
+            "num_conc": 35.81748580932617,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 1.5986449631739015
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 3.227212800993584e-06
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 5.1591673582152e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bin1_hno3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 25, size bin 1 of 8, gas HNO3. Regime: T = 286.62 K, p = 0.7382 atm, wet diameter 6.813e-06 cm, number 35.82 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 286.6180725097656,
+            "p_atm": 0.7382122278213501,
+            "dp_wet": 6.813042091380339e-06,
+            "num_conc": 35.81748580932617,
+            "mw_gas": 63.0,
+            "v_molar": 24.11,
+            "accom": 0.1,
+            "gas_conc": 2.238295100789649
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 4.026441274618264e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bin1_nh3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 25, size bin 1 of 8, gas NH3. Regime: T = 286.62 K, p = 0.7382 atm, wet diameter 6.813e-06 cm, number 35.82 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 286.6180725097656,
+            "p_atm": 0.7382122278213501,
+            "dp_wet": 6.813042091380339e-06,
+            "num_conc": 35.81748580932617,
+            "mw_gas": 17.0,
+            "v_molar": 14.9,
+            "accom": 0.1,
+            "gas_conc": 0.1598480362572573
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 7.738712156424299e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bin4_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 25, size bin 4 of 8, gas H2SO4. Regime: T = 286.62 K, p = 0.7382 atm, wet diameter 5.449e-05 cm, number 4.595 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 286.6180725097656,
+            "p_atm": 0.7382122278213501,
+            "dp_wet": 5.4485306463902816e-05,
+            "num_conc": 4.595207214355469,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 1.5986449631739015
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 2.4552649847464636e-05
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 3.925096825696528e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step1_lev25_bin7_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 1, level 25, size bin 7 of 8, gas H2SO4. Regime: T = 286.62 K, p = 0.7382 atm, wet diameter 0.0003513 cm, number 0.004278 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 286.6180725097656,
+            "p_atm": 0.7382122278213501,
+            "dp_wet": 0.00035130305332131684,
+            "num_conc": 0.004278261214494705,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 1.5986449631739015
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 6.096466904637055e-07
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 9.746086107043084e-07
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bin1_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 1, size bin 1 of 8, gas H2SO4. Regime: T = 306.70 K, p = 0.9652 atm, wet diameter 7.711e-06 cm, number 344.9 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.6976318359375,
+            "p_atm": 0.9652420878410339,
+            "dp_wet": 7.7108570621931e-06,
+            "num_conc": 344.8618469238281,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.062202861016910714
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 4.105007610633038e-05
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 2.553432068452821e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bin1_hno3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 1, size bin 1 of 8, gas HNO3. Regime: T = 306.70 K, p = 0.9652 atm, wet diameter 7.711e-06 cm, number 344.9 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.6976318359375,
+            "p_atm": 0.9652420878410339,
+            "dp_wet": 7.7108570621931e-06,
+            "num_conc": 344.8618469238281,
+            "mw_gas": 63.0,
+            "v_molar": 24.11,
+            "accom": 0.1,
+            "gas_conc": 1.7208482966704326
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 5.1224571507191285e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bin1_nh3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 1, size bin 1 of 8, gas NH3. Regime: T = 306.70 K, p = 0.9652 atm, wet diameter 7.711e-06 cm, number 344.9 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.6976318359375,
+            "p_atm": 0.9652420878410339,
+            "dp_wet": 7.7108570621931e-06,
+            "num_conc": 344.8618469238281,
+            "mw_gas": 17.0,
+            "v_molar": 14.9,
+            "accom": 0.1,
+            "gas_conc": 0.016532269258857174
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 9.837804827839136e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bin4_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 1, size bin 4 of 8, gas H2SO4. Regime: T = 306.70 K, p = 0.9652 atm, wet diameter 5.304e-05 cm, number 5.072 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.6976318359375,
+            "p_atm": 0.9652420878410339,
+            "dp_wet": 5.304286605678499e-05,
+            "num_conc": 5.0723748207092285,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.062202861016910714
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 2.614656841615215e-05
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 1.6263912812064518e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev1_bin7_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 1, size bin 7 of 8, gas H2SO4. Regime: T = 306.70 K, p = 0.9652 atm, wet diameter 0.0003501 cm, number 0.004356 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 306.6976318359375,
+            "p_atm": 0.9652420878410339,
+            "dp_wet": 0.0003501468454487622,
+            "num_conc": 0.004355897661298513,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.062202861016910714
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 5.877006969967624e-07
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 3.655665992141621e-08
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bin1_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 45, size bin 1 of 8, gas H2SO4. Regime: T = 257.02 K, p = 0.4140 atm, wet diameter 5.754e-06 cm, number 1585 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 257.01629638671875,
+            "p_atm": 0.41396763920783997,
+            "dp_wet": 5.754087851528311e-06,
+            "num_conc": 1585.0970458984375,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.01671072769575356
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 9.679838694864884e-05
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 1.6175715700228466e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bin1_hno3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 45, size bin 1 of 8, gas HNO3. Regime: T = 257.02 K, p = 0.4140 atm, wet diameter 5.754e-06 cm, number 1585 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 257.01629638671875,
+            "p_atm": 0.41396763920783997,
+            "dp_wet": 5.754087851528311e-06,
+            "num_conc": 1585.0970458984375,
+            "mw_gas": 63.0,
+            "v_molar": 24.11,
+            "accom": 0.1,
+            "gas_conc": 1.3296023545902773
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 0.00012074875121470541
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bin1_nh3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 45, size bin 1 of 8, gas NH3. Regime: T = 257.02 K, p = 0.4140 atm, wet diameter 5.754e-06 cm, number 1585 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 257.01629638671875,
+            "p_atm": 0.41396763920783997,
+            "dp_wet": 5.754087851528311e-06,
+            "num_conc": 1585.0970458984375,
+            "mw_gas": 17.0,
+            "v_molar": 14.9,
+            "accom": 0.1,
+            "gas_conc": 0.0014341556388624153
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 0.00023227250494528562
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bin4_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 45, size bin 4 of 8, gas H2SO4. Regime: T = 257.02 K, p = 0.4140 atm, wet diameter 4.599e-05 cm, number 4.456 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 257.01629638671875,
+            "p_atm": 0.41396763920783997,
+            "dp_wet": 4.599180829245597e-05,
+            "num_conc": 4.456056594848633,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.01671072769575356
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 1.6760775906732306e-05
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 2.8008477670482534e-07
+            }
+          ]
+        },
+        {
+          "id": "chem170_step601_lev45_bin7_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 601, level 45, size bin 7 of 8, gas H2SO4. Regime: T = 257.02 K, p = 0.4140 atm, wet diameter 0.0003515 cm, number 0.004144 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 257.01629638671875,
+            "p_atm": 0.41396763920783997,
+            "dp_wet": 0.0003514951094985008,
+            "num_conc": 0.004143755417317152,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.01671072769575356
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 6.615060783587978e-07
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 1.1054248183484106e-08
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bin1_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 2101, level 10, size bin 1 of 8, gas H2SO4. Regime: T = 302.42 K, p = 0.8954 atm, wet diameter 7.761e-06 cm, number 429.2 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 302.4187927246094,
+            "p_atm": 0.8954363465309143,
+            "dp_wet": 7.761397682770621e-06,
+            "num_conc": 429.1907958984375,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.019726258486212123
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 5.142717782291584e-05
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 1.0144658517674543e-06
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bin1_hno3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 2101, level 10, size bin 1 of 8, gas HNO3. Regime: T = 302.42 K, p = 0.8954 atm, wet diameter 7.761e-06 cm, number 429.2 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 302.4187927246094,
+            "p_atm": 0.8954363465309143,
+            "dp_wet": 7.761397682770621e-06,
+            "num_conc": 429.1907958984375,
+            "mw_gas": 63.0,
+            "v_molar": 24.11,
+            "accom": 0.1,
+            "gas_conc": 1.4296429828137323
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 6.417166878236458e-05
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bin1_nh3",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 2101, level 10, size bin 1 of 8, gas NH3. Regime: T = 302.42 K, p = 0.8954 atm, wet diameter 7.761e-06 cm, number 429.2 /cm3. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 302.4187927246094,
+            "p_atm": 0.8954363465309143,
+            "dp_wet": 7.761397682770621e-06,
+            "num_conc": 429.1907958984375,
+            "mw_gas": 17.0,
+            "v_molar": 14.9,
+            "accom": 0.1,
+            "gas_conc": 0.01751980620612767
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 0.00012326129944995046
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bin4_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 2101, level 10, size bin 4 of 8, gas H2SO4. Regime: T = 302.42 K, p = 0.8954 atm, wet diameter 5.476e-05 cm, number 4.808 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 302.4187927246094,
+            "p_atm": 0.8954363465309143,
+            "dp_wet": 5.475596117321402e-05,
+            "num_conc": 4.807894229888916,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.019726258486212123
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 2.6299112505512312e-05
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 5.187831106923113e-07
+            }
+          ]
+        },
+        {
+          "id": "chem170_step2101_lev10_bin7_h2so4",
+          "description": "Reference: the em_scm_xy chem_opt = 170 column of data/eqwefic/chem170_scm (fork branch earthsciml-instrumented-chem170, B20 fixed, GNU gfortran 13.3 REAL*4), dumped by the MOSAIC mass-transfer hook right after aerosolmtc at model step 2101, level 10, size bin 7 of 8, gas H2SO4. Regime: T = 302.42 K, p = 0.8954 atm, wet diameter 0.0003529 cm, number 0.003999 /cm3. cond_rate is checked against the dumped non-volatile condensation rate for this bin, which the model forms as gas*kg independently of this component's own product. Tolerance measured, not assumed: over the twenty-five cases kg agrees with WRF to 3.9e-8 median and 1.7e-7 worst in a zero-tolerance run, and cond_rate to 3.7e-8 / 1.5e-7, so the bound is 5e-7. The kernel is double precision inside WRF (kind=8), so the residual is the single-precision storage of the dumped inputs and of kg itself, not the arithmetic.",
+          "parameter_overrides": {
+            "t_k": 302.4187927246094,
+            "p_atm": 0.8954363465309143,
+            "dp_wet": 0.00035285091144032776,
+            "num_conc": 0.0039987703785300255,
+            "mw_gas": 98.0,
+            "v_molar": 42.88,
+            "accom": 0.1,
+            "gas_conc": 0.019726258486212123
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "tolerance": {
+            "rel": 5e-07
+          },
+          "assertions": [
+            {
+              "variable": "kg",
+              "time": 0.0,
+              "expected": 5.569602308241883e-07
+            },
+            {
+              "variable": "cond_rate",
+              "time": 0.0,
+              "expected": 1.0986741294516378e-08
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
