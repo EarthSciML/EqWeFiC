@@ -2343,9 +2343,24 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   `rel: 0.0` on every assertion whose absolute bound is meant to be the binding
   one**, and treat "asserted at zero tolerance" as a claim that requires
   `{"abs": 0.0, "rel": 0.0}`. Repo-wide at the time of writing: 3049 assertions
-  were `abs`-only and 2256 carried neither bound. The `components/land_surface`
-  tree was repaired in place (all 5511 still pass, so the claims were true, just
-  not enforced); the rest is outstanding and is a mechanical sidecar edit.
+  were `abs`-only and 2256 carried neither bound.
+  **`components/land_surface` and the whole of `couplings/` are repaired
+  (2026-09-23); `components/` elsewhere is with another agent.** Nothing went red
+  in either, so every claim was true and merely unenforced -- but the measured
+  effect is worth knowing before anyone treats the remaining work as urgent or as
+  pointless, because it is neither. Over `couplings/`'s 489 pre-existing
+  `abs`-only assertions: **397 had an absolute bound already tighter than
+  1e-6 x |expected|**, so the default never bound them and the pin changed nothing
+  numerically; **0 were numerically loosened by the default**; and **92 were
+  `{"abs": 0.0}` -- claims of exactness that the default silently relaxed to
+  1e-6 relative, 45 of them in `eqweather_scm.esm`, the stage-3 precursor.** So
+  the risk is concentrated almost entirely in `{"abs": 0.0}`: a bound written as a
+  number is usually its own protection, while a bound written as zero was never
+  enforced at all. **Grep for `"abs": 0.0` first** when repairing a directory. The
+  one place the default did loosen real numeric bounds was the frozen-column
+  coupling documents, by up to 4.05e6x on a `dsh2o_dt_phase` bounded at 1e-18
+  against an expectation of 4.05e-06 -- i.e. where an absolute bound is many
+  orders below the value, which is exactly the case an absolute bound is FOR.
 - **Choosing a reference step: ask whether there is a cancellation floor
   (FORTRAN_BUGS N99).** A reference step is squeezed from above by truncation
   (the finite-step answer is not the dt -> 0 one) and from below by
