@@ -500,3 +500,44 @@ tendency; and an inline assertion on a `constant: true` species errors rather th
 reading its parameter.  `HCl` and `NH3` -- inert in the CBM-Z gas phase once the
 three identity rows are gone -- are declared as reservoir species for that reason
 and are not asserted.
+
+## New Tiedtke: is the trigger a frozen state? (checked 2026-09-23, it is not)
+
+The N107 shape -- a quantity computed once and then held while the state it
+depends on evolves -- would be least visible in a convective TRIGGER, so it was
+checked explicitly rather than assumed absent.
+
+**It is absent, structurally.** `cu_ntiedtke_run` computes `zqsat`, calls
+`cumastrn` exactly once, and applies the result as `x + tendency*dt`.
+`cumastrn` runs each of its stages once in a straight line -- cuinin, cutypen,
+cuascn, cudlfsn, cuddrafn, closure, cuflxn, cudtdqn, cududvn -- and the closure
+RESCALES the mass fluxes it already has (`zmfs = zmfub1/zmfub`) rather than
+re-running the ascent. There is no loop, no sub-cycling and no internal
+integration, so there is no window during which anything could move underneath
+the trigger.
+
+**And absent empirically.** `nt_dt_probe.py` replays three convecting steps at
+`ESM_DT` = 60, 30, 6, 0.6 and 0.06 s. `ktype` and `kcbot` are identical at every
+dt in every column: the trigger does not depend on the step at all.
+
+**What DOES depend on dt** is the CAPE adjustment time scale, which the closure
+floors at the model step (`ztauc = max(ztmst, ztauc)`). The returned tendency
+therefore changes as dt falls and then stops dead:
+
+| step | 60 -> 30 s | 60 -> 6 s | 60 -> 0.6 s | 60 -> 0.06 s |
+|---|---|---|---|---|
+| 1 (deep, strongest) | 2.2e-2 | 9.9e-2 | 9.9e-2 | 9.9e-2 |
+| 601 (deep) | 1.0e-12 | 5.1e-12 | 4.7e-11 | 4.3e-10 |
+| 2101 (deep) | 4.1e-2 | 4.1e-2 | 4.1e-2 | 4.1e-2 |
+
+(as |r(dt) - r(60 s)| / max|r(60 s)| on `rthcuten`). That is a clamp releasing,
+not a splitting error: the dt -> 0 limit is exact and is REACHED at finite dt,
+below about 6 s. Step 601's `ztauc` already exceeds 60 s, so its floor never
+binds and only round-off moves.
+
+The **2.2e-2 to 9.9e-2** gap between WRF's own step and that limit is the number
+a stage-3 coupling needs. It is the same situation as GWDO's `deltim` in the
+wind-reversal limiter -- a PARAMETER of the tendency, visible in the argument
+list -- and not N107's hidden freeze. It is also distinct from N84, which is
+about the real32 cancellation in how WRF FORMS `rthcuten` and says nothing about
+dt. Recorded as FORTRAN_BUGS N111.
