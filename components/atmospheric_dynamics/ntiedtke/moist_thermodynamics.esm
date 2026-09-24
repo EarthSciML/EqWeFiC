@@ -2,92 +2,850 @@
   "esm": "1.1.0",
   "metadata": {
     "name": "ntiedtke_moist_thermodynamics",
-    "description": "The five mixed-phase thermodynamic functions of WRF's New Tiedtke scheme, the module functions at the foot of `phys/physics_mmm/cu_ntiedtke.F90` (WRF 4.8). Every moist calculation in the scheme -- the environmental saturation, the test parcel, the updraught condensation, the downdraught evaporation, the freezing of cloud water, the precipitation conversion -- goes through them, so they are factored into a template library that each component imports rather than restated.\n\nThe scheme's phase rule is a single smooth WEIGHT, `foealfa`, which is 1 above the freezing point, 0 at and below tmelt - 23 K, and the square of the linear ramp between. Everything else is that weight blended between a liquid and an ice branch: the latent heat (`foelhm`), the saturation vapour pressure (`foeewm`, two Magnus formulae), the Clausius-Clapeyron derivative scaled by L/cp (`foedem`), and the temperature rise per unit condensate (`foeldcpm`). Because ONE weight drives all four, a mixed-phase state is thermodynamically consistent by construction, and `foealfa` is written here once and applied by name in the other four.\n\nFREE-NAME CONTRACT. The bodies read the scheme's constants by the scoped names `par.tmelt`, `par.c2es`, `par.c3les`, `par.c3ies`, `par.c4les`, `par.c4ies`, `par.rtice`, `par.rtwat`, `par.r5alvcp`, `par.r5alscp`, `par.ralvdcp`, `par.ralsdcp`, `par.alv` and `par.als` -- that is, a consuming model MUST mount `ntiedtke_parameters.esm` under the key `par` and `lib/wrf_constants.esm` under `wrf`. It is the same keyed-factor convention the EarthSciDiscretizations column rules use for `dz`: a template library cannot mount a subsystem of its own, and threading fourteen constants through the parameter list of every call would drown the physics.\n\nThe argument is always a temperature and the functions are pointwise, so each applies elementwise to a shaped field as readily as to a scalar.",
+    "description": "The five mixed-phase thermodynamic functions of WRF's New Tiedtke scheme, and the Newton step towards saturation they are all in service of, the module functions at the foot of `phys/physics_mmm/cu_ntiedtke.F90` (WRF 4.8). Every moist calculation in the scheme -- the environmental saturation, the test parcel, the updraught condensation, the downdraught evaporation, the freezing of cloud water, the precipitation conversion -- goes through them, so they are factored into a template library that each component imports rather than restated.\n\nThe scheme's phase rule is a single smooth WEIGHT, `foealfa`, which is 1 above the freezing point, 0 at and below tmelt - 23 K, and the square of the linear ramp between. Everything else is that weight blended between a liquid and an ice branch: the latent heat (`foelhm`), the saturation vapour pressure (`foeewm`, two Magnus formulae), the Clausius-Clapeyron derivative scaled by L/cp (`foedem`), and the temperature rise per unit condensate (`foeldcpm`). Because ONE weight drives all four, a mixed-phase state is thermodynamically consistent by construction, and `foealfa` is written here once and applied by name in the other four.\n\nFREE-NAME CONTRACT. The bodies read the scheme's constants by the scoped names `par.tmelt`, `par.c2es`, `par.c3les`, `par.c3ies`, `par.c4les`, `par.c4ies`, `par.rtice`, `par.rtwat`, `par.r5alvcp`, `par.r5alscp`, `par.ralvdcp`, `par.ralsdcp`, `par.alv` and `par.als` -- that is, a consuming model MUST mount `ntiedtke_parameters.esm` under the key `par` and `lib/wrf_constants.esm` under `wrf`. It is the same keyed-factor convention the EarthSciDiscretizations column rules use for `dz`: a template library cannot mount a subsystem of its own, and threading fourteen constants through the parameter list of every call would drown the physics.\n\nThe argument is always a temperature and the functions are pointwise, so each applies elementwise to a shaped field as readily as to a scalar.\n\nThe library also carries the SATURATION NEWTON STEP itself -- `qsat_capped`, the two algebraically identical spellings `newton_increment_folded` and `newton_increment_scaled`, and the kcall = 0 environmental two-step adjustment `env_adjust_{T,q}` (and its mid state). They started in `saturation_adjustment.esm` and moved here when `cuinin.esm` turned out to need the same two steps over its own half-level axis: the adjustment is pointwise in (p, T, q), so the axis belongs to the consumer and the arithmetic belongs here.",
     "license": "MIT",
-    "tags": ["wrf", "convection", "new-tiedtke", "thermodynamics", "mixed-phase", "expression-templates"],
+    "tags": [
+      "wrf",
+      "convection",
+      "new-tiedtke",
+      "thermodynamics",
+      "mixed-phase",
+      "expression-templates"
+    ],
     "references": [
-      { "citation": "Tiedtke, M. (1989). A comprehensive mass flux scheme for cumulus parameterization in large-scale models. Mon. Wea. Rev. 117, 1779-1800.", "doi": "10.1175/1520-0493(1989)117<1779:ACMFSF>2.0.CO;2" },
-      { "citation": "NCAR/MMM-physics cu_ntiedtke.F90 (WRF 4.8 phys/physics_mmm submodule), functions foealfa, foelhm, foeewm, foedem, foeldcpm." }
+      {
+        "citation": "Tiedtke, M. (1989). A comprehensive mass flux scheme for cumulus parameterization in large-scale models. Mon. Wea. Rev. 117, 1779-1800.",
+        "doi": "10.1175/1520-0493(1989)117<1779:ACMFSF>2.0.CO;2"
+      },
+      {
+        "citation": "NCAR/MMM-physics cu_ntiedtke.F90 (WRF 4.8 phys/physics_mmm submodule), functions foealfa, foelhm, foeewm, foedem, foeldcpm."
+      }
     ]
   },
   "expression_templates": {
     "foealfa": {
-      "params": ["tt"],
+      "params": [
+        "tt"
+      ],
       "description": "Liquid fraction of the condensate at temperature tt: 1 for pure water at and above rtwat = tmelt, 0 for pure ice at and below rtice = tmelt - 23 K, and the SQUARE of the linear ramp in between, additionally capped at 1. The square makes the transition tangent to the ice branch at the cold end, so the phase weight has no kink there. The outer `min(1., ...)` is redundant given the inner clamp -- the ramp cannot exceed 1 once tt is clipped to [rtice, rtwat] -- and is transcribed because the Fortran writes it.",
       "body": {
-        "op": "min", "args": [1.0,
-          { "op": "^", "args": [
-            { "op": "/", "args": [
-              { "op": "-", "args": [
-                { "op": "max", "args": ["par.rtice", { "op": "min", "args": ["par.rtwat", "tt"] }] },
-                "par.rtice"] },
-              { "op": "-", "args": ["par.rtwat", "par.rtice"] }] },
-            2] }]
+        "op": "min",
+        "args": [
+          1.0,
+          {
+            "op": "^",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "max",
+                        "args": [
+                          "par.rtice",
+                          {
+                            "op": "min",
+                            "args": [
+                              "par.rtwat",
+                              "tt"
+                            ]
+                          }
+                        ]
+                      },
+                      "par.rtice"
+                    ]
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      "par.rtwat",
+                      "par.rtice"
+                    ]
+                  }
+                ]
+              },
+              2
+            ]
+          }
+        ]
       }
     },
     "foelhm": {
-      "params": ["tt"],
+      "params": [
+        "tt"
+      ],
       "description": "Effective latent heat at temperature tt, the liquid fraction blend of the latent heat of vaporisation and of sublimation.",
       "body": {
-        "op": "+", "args": [
-          { "op": "*", "args": [
-            { "op": "apply_expression_template", "args": [], "name": "foealfa", "bindings": { "tt": "tt" } },
-            "wrf.xlv"] },
-          { "op": "*", "args": [
-            { "op": "-", "args": [1.0,
-              { "op": "apply_expression_template", "args": [], "name": "foealfa", "bindings": { "tt": "tt" } }] },
-            "wrf.xls"] }]
+        "op": "+",
+        "args": [
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "foealfa",
+                "bindings": {
+                  "tt": "tt"
+                }
+              },
+              "wrf.xlv"
+            ]
+          },
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foealfa",
+                    "bindings": {
+                      "tt": "tt"
+                    }
+                  }
+                ]
+              },
+              "wrf.xls"
+            ]
+          }
+        ]
       }
     },
     "foeewm": {
-      "params": ["tt"],
+      "params": [
+        "tt"
+      ],
       "description": "Saturation vapour pressure at temperature tt, already multiplied by R_d/R_v so that dividing by the pressure gives a saturation MIXING RATIO directly: c2es times the liquid-fraction blend of the two Magnus formulae, exp(c3les (T - tmelt)/(T - c4les)) over water and exp(c3ies (T - tmelt)/(T - c4ies)) over ice. Its constants are the ones FORTRAN_BUGS N109 is about: tmelt and the four Magnus coefficients are default-real literals, and carrying their decimals instead of their binary32 roundings misses the kernel by 2.6e-7 relative.",
       "body": {
-        "op": "*", "args": ["par.c2es",
-          { "op": "+", "args": [
-            { "op": "*", "args": [
-              { "op": "apply_expression_template", "args": [], "name": "foealfa", "bindings": { "tt": "tt" } },
-              { "op": "exp", "args": [{ "op": "/", "args": [
-                { "op": "*", "args": ["par.c3les", { "op": "-", "args": ["tt", "par.tmelt"] }] },
-                { "op": "-", "args": ["tt", "par.c4les"] }] }] }] },
-            { "op": "*", "args": [
-              { "op": "-", "args": [1.0,
-                { "op": "apply_expression_template", "args": [], "name": "foealfa", "bindings": { "tt": "tt" } }] },
-              { "op": "exp", "args": [{ "op": "/", "args": [
-                { "op": "*", "args": ["par.c3ies", { "op": "-", "args": ["tt", "par.tmelt"] }] },
-                { "op": "-", "args": ["tt", "par.c4ies"] }] }] }] }] }]
+        "op": "*",
+        "args": [
+          "par.c2es",
+          {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foealfa",
+                    "bindings": {
+                      "tt": "tt"
+                    }
+                  },
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.c3les",
+                              {
+                                "op": "-",
+                                "args": [
+                                  "tt",
+                                  "par.tmelt"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "-",
+                            "args": [
+                              "tt",
+                              "par.c4les"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "apply_expression_template",
+                        "args": [],
+                        "name": "foealfa",
+                        "bindings": {
+                          "tt": "tt"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.c3ies",
+                              {
+                                "op": "-",
+                                "args": [
+                                  "tt",
+                                  "par.tmelt"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "-",
+                            "args": [
+                              "tt",
+                              "par.c4ies"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       }
     },
     "foedem": {
-      "params": ["tt"],
+      "params": [
+        "tt"
+      ],
       "description": "Clausius-Clapeyron derivative of the saturation mixing ratio with respect to temperature, already scaled by L/cp: the liquid-fraction blend of r5alvcp/(T - c4les)^2 and r5alscp/(T - c4ies)^2. It is the denominator term of the Newton step in the moist adjustment -- the amount by which saturation moves when the latent heat released warms the parcel.",
       "body": {
-        "op": "+", "args": [
-          { "op": "*", "args": [
-            { "op": "apply_expression_template", "args": [], "name": "foealfa", "bindings": { "tt": "tt" } },
-            "par.r5alvcp",
-            { "op": "/", "args": [1.0,
-              { "op": "^", "args": [{ "op": "-", "args": ["tt", "par.c4les"] }, 2] }] }] },
-          { "op": "*", "args": [
-            { "op": "-", "args": [1.0,
-              { "op": "apply_expression_template", "args": [], "name": "foealfa", "bindings": { "tt": "tt" } }] },
-            "par.r5alscp",
-            { "op": "/", "args": [1.0,
-              { "op": "^", "args": [{ "op": "-", "args": ["tt", "par.c4ies"] }, 2] }] }] }]
+        "op": "+",
+        "args": [
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "foealfa",
+                "bindings": {
+                  "tt": "tt"
+                }
+              },
+              "par.r5alvcp",
+              {
+                "op": "/",
+                "args": [
+                  1.0,
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "tt",
+                          "par.c4les"
+                        ]
+                      },
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foealfa",
+                    "bindings": {
+                      "tt": "tt"
+                    }
+                  }
+                ]
+              },
+              "par.r5alscp",
+              {
+                "op": "/",
+                "args": [
+                  1.0,
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "tt",
+                          "par.c4ies"
+                        ]
+                      },
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       }
     },
     "foeldcpm": {
-      "params": ["tt"],
+      "params": [
+        "tt"
+      ],
       "description": "Temperature rise per unit condensed mixing ratio, L/cp, blended by the liquid fraction between L_v/cp and L_s/cp. It is `foelhm` divided by cp, written separately because that is how the scheme writes it.",
       "body": {
-        "op": "+", "args": [
-          { "op": "*", "args": [
-            { "op": "apply_expression_template", "args": [], "name": "foealfa", "bindings": { "tt": "tt" } },
-            "par.ralvdcp"] },
-          { "op": "*", "args": [
-            { "op": "-", "args": [1.0,
-              { "op": "apply_expression_template", "args": [], "name": "foealfa", "bindings": { "tt": "tt" } }] },
-            "par.ralsdcp"] }]
+        "op": "+",
+        "args": [
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "foealfa",
+                "bindings": {
+                  "tt": "tt"
+                }
+              },
+              "par.ralvdcp"
+            ]
+          },
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foealfa",
+                    "bindings": {
+                      "tt": "tt"
+                    }
+                  }
+                ]
+              },
+              "par.ralsdcp"
+            ]
+          }
+        ]
+      }
+    },
+    "qsat_capped": {
+      "params": [
+        "tt",
+        "pp"
+      ],
+      "description": "Saturation mixing ratio at (tt, pp), capped at qmax = 0.5: `min(0.5, foeewm(tt)/pp)`. The cap is the scheme's guard against the Magnus formula running away at high temperature and low pressure; it is far from binding anywhere in the reference set.",
+      "body": {
+        "op": "min",
+        "args": [
+          "par.qmax",
+          {
+            "op": "/",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "foeewm",
+                "bindings": {
+                  "tt": "tt"
+                }
+              },
+              "pp"
+            ]
+          }
+        ]
+      }
+    },
+    "newton_increment_folded": {
+      "params": [
+        "tt",
+        "qq",
+        "pp"
+      ],
+      "description": "The Newton increment towards saturation in the spelling the kcall = 0 and kcall = 2 branches use: the virtual-temperature correction is INVERTED and folded into the saturation mixing ratio first, q_sat <- q_sat/(1 - eps q_sat), and the increment is then (q - q_sat)/(1 + q_sat zcor foedem). Algebraically identical to `newton_increment_scaled`; kept separate only so that neither branch of the Fortran is a re-derivation of the other.",
+      "body": {
+        "op": "/",
+        "args": [
+          {
+            "op": "-",
+            "args": [
+              "qq",
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "qsat_capped",
+                    "bindings": {
+                      "tt": "tt",
+                      "pp": "pp"
+                    }
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "-",
+                        "args": [
+                          1.0,
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.vtmpc1",
+                              {
+                                "op": "apply_expression_template",
+                                "args": [],
+                                "name": "qsat_capped",
+                                "bindings": {
+                                  "tt": "tt",
+                                  "pp": "pp"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "+",
+            "args": [
+              1.0,
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "qsat_capped",
+                    "bindings": {
+                      "tt": "tt",
+                      "pp": "pp"
+                    }
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "-",
+                        "args": [
+                          1.0,
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.vtmpc1",
+                              {
+                                "op": "apply_expression_template",
+                                "args": [],
+                                "name": "qsat_capped",
+                                "bindings": {
+                                  "tt": "tt",
+                                  "pp": "pp"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "-",
+                        "args": [
+                          1.0,
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.vtmpc1",
+                              {
+                                "op": "apply_expression_template",
+                                "args": [],
+                                "name": "qsat_capped",
+                                "bindings": {
+                                  "tt": "tt",
+                                  "pp": "pp"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foedem",
+                    "bindings": {
+                      "tt": "tt"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "newton_increment_scaled": {
+      "params": [
+        "tt",
+        "qq",
+        "pp"
+      ],
+      "description": "The same Newton increment in the spelling the kcall = 1 branch uses: the virtual-temperature correction zcor = 1 - eps q_sat is left un-inverted and multiplied through, giving (q zcor^2 - q_sat zcor)/(zcor^2 + q_sat foedem). Multiplying `newton_increment_folded` above and below by zcor^2 turns it into this, so the two are one formula in two arrangements and agree to round-off.",
+      "body": {
+        "op": "/",
+        "args": [
+          {
+            "op": "-",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "qq",
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          1.0,
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.vtmpc1",
+                              {
+                                "op": "apply_expression_template",
+                                "args": [],
+                                "name": "qsat_capped",
+                                "bindings": {
+                                  "tt": "tt",
+                                  "pp": "pp"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      2
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "qsat_capped",
+                    "bindings": {
+                      "tt": "tt",
+                      "pp": "pp"
+                    }
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "*",
+                        "args": [
+                          "par.vtmpc1",
+                          {
+                            "op": "apply_expression_template",
+                            "args": [],
+                            "name": "qsat_capped",
+                            "bindings": {
+                              "tt": "tt",
+                              "pp": "pp"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "+",
+            "args": [
+              {
+                "op": "^",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "*",
+                        "args": [
+                          "par.vtmpc1",
+                          {
+                            "op": "apply_expression_template",
+                            "args": [],
+                            "name": "qsat_capped",
+                            "bindings": {
+                              "tt": "tt",
+                              "pp": "pp"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  2
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "qsat_capped",
+                    "bindings": {
+                      "tt": "tt",
+                      "pp": "pp"
+                    }
+                  },
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foedem",
+                    "bindings": {
+                      "tt": "tt"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "env_adjust_T_mid": {
+      "params": [
+        "tt",
+        "qq",
+        "pp"
+      ],
+      "description": "Temperature after the FIRST of cuadjtqn's two Newton steps in the kcall = 0 (environment) mode: tt + (L/cp)(tt) times the unconditional saturation increment. Factored out because both the pointwise `saturation_adjustment.esm` and the half-level initialisation in `cuinin.esm` apply the same two steps, and the second step is a function of this one.",
+      "body": {
+        "op": "+",
+        "args": [
+          "tt",
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "foeldcpm",
+                "bindings": {
+                  "tt": "tt"
+                }
+              },
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "newton_increment_folded",
+                "bindings": {
+                  "tt": "tt",
+                  "qq": "qq",
+                  "pp": "pp"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "env_adjust_q_mid": {
+      "params": [
+        "tt",
+        "qq",
+        "pp"
+      ],
+      "description": "Mixing ratio after the first of the two environmental Newton steps.",
+      "body": {
+        "op": "-",
+        "args": [
+          "qq",
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "newton_increment_folded",
+            "bindings": {
+              "tt": "tt",
+              "qq": "qq",
+              "pp": "pp"
+            }
+          }
+        ]
+      }
+    },
+    "env_adjust_T": {
+      "params": [
+        "tt",
+        "qq",
+        "pp"
+      ],
+      "description": "Temperature after BOTH environmental Newton steps -- the kcall = 0 result of cuadjtqn. The second increment is evaluated at the mid state and is likewise unconditional and unsigned, which is what distinguishes this mode from the updraught's condensation-only and the downdraught's evaporation-only forms.",
+      "body": {
+        "op": "+",
+        "args": [
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "env_adjust_T_mid",
+            "bindings": {
+              "tt": "tt",
+              "qq": "qq",
+              "pp": "pp"
+            }
+          },
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "foeldcpm",
+                "bindings": {
+                  "tt": {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "env_adjust_T_mid",
+                    "bindings": {
+                      "tt": "tt",
+                      "qq": "qq",
+                      "pp": "pp"
+                    }
+                  }
+                }
+              },
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "newton_increment_folded",
+                "bindings": {
+                  "tt": {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "env_adjust_T_mid",
+                    "bindings": {
+                      "tt": "tt",
+                      "qq": "qq",
+                      "pp": "pp"
+                    }
+                  },
+                  "qq": {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "env_adjust_q_mid",
+                    "bindings": {
+                      "tt": "tt",
+                      "qq": "qq",
+                      "pp": "pp"
+                    }
+                  },
+                  "pp": "pp"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "env_adjust_q": {
+      "params": [
+        "tt",
+        "qq",
+        "pp"
+      ],
+      "description": "Mixing ratio after both environmental Newton steps -- the kcall = 0 result of cuadjtqn.",
+      "body": {
+        "op": "-",
+        "args": [
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "env_adjust_q_mid",
+            "bindings": {
+              "tt": "tt",
+              "qq": "qq",
+              "pp": "pp"
+            }
+          },
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "newton_increment_folded",
+            "bindings": {
+              "tt": {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "env_adjust_T_mid",
+                "bindings": {
+                  "tt": "tt",
+                  "qq": "qq",
+                  "pp": "pp"
+                }
+              },
+              "qq": {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "env_adjust_q_mid",
+                "bindings": {
+                  "tt": "tt",
+                  "qq": "qq",
+                  "pp": "pp"
+                }
+              },
+              "pp": "pp"
+            }
+          }
+        ]
       }
     }
   }

@@ -1,0 +1,3563 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "NTiedtkeColumnInitialization",
+    "description": "`cuinin`, the routine that builds the grid New Tiedtke's mass-flux scheme actually works on (`phys/physics_mmm/cu_ntiedtke.F90:1091-1216`, WRF 4.8). Everything above it in the scheme -- the trigger, the updraught, the downdraught, the fluxes -- reads HALF-LEVEL environmental values, and this is where they come from.\n\nThree things happen, and only the first is interpolation.\n\n1. HALF-LEVEL VALUES BY DRY STATIC ENERGY, not by temperature. The half-level temperature is taken from the LARGER of the two adjacent layers' dry static energies, s = cp T + phi, and converted back at the interface geopotential: T_h = (max(s[k-1], s[k]) - phi_h)/cp. Interpolating s rather than T is what makes the half-level value conserve the quantity a vertical displacement conserves; taking the maximum is the first half of the static-stability adjustment. The half-level humidity starts as the UPPER layer's value, and the half-level saturation value likewise.\n\n2. THE HALF-LEVEL PAIR IS PUT ON ITS SATURATION CURVE, by the kcall = 0 mode of `cuadjtqn` -- the same two Newton steps `saturation_adjustment.esm` pins, applied here over the column's own axis through the shared templates rather than restated. The humidity is then reconstructed as min(q, q_sat) of the upper layer plus whatever the adjustment moved q_sat by, floored at zero: the half level inherits the layer's SUBSATURATION, not its mixing ratio. The adjustment runs only over 2 <= k <= NLEV-2; the Fortran's `if (jk >= klev-1 .or. jk < 2) cycle` skips it at the two lowest half levels AND skips the humidity reconstruction with it, so those keep the raw upper-layer value.\n\n3. THE COLUMN IS MADE STATICALLY STABLE, by a running maximum of the half-level dry static energy taken from the SURFACE UPWARD. The Fortran writes it as a downward sweep, `s[jk] <- max(s[jk], s[jk+1])` for jk = klev-1 .. 2, which reads the cell it wrote on the previous iteration and so looks like a recurrence. It is not one: unrolling it gives s[k] = max over j >= k of the ORIGINAL s[j], whose terms do not depend on the result, so it is a reverse prefix reduction (esm-spec 4.3.1.1 reserves recurrences for folds whose next term is a function of the previous ANSWER, which this is not). It is written here as that reduction. `max` is exactly associative, so the reverse-scan reassociation caveat of esm-spec 4.3.1 does not apply.\n\nThe level of strongest ascent, `klwmin`, is likewise a scan in the Fortran and an argmin here: the level in [3, NLEV] where omega is most negative, and the SURFACE level when the column is nowhere ascending. Because the scan updates only on a STRICT improvement and runs from the surface upward, a tie is kept by the LOWEST of the tied levels, which is what the aggregate below reproduces.\n\nVERTICAL ORDERING IS THE SCHEME'S, TOP-DOWN: index 1 is the model top and index NLEV the surface, the ordering `cu_ntiedtke_pre_run` builds and every routine inside the scheme uses. The components of this scheme keep it, and the reversal back to WRF's bottom-up ordering happens once, at the tendency stage, exactly as `cu_ntiedtke_post_run` does it. No continuous vertical operator appears here, so no grid is imported; the stages that do have one will supply a monotone coordinate in this same ordering, which pressure is.\n\nTWO PLACES WHERE THE FORTRAN LEAVES SOMETHING UNDEFINED, both reproduced rather than tidied. `pqsenh(:,1)` is never assigned by `cuinin` although the array is `intent(out)`, so its top-level entry is whatever memory held; this component sets it to the top layer's saturation value, the natural extension of how the top entries of T_h and q_h are set, and the tests mask that one entry rather than pretend to match uninitialised memory. And `cumastrn` declares `pqsen` as `dimension(klon)` while every routine it hands it to declares it `dimension(klon,klev)` -- legal by Fortran sequence association, and harmless only because `cumastrn` never indexes it itself (FORTRAN_BUGS N110).",
+    "license": "MIT",
+    "tags": [
+      "wrf",
+      "convection",
+      "new-tiedtke",
+      "half-levels",
+      "static-stability",
+      "column"
+    ],
+    "references": [
+      {
+        "citation": "Tiedtke, M. (1989). A comprehensive mass flux scheme for cumulus parameterization in large-scale models. Mon. Wea. Rev. 117, 1779-1800.",
+        "doi": "10.1175/1520-0493(1989)117<1779:ACMFSF>2.0.CO;2"
+      },
+      {
+        "citation": "NCAR/MMM-physics cu_ntiedtke.F90 (WRF 4.8 phys/physics_mmm submodule), subroutine cuinin."
+      }
+    ]
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 59,
+      "description": "Number of model layers in the scheme's own top-down ordering (the kernel's klev); 59 is the chem170 single-column reference. The half-level arrays paph and geoh have NLEV+1 entries."
+    }
+  },
+  "index_sets": {
+    "lev": {
+      "kind": "interval",
+      "size": "NLEV"
+    },
+    "lev_nodes": {
+      "kind": "interval",
+      "size": {
+        "op": "+",
+        "args": [
+          "NLEV",
+          1
+        ]
+      }
+    }
+  },
+  "models": {
+    "NTiedtkeColumnInitialization": {
+      "expression_template_imports": [
+        {
+          "ref": "./moist_thermodynamics.esm"
+        }
+      ],
+      "subsystems": {
+        "wrf": {
+          "ref": "../../../lib/wrf_constants.esm"
+        },
+        "par": {
+          "ref": "./ntiedtke_parameters.esm"
+        }
+      },
+      "variables": {
+        "T": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer temperature at the start of the convection step, top-down."
+        },
+        "q": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer water-vapour mixing ratio."
+        },
+        "qs": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer saturation mixing ratio, which `cu_ntiedtke_run` computes before calling `cumastrn` and passes straight through."
+        },
+        "u": {
+          "type": "unknown",
+          "units": "m/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer zonal wind."
+        },
+        "v": {
+          "type": "unknown",
+          "units": "m/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer meridional wind."
+        },
+        "omega": {
+          "type": "unknown",
+          "units": "Pa/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer vertical velocity in pressure coordinates; NEGATIVE is ascent, which is why the level of strongest ascent is a minimum."
+        },
+        "geo": {
+          "type": "unknown",
+          "units": "m^2/s^2",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer geopotential."
+        },
+        "paph": {
+          "type": "unknown",
+          "units": "Pa",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "Half-level pressure, increasing with the index because the ordering is top-down."
+        },
+        "geoh": {
+          "type": "unknown",
+          "units": "m^2/s^2",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "Half-level geopotential."
+        },
+        "ph": {
+          "type": "unknown",
+          "units": "Pa",
+          "shape": [
+            "lev"
+          ],
+          "description": "Half-level pressure at the interface that bounds layer k from above, i.e. `paph` read over the LAYER axis. The scheme's half-level fields are layer-shaped and indexed by the layer they sit above, so this gather is the bridge between the NLEV+1 interface array WRF supplies and the NLEV-long half-level fields cuinin builds."
+        },
+        "geoh_lev": {
+          "type": "unknown",
+          "units": "m^2/s^2",
+          "shape": [
+            "lev"
+          ],
+          "description": "Half-level geopotential read over the layer axis, the counterpart of `ph`."
+        },
+        "s_layer": {
+          "type": "unknown",
+          "units": "m^2/s^2",
+          "shape": [
+            "lev"
+          ],
+          "description": "Dry static energy of the layer, cp T + phi: the quantity conserved by a dry adiabatic displacement, and therefore the one the scheme interpolates instead of temperature."
+        },
+        "T_h0": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "description": "Half-level temperature before the saturation adjustment: the LARGER of the two adjacent layers' dry static energies brought to the interface geopotential. The maximum is the first half of the static-stability adjustment. The top entry is the top layer's temperature."
+        },
+        "qs_h0": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Half-level saturation mixing ratio before the adjustment: the upper layer's value. Its TOP entry is never assigned by the Fortran; it is set here to the top layer's value and masked out of the tests."
+        },
+        "adjusted": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "1 at the half levels where `cuinin` actually calls the moist adjustment, 2 <= k <= NLEV-2. The Fortran's `cycle` skips the call AND the humidity reconstruction that follows it at the two lowest half levels and at the top."
+        },
+        "T_h1": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "description": "Half-level temperature after the environmental moist adjustment. The adjustment moves the TEMPERATURE as well as the saturation value, because `cuadjtqn` updates both of its arguments -- easy to miss, since the call reads as if it were only computing q_sat at half levels."
+        },
+        "qs_h": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Half-level saturation mixing ratio after the adjustment."
+        },
+        "q_h": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Half-level water-vapour mixing ratio. Where the adjustment ran it is the upper layer's SUBSATURATION carried to the half level -- min(q, q_sat) of that layer plus however far the adjustment moved q_sat -- floored at zero; elsewhere it is the upper layer's mixing ratio, and at the two ends the adjacent layer's own."
+        },
+        "T_h2": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "description": "Half-level temperature with the SURFACE entry replaced by the bottom layer's dry static energy alone, without the maximum -- there is no layer below it to take a maximum against."
+        },
+        "s_half": {
+          "type": "unknown",
+          "units": "m^2/s^2",
+          "shape": [
+            "lev"
+          ],
+          "description": "Dry static energy at the half levels, before the stability sweep."
+        },
+        "s_stable": {
+          "type": "unknown",
+          "units": "m^2/s^2",
+          "shape": [
+            "lev"
+          ],
+          "description": "Running maximum of the half-level dry static energy from the SURFACE upward: max over j >= k of s_half[j]. This is the Fortran's downward sweep unrolled; it makes the profile non-decreasing upward, which is the definition of dry static stability."
+        },
+        "T_h": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "description": "FINAL half-level temperature, from the stabilised dry static energy. The top and surface entries are left as they were, exactly as the Fortran's loop bounds leave them."
+        },
+        "wmin": {
+          "type": "unknown",
+          "units": "Pa/s",
+          "description": "Most negative omega in [3, NLEV], i.e. the strongest ascent in the column below the third level from the top."
+        },
+        "klwmin": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Level of strongest ascent, or the SURFACE level when nothing in [3, NLEV] is ascending. The Fortran finds it by a surface-to-top scan that updates only on a strict improvement, so among tied levels it keeps the one nearest the surface -- the LARGEST index in this top-down ordering."
+        },
+        "Tu": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "description": "Updraught temperature, initialised to the half-level environment."
+        },
+        "Td": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "description": "Downdraught temperature, initialised to the same."
+        },
+        "qu": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Updraught mixing ratio, initialised to the half-level environment."
+        },
+        "qd": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Downdraught mixing ratio, initialised to the same."
+        },
+        "lu": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Updraught condensate, initialised to zero."
+        },
+        "uu": {
+          "type": "unknown",
+          "units": "m/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Updraught zonal wind, initialised to the layer ABOVE the half level (the upper layer), with the top half level taking the top layer."
+        },
+        "ud": {
+          "type": "unknown",
+          "units": "m/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Downdraught zonal wind, initialised to the same."
+        },
+        "vu": {
+          "type": "unknown",
+          "units": "m/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Updraught meridional wind, initialised to the upper layer's."
+        },
+        "vd": {
+          "type": "unknown",
+          "units": "m/s",
+          "shape": [
+            "lev"
+          ],
+          "description": "Downdraught meridional wind, initialised to the same."
+        },
+        "lab": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "Cloud-layer label, initialised to zero everywhere; the trigger and the updraught set it to 1 below cloud base and 2 in the cloud."
+        },
+        "qs_h_defined": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "`qs_h` with its TOP entry zeroed. `cuinin` never assigns `pqsenh(:,1)` although the array is `intent(out)`, so the Fortran's top entry is whatever memory held and there is nothing there to compare against; this is the field the tests assert, with the same entry zeroed on the reference side, so that every entry the Fortran actually defines is pinned and the one it does not is not pretended to match."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "T",
+          "rhs": {
+            "op": "input_ci_T",
+            "args": []
+          }
+        },
+        {
+          "lhs": "q",
+          "rhs": {
+            "op": "input_ci_q",
+            "args": []
+          }
+        },
+        {
+          "lhs": "qs",
+          "rhs": {
+            "op": "input_ci_qs",
+            "args": []
+          }
+        },
+        {
+          "lhs": "u",
+          "rhs": {
+            "op": "input_ci_u",
+            "args": []
+          }
+        },
+        {
+          "lhs": "v",
+          "rhs": {
+            "op": "input_ci_v",
+            "args": []
+          }
+        },
+        {
+          "lhs": "omega",
+          "rhs": {
+            "op": "input_ci_omega",
+            "args": []
+          }
+        },
+        {
+          "lhs": "geo",
+          "rhs": {
+            "op": "input_ci_geo",
+            "args": []
+          }
+        },
+        {
+          "lhs": "paph",
+          "rhs": {
+            "op": "input_ci_paph",
+            "args": []
+          }
+        },
+        {
+          "lhs": "geoh",
+          "rhs": {
+            "op": "input_ci_geoh",
+            "args": []
+          }
+        },
+        {
+          "lhs": "ph",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "paph"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "paph",
+                "k"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "geoh_lev",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "geoh"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "geoh",
+                "k"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "s_layer",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "wrf.cp",
+                  "T"
+                ]
+              },
+              "geo"
+            ]
+          }
+        },
+        {
+          "lhs": "T_h0",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "s_layer",
+              "geoh",
+              "T"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": ">=",
+                  "args": [
+                    "k",
+                    2
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        {
+                          "op": "max",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "s_layer",
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "k",
+                                    1
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "s_layer",
+                                "k"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "geoh",
+                            "k"
+                          ]
+                        }
+                      ]
+                    },
+                    "par.rcpd"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "T",
+                    1
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "qs_h0",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "qs"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "qs",
+                {
+                  "op": "max",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        "k",
+                        1
+                      ]
+                    },
+                    1
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "adjusted",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "op": ">=",
+                      "args": [
+                        "k",
+                        2
+                      ]
+                    },
+                    {
+                      "op": "<=",
+                      "args": [
+                        "k",
+                        {
+                          "op": "-",
+                          "args": [
+                            "NLEV",
+                            2
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                1.0,
+                0.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "T_h1",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "adjusted",
+                  0.0
+                ]
+              },
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "env_adjust_T",
+                "bindings": {
+                  "tt": "T_h0",
+                  "qq": "qs_h0",
+                  "pp": "ph"
+                }
+              },
+              "T_h0"
+            ]
+          }
+        },
+        {
+          "lhs": "qs_h",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "adjusted",
+                  0.0
+                ]
+              },
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "env_adjust_q",
+                "bindings": {
+                  "tt": "T_h0",
+                  "qq": "qs_h0",
+                  "pp": "ph"
+                }
+              },
+              "qs_h0"
+            ]
+          }
+        },
+        {
+          "lhs": "q_h",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "q",
+              "qs",
+              "qs_h",
+              "adjusted"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "==",
+                  "args": [
+                    "k",
+                    1
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    1
+                  ]
+                },
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        "k",
+                        "NLEV"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "q",
+                        "NLEV"
+                      ]
+                    },
+                    {
+                      "op": "ifelse",
+                      "args": [
+                        {
+                          "op": ">",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "adjusted",
+                                "k"
+                              ]
+                            },
+                            0.0
+                          ]
+                        },
+                        {
+                          "op": "max",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "min",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "q",
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "k",
+                                            1
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "qs",
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "k",
+                                            1
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "qs_h",
+                                        "k"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "qs",
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "k",
+                                            1
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            0.0
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "q",
+                            {
+                              "op": "-",
+                              "args": [
+                                "k",
+                                1
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "T_h2",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "T_h1",
+              "s_layer",
+              "geoh"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "==",
+                  "args": [
+                    "k",
+                    "NLEV"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "s_layer",
+                            "NLEV"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "geoh",
+                            "NLEV"
+                          ]
+                        }
+                      ]
+                    },
+                    "par.rcpd"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "T_h1",
+                    "k"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "s_half",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "wrf.cp",
+                  "T_h2"
+                ]
+              },
+              "geoh_lev"
+            ]
+          }
+        },
+        {
+          "lhs": "s_stable",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "reduce": "max",
+            "args": [
+              "s_half"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "j": {
+                "from": "lev"
+              }
+            },
+            "filter": {
+              "op": ">=",
+              "args": [
+                "j",
+                "k"
+              ]
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "s_half",
+                "j"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "T_h",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "s_stable",
+              "geoh",
+              "T_h2"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "op": ">=",
+                      "args": [
+                        "k",
+                        2
+                      ]
+                    },
+                    {
+                      "op": "<=",
+                      "args": [
+                        "k",
+                        {
+                          "op": "-",
+                          "args": [
+                            "NLEV",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "s_stable",
+                            "k"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "geoh",
+                            "k"
+                          ]
+                        }
+                      ]
+                    },
+                    "par.rcpd"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "T_h2",
+                    "k"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "wmin",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [],
+            "reduce": "min",
+            "args": [
+              "omega"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "filter": {
+              "op": ">=",
+              "args": [
+                "k",
+                3
+              ]
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "omega",
+                "k"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "klwmin",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<",
+                "args": [
+                  "wmin",
+                  0.0
+                ]
+              },
+              {
+                "op": "faq",
+                "output_idx": [],
+                "reduce": "max",
+                "args": [
+                  "omega"
+                ],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "filter": {
+                  "op": "and",
+                  "args": [
+                    {
+                      "op": ">=",
+                      "args": [
+                        "k",
+                        3
+                      ]
+                    },
+                    {
+                      "op": "==",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "omega",
+                            "k"
+                          ]
+                        },
+                        "wmin"
+                      ]
+                    }
+                  ]
+                },
+                "expr": "k"
+              },
+              "NLEV"
+            ]
+          }
+        },
+        {
+          "lhs": "Tu",
+          "rhs": "T_h"
+        },
+        {
+          "lhs": "Td",
+          "rhs": "T_h"
+        },
+        {
+          "lhs": "qu",
+          "rhs": "q_h"
+        },
+        {
+          "lhs": "qd",
+          "rhs": "q_h"
+        },
+        {
+          "lhs": "lu",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0
+          }
+        },
+        {
+          "lhs": "uu",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "u"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "u",
+                {
+                  "op": "max",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        "k",
+                        1
+                      ]
+                    },
+                    1
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "vu",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "v"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "v",
+                {
+                  "op": "max",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        "k",
+                        1
+                      ]
+                    },
+                    1
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "ud",
+          "rhs": "uu"
+        },
+        {
+          "lhs": "vd",
+          "rhs": "vu"
+        },
+        {
+          "lhs": "lab",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0
+          }
+        },
+        {
+          "lhs": "qs_h_defined",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "qs_h"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "==",
+                  "args": [
+                    "k",
+                    1
+                  ]
+                },
+                0.0,
+                {
+                  "op": "index",
+                  "args": [
+                    "qs_h",
+                    "k"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "step1_col1_half_level_initialization",
+          "description": "cuinin on the chem170 single-column reference, step 1, TILE COLUMN 1 of 2 -- the strongest convective step of the run (deep, ktype 1 in BOTH columns), 06 LST. Reference run: data/eqwefic/notes/chem170_scm_reference_run.md (em_scm_xy, Weisman-Klemp sounding over Kansas, 1997-06-20 12 UTC + 48 h, dx = 20 km, 59 levels, dt = 60 s, cu_physics = 16). Reference build: the real64 (kind_phys = real64) replay through kernels/ntiedtke_driver of WRF fork branch earthsciml-instrumented-chem170, with the seven constants cu_ntiedtke_init takes supplied at binary64 precision (they are ARGUMENTS); the scheme's own parameter block stays at its binary32 roundings, FORTRAN_BUGS N109. The values come from a stage dump taken immediately after the cuinin call, because every one of its outputs is a cumastrn local that the updraught and the rest overwrite before the routine returns. `qs_h` is asserted through `qs_h_defined`, which zeroes the top entry on both sides: cuinin never assigns `pqsenh(:,1)` even though the array is intent(out), so there is nothing there to match. Vertical ordering is the scheme's own TOP-DOWN kernel ordering, index 1 at the model top. Algebraic observeds at t = 0 with no ODE state, so the empty time_span is one static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/ci_step1_col1_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "T_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [218.56910705566406, 230.26779179851536, 226.51322489631443, 224.2635838840304, 222.71267636900632, 221.64206842973155, 223.38920159584714, 228.09586640180555, 232.3139556726645, 236.119444667691, 239.58828222890162, 242.77624314271864, 245.7247146995969, 248.4647773888918, 251.01960596029514, 253.40231987398835, 255.63719718070823, 257.7683046919399, 259.7738971163893, 261.6742273270526, 263.49393914667854, 265.2088859265681, 266.86950826590885, 268.4333719905049, 269.9531343057015, 271.39194721118696, 272.77499078855084, 274.09916481332715, 275.36551711652965, 276.58605413845595, 277.7621181549274, 278.89231661105475, 279.9825703353642, 281.0377262259541, 282.05202499739636, 283.03746021443555, 283.9873977728051, 284.9080978563197, 285.7996388081004, 286.6632563259931, 287.50115679716134, 288.3144135314869, 289.1022334452666, 289.8712747241869, 290.6115673433824, 291.3416088664386, 292.04461708469694, 292.7283548295802, 293.3956511357533, 294.04754642764976, 294.6833446619311, 295.30231765123824, 295.9082757751778, 296.5011669104887, 297.07838028238433, 297.6492779926162, 298.2993018091562, 298.9576561986563, 299.41995763830903]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9941995763830907e-07
+              }
+            },
+            {
+              "variable": "q_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681262667170808e-05, 0.0005378050622614702, 0.00023767242710626049, 0.00013551185275899368, 8.875321328245928e-05, 6.40309588057393e-05, 7.044846159461767e-05, 0.00011621411432476856, 0.0001790683732891743, 0.00025932569666136534, 0.000359031499704691, 0.0004797252716472306, 0.0006225415105034566, 0.0007876217725613742, 0.0009745356254163568, 0.0011833123313439336, 0.0014083718983300083, 0.0016658212739357446, 0.0019359396243446992, 0.002221770816070506, 0.00253643371917984, 0.002852212469742466, 0.0032073598769225527, 0.0035554827238666034, 0.003943904859153935, 0.004326692384323962, 0.004726965888682672, 0.005144728655452379, 0.005574708308594383, 0.006020203612750324, 0.006478914825600191, 0.006943635710621065, 0.00741848140290507, 0.00790758566882582, 0.00839631607544467, 0.008902103248620454, 0.009409023942089626, 0.009924453736776275, 0.010445924494600412, 0.010971425878963327, 0.01150305399802607, 0.012039377611558811, 0.012575833377579927, 0.01312396470148495, 0.013651940268977121, 0.013757409080061777, 0.013860229493747803, 0.01391168845404903, 0.013908954247935729, 0.013906290179124384, 0.013903693221539358, 0.013901159805099796, 0.013898694825529807, 0.013896296785159776, 0.013893957816834022, 0.013891690996623591, 0.013889482183076042, 0.013806706534681787, 0.013806706534681787]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.391168845404903e-11
+              }
+            },
+            {
+              "variable": "qs_h_defined",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0006439820941263195, 0.000307979862962671, 0.00018770723252868685, 0.0001297611326153689, 9.795761669185037e-05, 0.00010776138288628579, 0.0001718665907401896, 0.0002562709201521854, 0.0003621427142324725, 0.0004907565118904086, 0.0006431003596265014, 0.0008198312400220001, 0.0010212186704443534, 0.0012474449331242206, 0.001502067092882456, 0.0017861732664382008, 0.0021037788766881706, 0.002446857430247184, 0.002814270030933426, 0.0032071690085715226, 0.003612950194633393, 0.004041159823965643, 0.004471655679003511, 0.004916941373443973, 0.0053569304752918104, 0.005795083948008504, 0.006228786905066086, 0.006667138159280209, 0.007114101693192318, 0.007568397063634954, 0.008027216134974795, 0.008491768534925552, 0.008963134165625582, 0.009436023306245449, 0.009916297754620631, 0.010398086013420073, 0.010884045652544916, 0.01137281171800372, 0.01186387373580871, 0.012357577787246188, 0.012853523255357564, 0.013349774232088727, 0.013850879779979288, 0.0143468754990701, 0.014853546177688708, 0.015354424132415398, 0.015855628384846904, 0.016359041068035006, 0.016864943419592666, 0.017371836734392923, 0.017878095092166764, 0.01838710739349701, 0.018898189724104893, 0.019407624091328856, 0.01992583029388875, 0.020443151843618872, 0.020888296313222407, 0.021426367985343538]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.142636798534354e-11
+              }
+            },
+            {
+              "variable": "Tu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [218.56910705566406, 230.26779179851536, 226.51322489631443, 224.2635838840304, 222.71267636900632, 221.64206842973155, 223.38920159584714, 228.09586640180555, 232.3139556726645, 236.119444667691, 239.58828222890162, 242.77624314271864, 245.7247146995969, 248.4647773888918, 251.01960596029514, 253.40231987398835, 255.63719718070823, 257.7683046919399, 259.7738971163893, 261.6742273270526, 263.49393914667854, 265.2088859265681, 266.86950826590885, 268.4333719905049, 269.9531343057015, 271.39194721118696, 272.77499078855084, 274.09916481332715, 275.36551711652965, 276.58605413845595, 277.7621181549274, 278.89231661105475, 279.9825703353642, 281.0377262259541, 282.05202499739636, 283.03746021443555, 283.9873977728051, 284.9080978563197, 285.7996388081004, 286.6632563259931, 287.50115679716134, 288.3144135314869, 289.1022334452666, 289.8712747241869, 290.6115673433824, 291.3416088664386, 292.04461708469694, 292.7283548295802, 293.3956511357533, 294.04754642764976, 294.6833446619311, 295.30231765123824, 295.9082757751778, 296.5011669104887, 297.07838028238433, 297.6492779926162, 298.2993018091562, 298.9576561986563, 299.41995763830903]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9941995763830907e-07
+              }
+            },
+            {
+              "variable": "Td",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [218.56910705566406, 230.26779179851536, 226.51322489631443, 224.2635838840304, 222.71267636900632, 221.64206842973155, 223.38920159584714, 228.09586640180555, 232.3139556726645, 236.119444667691, 239.58828222890162, 242.77624314271864, 245.7247146995969, 248.4647773888918, 251.01960596029514, 253.40231987398835, 255.63719718070823, 257.7683046919399, 259.7738971163893, 261.6742273270526, 263.49393914667854, 265.2088859265681, 266.86950826590885, 268.4333719905049, 269.9531343057015, 271.39194721118696, 272.77499078855084, 274.09916481332715, 275.36551711652965, 276.58605413845595, 277.7621181549274, 278.89231661105475, 279.9825703353642, 281.0377262259541, 282.05202499739636, 283.03746021443555, 283.9873977728051, 284.9080978563197, 285.7996388081004, 286.6632563259931, 287.50115679716134, 288.3144135314869, 289.1022334452666, 289.8712747241869, 290.6115673433824, 291.3416088664386, 292.04461708469694, 292.7283548295802, 293.3956511357533, 294.04754642764976, 294.6833446619311, 295.30231765123824, 295.9082757751778, 296.5011669104887, 297.07838028238433, 297.6492779926162, 298.2993018091562, 298.9576561986563, 299.41995763830903]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9941995763830907e-07
+              }
+            },
+            {
+              "variable": "qu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681262667170808e-05, 0.0005378050622614702, 0.00023767242710626049, 0.00013551185275899368, 8.875321328245928e-05, 6.40309588057393e-05, 7.044846159461767e-05, 0.00011621411432476856, 0.0001790683732891743, 0.00025932569666136534, 0.000359031499704691, 0.0004797252716472306, 0.0006225415105034566, 0.0007876217725613742, 0.0009745356254163568, 0.0011833123313439336, 0.0014083718983300083, 0.0016658212739357446, 0.0019359396243446992, 0.002221770816070506, 0.00253643371917984, 0.002852212469742466, 0.0032073598769225527, 0.0035554827238666034, 0.003943904859153935, 0.004326692384323962, 0.004726965888682672, 0.005144728655452379, 0.005574708308594383, 0.006020203612750324, 0.006478914825600191, 0.006943635710621065, 0.00741848140290507, 0.00790758566882582, 0.00839631607544467, 0.008902103248620454, 0.009409023942089626, 0.009924453736776275, 0.010445924494600412, 0.010971425878963327, 0.01150305399802607, 0.012039377611558811, 0.012575833377579927, 0.01312396470148495, 0.013651940268977121, 0.013757409080061777, 0.013860229493747803, 0.01391168845404903, 0.013908954247935729, 0.013906290179124384, 0.013903693221539358, 0.013901159805099796, 0.013898694825529807, 0.013896296785159776, 0.013893957816834022, 0.013891690996623591, 0.013889482183076042, 0.013806706534681787, 0.013806706534681787]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.391168845404903e-11
+              }
+            },
+            {
+              "variable": "qd",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681262667170808e-05, 0.0005378050622614702, 0.00023767242710626049, 0.00013551185275899368, 8.875321328245928e-05, 6.40309588057393e-05, 7.044846159461767e-05, 0.00011621411432476856, 0.0001790683732891743, 0.00025932569666136534, 0.000359031499704691, 0.0004797252716472306, 0.0006225415105034566, 0.0007876217725613742, 0.0009745356254163568, 0.0011833123313439336, 0.0014083718983300083, 0.0016658212739357446, 0.0019359396243446992, 0.002221770816070506, 0.00253643371917984, 0.002852212469742466, 0.0032073598769225527, 0.0035554827238666034, 0.003943904859153935, 0.004326692384323962, 0.004726965888682672, 0.005144728655452379, 0.005574708308594383, 0.006020203612750324, 0.006478914825600191, 0.006943635710621065, 0.00741848140290507, 0.00790758566882582, 0.00839631607544467, 0.008902103248620454, 0.009409023942089626, 0.009924453736776275, 0.010445924494600412, 0.010971425878963327, 0.01150305399802607, 0.012039377611558811, 0.012575833377579927, 0.01312396470148495, 0.013651940268977121, 0.013757409080061777, 0.013860229493747803, 0.01391168845404903, 0.013908954247935729, 0.013906290179124384, 0.013903693221539358, 0.013901159805099796, 0.013898694825529807, 0.013896296785159776, 0.013893957816834022, 0.013891690996623591, 0.013889482183076042, 0.013806706534681787, 0.013806706534681787]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.391168845404903e-11
+              }
+            },
+            {
+              "variable": "lu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "uu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [5.0, 5.0, 5.0, 5.0, 5.0, 4.999999523162842, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 4.872100353240967, 4.602269649505615, 4.345401763916016, 4.09685754776001, 3.858088731765747, 3.6280860900878906, 3.406186103820801, 3.193361520767212, 2.987583637237549, 2.78950572013855, 2.5977046489715576, 2.412623167037964, 2.234226703643799, 2.0607924461364746, 1.8952677249908447, 1.7338298559188843, 1.5774736404418945, 1.4262783527374268, 1.2806751728057861, 1.139909029006958, 1.003199815750122, 0.8704696893692017, 0.7424657940864563, 0.6182705760002136, 0.4983924627304077, 0.38168835639953613, 0.26834577322006226, 0.1585729569196701]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-09
+              }
+            },
+            {
+              "variable": "vu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "lab",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "klwmin",
+              "time": 0.0,
+              "expected": 59.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "step1_col2_half_level_initialization",
+          "description": "cuinin on the chem170 single-column reference, step 1, TILE COLUMN 2 of 2 -- the same step in the OTHER column of the tile -- listed separately because the two columns of the SCM tile are independent states and several quantities of this scheme differ between them. Reference run: data/eqwefic/notes/chem170_scm_reference_run.md (em_scm_xy, Weisman-Klemp sounding over Kansas, 1997-06-20 12 UTC + 48 h, dx = 20 km, 59 levels, dt = 60 s, cu_physics = 16). Reference build: the real64 (kind_phys = real64) replay through kernels/ntiedtke_driver of WRF fork branch earthsciml-instrumented-chem170, with the seven constants cu_ntiedtke_init takes supplied at binary64 precision (they are ARGUMENTS); the scheme's own parameter block stays at its binary32 roundings, FORTRAN_BUGS N109. The values come from a stage dump taken immediately after the cuinin call, because every one of its outputs is a cumastrn local that the updraught and the rest overwrite before the routine returns. `qs_h` is asserted through `qs_h_defined`, which zeroes the top entry on both sides: cuinin never assigns `pqsenh(:,1)` even though the array is intent(out), so there is nothing there to match. Vertical ordering is the scheme's own TOP-DOWN kernel ordering, index 1 at the model top. Algebraic observeds at t = 0 with no ODE state, so the empty time_span is one static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/ci_step1_col2_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "T_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [218.56910705566406, 230.26779179851536, 226.51322489631443, 224.2635838840304, 222.71267636900632, 221.64206842973155, 223.38920159584714, 228.09586640180555, 232.3139556726645, 236.119444667691, 239.58828222890162, 242.77624314271864, 245.7247146995969, 248.4647773888918, 251.01960596029514, 253.40231987398835, 255.63719718070823, 257.7683046919399, 259.7738971163893, 261.6742273270526, 263.49393914667854, 265.2088859265681, 266.86950826590885, 268.4333719905049, 269.9531343057015, 271.39194721118696, 272.77499078855084, 274.09916481332715, 275.36551711652965, 276.58605413845595, 277.7621181549274, 278.89231661105475, 279.9825703353642, 281.0377262259541, 282.05202499739636, 283.03746021443555, 283.9873977728051, 284.9080978563197, 285.7996388081004, 286.6632563259931, 287.50115679716134, 288.3144135314869, 289.1022334452666, 289.8712747241869, 290.6115673433824, 291.3416088664386, 292.04461708469694, 292.7283548295802, 293.3956511357533, 294.04754642764976, 294.6833446619311, 295.30231765123824, 295.9082757751778, 296.5011669104887, 297.07838028238433, 297.6492779926162, 298.2993018091562, 298.9576561986563, 299.41995763830903]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9941995763830907e-07
+              }
+            },
+            {
+              "variable": "q_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681262667170808e-05, 0.0005378050622614702, 0.00023767242710626049, 0.00013551185275899368, 8.875321328245928e-05, 6.40309588057393e-05, 7.044846159461767e-05, 0.00011621411432476856, 0.0001790683732891743, 0.00025932569666136534, 0.000359031499704691, 0.0004797252716472306, 0.0006225415105034566, 0.0007876217725613742, 0.0009745356254163568, 0.0011833123313439336, 0.0014083718983300083, 0.0016658212739357446, 0.0019359396243446992, 0.002221770816070506, 0.00253643371917984, 0.002852212469742466, 0.0032073598769225527, 0.0035554827238666034, 0.003943904859153935, 0.004326692384323962, 0.004726965888682672, 0.005144728655452379, 0.005574708308594383, 0.006020203612750324, 0.006478914825600191, 0.006943635710621065, 0.00741848140290507, 0.00790758566882582, 0.00839631607544467, 0.008902103248620454, 0.009409023942089626, 0.009924453736776275, 0.010445924494600412, 0.010971425878963327, 0.01150305399802607, 0.012039377611558811, 0.012575833377579927, 0.01312396470148495, 0.013651940268977121, 0.013757409080061777, 0.013860229493747803, 0.01391168845404903, 0.013908954247935729, 0.013906290179124384, 0.013903693221539358, 0.013901159805099796, 0.013898694825529807, 0.013896296785159776, 0.013893957816834022, 0.013891690996623591, 0.013889482183076042, 0.013806706534681787, 0.013806706534681787]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.391168845404903e-11
+              }
+            },
+            {
+              "variable": "qs_h_defined",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0006439820941263195, 0.000307979862962671, 0.00018770723252868685, 0.0001297611326153689, 9.795761669185037e-05, 0.00010776138288628579, 0.0001718665907401896, 0.0002562709201521854, 0.0003621427142324725, 0.0004907565118904086, 0.0006431003596265014, 0.0008198312400220001, 0.0010212186704443534, 0.0012474449331242206, 0.001502067092882456, 0.0017861732664382008, 0.0021037788766881706, 0.002446857430247184, 0.002814270030933426, 0.0032071690085715226, 0.003612950194633393, 0.004041159823965643, 0.004471655679003511, 0.004916941373443973, 0.0053569304752918104, 0.005795083948008504, 0.006228786905066086, 0.006667138159280209, 0.007114101693192318, 0.007568397063634954, 0.008027216134974795, 0.008491768534925552, 0.008963134165625582, 0.009436023306245449, 0.009916297754620631, 0.010398086013420073, 0.010884045652544916, 0.01137281171800372, 0.01186387373580871, 0.012357577787246188, 0.012853523255357564, 0.013349774232088727, 0.013850879779979288, 0.0143468754990701, 0.014853546177688708, 0.015354424132415398, 0.015855628384846904, 0.016359041068035006, 0.016864943419592666, 0.017371836734392923, 0.017878095092166764, 0.01838710739349701, 0.018898189724104893, 0.019407624091328856, 0.01992583029388875, 0.020443151843618872, 0.020888296313222407, 0.021426367985343538]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.142636798534354e-11
+              }
+            },
+            {
+              "variable": "Tu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [218.56910705566406, 230.26779179851536, 226.51322489631443, 224.2635838840304, 222.71267636900632, 221.64206842973155, 223.38920159584714, 228.09586640180555, 232.3139556726645, 236.119444667691, 239.58828222890162, 242.77624314271864, 245.7247146995969, 248.4647773888918, 251.01960596029514, 253.40231987398835, 255.63719718070823, 257.7683046919399, 259.7738971163893, 261.6742273270526, 263.49393914667854, 265.2088859265681, 266.86950826590885, 268.4333719905049, 269.9531343057015, 271.39194721118696, 272.77499078855084, 274.09916481332715, 275.36551711652965, 276.58605413845595, 277.7621181549274, 278.89231661105475, 279.9825703353642, 281.0377262259541, 282.05202499739636, 283.03746021443555, 283.9873977728051, 284.9080978563197, 285.7996388081004, 286.6632563259931, 287.50115679716134, 288.3144135314869, 289.1022334452666, 289.8712747241869, 290.6115673433824, 291.3416088664386, 292.04461708469694, 292.7283548295802, 293.3956511357533, 294.04754642764976, 294.6833446619311, 295.30231765123824, 295.9082757751778, 296.5011669104887, 297.07838028238433, 297.6492779926162, 298.2993018091562, 298.9576561986563, 299.41995763830903]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9941995763830907e-07
+              }
+            },
+            {
+              "variable": "Td",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [218.56910705566406, 230.26779179851536, 226.51322489631443, 224.2635838840304, 222.71267636900632, 221.64206842973155, 223.38920159584714, 228.09586640180555, 232.3139556726645, 236.119444667691, 239.58828222890162, 242.77624314271864, 245.7247146995969, 248.4647773888918, 251.01960596029514, 253.40231987398835, 255.63719718070823, 257.7683046919399, 259.7738971163893, 261.6742273270526, 263.49393914667854, 265.2088859265681, 266.86950826590885, 268.4333719905049, 269.9531343057015, 271.39194721118696, 272.77499078855084, 274.09916481332715, 275.36551711652965, 276.58605413845595, 277.7621181549274, 278.89231661105475, 279.9825703353642, 281.0377262259541, 282.05202499739636, 283.03746021443555, 283.9873977728051, 284.9080978563197, 285.7996388081004, 286.6632563259931, 287.50115679716134, 288.3144135314869, 289.1022334452666, 289.8712747241869, 290.6115673433824, 291.3416088664386, 292.04461708469694, 292.7283548295802, 293.3956511357533, 294.04754642764976, 294.6833446619311, 295.30231765123824, 295.9082757751778, 296.5011669104887, 297.07838028238433, 297.6492779926162, 298.2993018091562, 298.9576561986563, 299.41995763830903]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9941995763830907e-07
+              }
+            },
+            {
+              "variable": "qu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681262667170808e-05, 0.0005378050622614702, 0.00023767242710626049, 0.00013551185275899368, 8.875321328245928e-05, 6.40309588057393e-05, 7.044846159461767e-05, 0.00011621411432476856, 0.0001790683732891743, 0.00025932569666136534, 0.000359031499704691, 0.0004797252716472306, 0.0006225415105034566, 0.0007876217725613742, 0.0009745356254163568, 0.0011833123313439336, 0.0014083718983300083, 0.0016658212739357446, 0.0019359396243446992, 0.002221770816070506, 0.00253643371917984, 0.002852212469742466, 0.0032073598769225527, 0.0035554827238666034, 0.003943904859153935, 0.004326692384323962, 0.004726965888682672, 0.005144728655452379, 0.005574708308594383, 0.006020203612750324, 0.006478914825600191, 0.006943635710621065, 0.00741848140290507, 0.00790758566882582, 0.00839631607544467, 0.008902103248620454, 0.009409023942089626, 0.009924453736776275, 0.010445924494600412, 0.010971425878963327, 0.01150305399802607, 0.012039377611558811, 0.012575833377579927, 0.01312396470148495, 0.013651940268977121, 0.013757409080061777, 0.013860229493747803, 0.01391168845404903, 0.013908954247935729, 0.013906290179124384, 0.013903693221539358, 0.013901159805099796, 0.013898694825529807, 0.013896296785159776, 0.013893957816834022, 0.013891690996623591, 0.013889482183076042, 0.013806706534681787, 0.013806706534681787]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.391168845404903e-11
+              }
+            },
+            {
+              "variable": "qd",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681262667170808e-05, 0.0005378050622614702, 0.00023767242710626049, 0.00013551185275899368, 8.875321328245928e-05, 6.40309588057393e-05, 7.044846159461767e-05, 0.00011621411432476856, 0.0001790683732891743, 0.00025932569666136534, 0.000359031499704691, 0.0004797252716472306, 0.0006225415105034566, 0.0007876217725613742, 0.0009745356254163568, 0.0011833123313439336, 0.0014083718983300083, 0.0016658212739357446, 0.0019359396243446992, 0.002221770816070506, 0.00253643371917984, 0.002852212469742466, 0.0032073598769225527, 0.0035554827238666034, 0.003943904859153935, 0.004326692384323962, 0.004726965888682672, 0.005144728655452379, 0.005574708308594383, 0.006020203612750324, 0.006478914825600191, 0.006943635710621065, 0.00741848140290507, 0.00790758566882582, 0.00839631607544467, 0.008902103248620454, 0.009409023942089626, 0.009924453736776275, 0.010445924494600412, 0.010971425878963327, 0.01150305399802607, 0.012039377611558811, 0.012575833377579927, 0.01312396470148495, 0.013651940268977121, 0.013757409080061777, 0.013860229493747803, 0.01391168845404903, 0.013908954247935729, 0.013906290179124384, 0.013903693221539358, 0.013901159805099796, 0.013898694825529807, 0.013896296785159776, 0.013893957816834022, 0.013891690996623591, 0.013889482183076042, 0.013806706534681787, 0.013806706534681787]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.391168845404903e-11
+              }
+            },
+            {
+              "variable": "lu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "uu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [5.0, 5.0, 5.0, 5.0, 5.0, 4.999999523162842, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 4.872100353240967, 4.602269649505615, 4.345401763916016, 4.09685754776001, 3.858088731765747, 3.6280860900878906, 3.406186103820801, 3.193361520767212, 2.987583637237549, 2.78950572013855, 2.5977046489715576, 2.412623167037964, 2.234226703643799, 2.0607924461364746, 1.8952677249908447, 1.7338298559188843, 1.5774736404418945, 1.4262783527374268, 1.2806751728057861, 1.139909029006958, 1.003199815750122, 0.8704696893692017, 0.7424657940864563, 0.6182705760002136, 0.4983924627304077, 0.38168835639953613, 0.26834577322006226, 0.1585729569196701]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5e-09
+              }
+            },
+            {
+              "variable": "vu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "lab",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "klwmin",
+              "time": 0.0,
+              "expected": 59.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "step364_col1_half_level_initialization",
+          "description": "cuinin on the chem170 single-column reference, step 364, TILE COLUMN 1 of 2 -- 12 LST, deep convection, and the step holding the COLDEST half level of the dumped set (184.8 K), so it reaches furthest into the pure-ice branch of the phase weight. Reference run: data/eqwefic/notes/chem170_scm_reference_run.md (em_scm_xy, Weisman-Klemp sounding over Kansas, 1997-06-20 12 UTC + 48 h, dx = 20 km, 59 levels, dt = 60 s, cu_physics = 16). Reference build: the real64 (kind_phys = real64) replay through kernels/ntiedtke_driver of WRF fork branch earthsciml-instrumented-chem170, with the seven constants cu_ntiedtke_init takes supplied at binary64 precision (they are ARGUMENTS); the scheme's own parameter block stays at its binary32 roundings, FORTRAN_BUGS N109. The values come from a stage dump taken immediately after the cuinin call, because every one of its outputs is a cumastrn local that the updraught and the rest overwrite before the routine returns. `qs_h` is asserted through `qs_h_defined`, which zeroes the top entry on both sides: cuinin never assigns `pqsenh(:,1)` even though the array is intent(out), so there is nothing there to match. Vertical ordering is the scheme's own TOP-DOWN kernel ordering, index 1 at the model top. Algebraic observeds at t = 0 with no ODE state, so the empty time_span is one static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/ci_step364_col1_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "T_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.090087890625, 230.75016480043956, 227.00976889871382, 224.14793040695005, 218.35685591978088, 221.94246753405568, 225.97225364623495, 229.9338533852099, 234.25999831731994, 238.26919595180928, 242.05332112962714, 245.41718245451628, 247.97036644132564, 250.18616509469604, 252.86152397630156, 255.20991772059875, 257.41191933992593, 259.4879275291792, 261.4623402288674, 263.3445059325056, 265.13036026308316, 266.8264958212294, 268.45086535144515, 270.00419518568947, 271.49409691122656, 272.9160512655699, 274.0819392157095, 275.4588243379143, 276.5984096758698, 277.65210509160687, 278.64000914957046, 279.5586395960058, 280.4178127662463, 281.23688739699446, 282.1851146842236, 283.2457056313384, 284.2242247941974, 285.17166607989105, 286.09909239807655, 287.00671237376554, 287.8578177910635, 288.61741209606714, 289.23436441587575, 289.6716634234595, 290.4169306481043, 291.2288045304421, 292.1676408613136, 293.0761752477125, 293.9556409637579, 294.8071759119598, 295.6318697129511, 296.43075416832664, 297.2048119036957, 297.954985607806, 298.6821616405488, 299.3871849347726, 300.0708898430383, 300.73406690657345, 301.3775217546925]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 3.013775217546925e-07
+              }
+            },
+            {
+              "variable": "q_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681291039046356e-05, 0.0005623442871549163, 0.0002484188852959239, 0.00013421433406349243, 7.42313577170555e-05, 0.00010133682037167358, 0.00014631641689019236, 0.0002095856829721403, 0.0003128663631551933, 0.0004478098045201199, 0.0006214212505124867, 0.0008202924511674748, 0.0009928092415379518, 0.0009131166990357723, 0.0009724721319939158, 0.00113975530445151, 0.0013263882827398421, 0.00152915934949878, 0.0017485205958178375, 0.0019831327348809394, 0.0022319221435409707, 0.0024937280978975613, 0.0027695055326635194, 0.0030602819134132576, 0.003366371817156412, 0.0036878283745363253, 0.004013705441163489, 0.004347189735335141, 0.004728989973486689, 0.005137945219485911, 0.005547006934911235, 0.0059665206922123295, 0.006400650393434008, 0.006848843187298302, 0.00731124187600212, 0.007788131122108695, 0.008279140171020384, 0.008769489386108876, 0.009257839523433878, 0.009809797735646598, 0.010408696753662426, 0.011028570666068044, 0.011848095515033985, 0.013646593420378402, 0.014140124515962403, 0.014434758511398924, 0.014550173409688632, 0.01462524879137254, 0.014679848921098523, 0.014722321017327424, 0.014757019209974532, 0.014786545959404124, 0.014812705713356654, 0.014836894993364954, 0.014860618772572423, 0.01488927308851252, 0.01491736819791155, 0.014868626040348054, 0.015065288056024955]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.5065288056024956e-11
+              }
+            },
+            {
+              "variable": "qs_h_defined",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0006813699963471844, 0.000327051979601699, 0.00018503733193162778, 7.424305786815332e-05, 0.00010175614741184105, 0.00014818555859549452, 0.00021370253185089104, 0.00031998102393357756, 0.00045899343011138557, 0.0006386347910146389, 0.0008461788698873351, 0.0010297895633551875, 0.0012119205393139349, 0.0014964189520844857, 0.001793935326731545, 0.0021221181530883437, 0.0024794126148780684, 0.0028659327441752265, 0.0032787845785270152, 0.00371054967599596, 0.004156090360081643, 0.004614603479024046, 0.005079595427776148, 0.005547146197506908, 0.006008326537696519, 0.006375403268289823, 0.006870702949938637, 0.007281162771703659, 0.007672107479128825, 0.008049952712695506, 0.008409195930429833, 0.008752152062346572, 0.00908793235182217, 0.009523694486601685, 0.010058710655184589, 0.01056666482251092, 0.011079073356118949, 0.011602793923235327, 0.01213728553384982, 0.012651569381140414, 0.013112007784191755, 0.01346791705840004, 0.013678766622173193, 0.014173949602582392, 0.014588486060997888, 0.015266100322102294, 0.015961622805888014, 0.01666569382222038, 0.017374794129255088, 0.018087282564119823, 0.01880156891503547, 0.01951703912464215, 0.02023246776386304, 0.020949031485814423, 0.021653851891375427, 0.02237585882707032, 0.023023220373863017, 0.02378220407750872]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.378220407750872e-11
+              }
+            },
+            {
+              "variable": "Tu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.090087890625, 230.75016480043956, 227.00976889871382, 224.14793040695005, 218.35685591978088, 221.94246753405568, 225.97225364623495, 229.9338533852099, 234.25999831731994, 238.26919595180928, 242.05332112962714, 245.41718245451628, 247.97036644132564, 250.18616509469604, 252.86152397630156, 255.20991772059875, 257.41191933992593, 259.4879275291792, 261.4623402288674, 263.3445059325056, 265.13036026308316, 266.8264958212294, 268.45086535144515, 270.00419518568947, 271.49409691122656, 272.9160512655699, 274.0819392157095, 275.4588243379143, 276.5984096758698, 277.65210509160687, 278.64000914957046, 279.5586395960058, 280.4178127662463, 281.23688739699446, 282.1851146842236, 283.2457056313384, 284.2242247941974, 285.17166607989105, 286.09909239807655, 287.00671237376554, 287.8578177910635, 288.61741209606714, 289.23436441587575, 289.6716634234595, 290.4169306481043, 291.2288045304421, 292.1676408613136, 293.0761752477125, 293.9556409637579, 294.8071759119598, 295.6318697129511, 296.43075416832664, 297.2048119036957, 297.954985607806, 298.6821616405488, 299.3871849347726, 300.0708898430383, 300.73406690657345, 301.3775217546925]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 3.013775217546925e-07
+              }
+            },
+            {
+              "variable": "Td",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.090087890625, 230.75016480043956, 227.00976889871382, 224.14793040695005, 218.35685591978088, 221.94246753405568, 225.97225364623495, 229.9338533852099, 234.25999831731994, 238.26919595180928, 242.05332112962714, 245.41718245451628, 247.97036644132564, 250.18616509469604, 252.86152397630156, 255.20991772059875, 257.41191933992593, 259.4879275291792, 261.4623402288674, 263.3445059325056, 265.13036026308316, 266.8264958212294, 268.45086535144515, 270.00419518568947, 271.49409691122656, 272.9160512655699, 274.0819392157095, 275.4588243379143, 276.5984096758698, 277.65210509160687, 278.64000914957046, 279.5586395960058, 280.4178127662463, 281.23688739699446, 282.1851146842236, 283.2457056313384, 284.2242247941974, 285.17166607989105, 286.09909239807655, 287.00671237376554, 287.8578177910635, 288.61741209606714, 289.23436441587575, 289.6716634234595, 290.4169306481043, 291.2288045304421, 292.1676408613136, 293.0761752477125, 293.9556409637579, 294.8071759119598, 295.6318697129511, 296.43075416832664, 297.2048119036957, 297.954985607806, 298.6821616405488, 299.3871849347726, 300.0708898430383, 300.73406690657345, 301.3775217546925]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 3.013775217546925e-07
+              }
+            },
+            {
+              "variable": "qu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681291039046356e-05, 0.0005623442871549163, 0.0002484188852959239, 0.00013421433406349243, 7.42313577170555e-05, 0.00010133682037167358, 0.00014631641689019236, 0.0002095856829721403, 0.0003128663631551933, 0.0004478098045201199, 0.0006214212505124867, 0.0008202924511674748, 0.0009928092415379518, 0.0009131166990357723, 0.0009724721319939158, 0.00113975530445151, 0.0013263882827398421, 0.00152915934949878, 0.0017485205958178375, 0.0019831327348809394, 0.0022319221435409707, 0.0024937280978975613, 0.0027695055326635194, 0.0030602819134132576, 0.003366371817156412, 0.0036878283745363253, 0.004013705441163489, 0.004347189735335141, 0.004728989973486689, 0.005137945219485911, 0.005547006934911235, 0.0059665206922123295, 0.006400650393434008, 0.006848843187298302, 0.00731124187600212, 0.007788131122108695, 0.008279140171020384, 0.008769489386108876, 0.009257839523433878, 0.009809797735646598, 0.010408696753662426, 0.011028570666068044, 0.011848095515033985, 0.013646593420378402, 0.014140124515962403, 0.014434758511398924, 0.014550173409688632, 0.01462524879137254, 0.014679848921098523, 0.014722321017327424, 0.014757019209974532, 0.014786545959404124, 0.014812705713356654, 0.014836894993364954, 0.014860618772572423, 0.01488927308851252, 0.01491736819791155, 0.014868626040348054, 0.015065288056024955]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.5065288056024956e-11
+              }
+            },
+            {
+              "variable": "qd",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.681291039046356e-05, 0.0005623442871549163, 0.0002484188852959239, 0.00013421433406349243, 7.42313577170555e-05, 0.00010133682037167358, 0.00014631641689019236, 0.0002095856829721403, 0.0003128663631551933, 0.0004478098045201199, 0.0006214212505124867, 0.0008202924511674748, 0.0009928092415379518, 0.0009131166990357723, 0.0009724721319939158, 0.00113975530445151, 0.0013263882827398421, 0.00152915934949878, 0.0017485205958178375, 0.0019831327348809394, 0.0022319221435409707, 0.0024937280978975613, 0.0027695055326635194, 0.0030602819134132576, 0.003366371817156412, 0.0036878283745363253, 0.004013705441163489, 0.004347189735335141, 0.004728989973486689, 0.005137945219485911, 0.005547006934911235, 0.0059665206922123295, 0.006400650393434008, 0.006848843187298302, 0.00731124187600212, 0.007788131122108695, 0.008279140171020384, 0.008769489386108876, 0.009257839523433878, 0.009809797735646598, 0.010408696753662426, 0.011028570666068044, 0.011848095515033985, 0.013646593420378402, 0.014140124515962403, 0.014434758511398924, 0.014550173409688632, 0.01462524879137254, 0.014679848921098523, 0.014722321017327424, 0.014757019209974532, 0.014786545959404124, 0.014812705713356654, 0.014836894993364954, 0.014860618772572423, 0.01488927308851252, 0.01491736819791155, 0.014868626040348054, 0.015065288056024955]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.5065288056024956e-11
+              }
+            },
+            {
+              "variable": "lu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "uu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [4.999906539916992, 4.999906539916992, 4.999660491943359, 5.00031852722168, 5.0702009201049805, 5.047117233276367, 5.026415824890137, 5.014247894287109, 5.010258674621582, 5.0091400146484375, 5.008513450622559, 5.008066177368164, 5.007716178894043, 5.007097244262695, 5.006641864776611, 5.006392955780029, 5.006166458129883, 5.005975246429443, 5.0058088302612305, 5.005647659301758, 5.005523681640625, 5.005369186401367, 5.005239486694336, 5.00508975982666, 5.004990100860596, 5.00482177734375, 5.004403114318848, 5.005041122436523, 5.005499839782715, 5.009051322937012, 5.007139205932617, 4.863595008850098, 4.571215629577637, 4.295512676239014, 4.040918350219727, 3.8018879890441895, 3.5729706287384033, 3.352802038192749, 3.1440606117248535, 2.9441747665405273, 2.7537879943847656, 2.5719046592712402, 2.3101673126220703, 1.529010534286499, 1.3166178464889526, 1.1600487232208252, 1.0902584791183472, 1.0508743524551392, 1.0259442329406738, 1.0089576244354248, 0.9967163801193237, 0.9874215722084045, 0.9799351096153259, 0.9734405279159546, 0.9672467708587646, 0.9606253504753113, 0.9525678753852844, 0.9411890506744385, 0.9213985204696655]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.070200920104981e-09
+              }
+            },
+            {
+              "variable": "vu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [3.2646469207975315e-06, 3.2646469207975315e-06, 5.209542723605409e-05, 0.005170014686882496, 0.20798662304878235, 0.19246095418930054, 0.09837541729211807, 0.05230618640780449, 0.03638960421085358, 0.03297878056764603, 0.03101014532148838, 0.029330309480428696, 0.027864230796694756, 0.02670394256711006, 0.025726111605763435, 0.02484850212931633, 0.024142753332853317, 0.023555893450975418, 0.02301509864628315, 0.02252863720059395, 0.022079069167375565, 0.021684998646378517, 0.021258780732750893, 0.020855478942394257, 0.020370522513985634, 0.01962156966328621, 0.015042304992675781, 0.015747925266623497, 0.021519387140870094, 0.03381962701678276, 0.06541126221418381, 0.027646159753203392, -0.07882384955883026, -0.1306716948747635, -0.1468844711780548, -0.14682196080684662, -0.1429077684879303, -0.14014798402786255, -0.12438837438821793, -0.10414700210094452, -0.0819125846028328, -0.053354233503341675, -0.006074718665331602, 0.12836015224456787, 0.11558955907821655, 0.0811067596077919, 0.05122653394937515, 0.025977173820137978, 0.004058609250932932, -0.015433233231306076, -0.03310876712203026, -0.0493902713060379, -0.06457464396953583, -0.07887528836727142, -0.09247569739818573, -0.10551133751869202, -0.11810753494501114, -0.13032659888267517, -0.14203445613384247]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.0798662304878235e-10
+              }
+            },
+            {
+              "variable": "lab",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "klwmin",
+              "time": 0.0,
+              "expected": 45.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "step689_col1_half_level_initialization",
+          "description": "cuinin on the chem170 single-column reference, step 689, TILE COLUMN 1 of 2 -- 17 LST, the column where the trigger found NOTHING (ktype 0): the half-level construction still runs in full, so this is the regime that pins it independently of any convection. Reference run: data/eqwefic/notes/chem170_scm_reference_run.md (em_scm_xy, Weisman-Klemp sounding over Kansas, 1997-06-20 12 UTC + 48 h, dx = 20 km, 59 levels, dt = 60 s, cu_physics = 16). Reference build: the real64 (kind_phys = real64) replay through kernels/ntiedtke_driver of WRF fork branch earthsciml-instrumented-chem170, with the seven constants cu_ntiedtke_init takes supplied at binary64 precision (they are ARGUMENTS); the scheme's own parameter block stays at its binary32 roundings, FORTRAN_BUGS N109. The values come from a stage dump taken immediately after the cuinin call, because every one of its outputs is a cumastrn local that the updraught and the rest overwrite before the routine returns. `qs_h` is asserted through `qs_h_defined`, which zeroes the top entry on both sides: cuinin never assigns `pqsenh(:,1)` even though the array is intent(out), so there is nothing there to match. Vertical ordering is the scheme's own TOP-DOWN kernel ordering, index 1 at the model top. Algebraic observeds at t = 0 with no ODE state, so the empty time_span is one static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/ci_step689_col1_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "T_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.8065185546875, 231.40886080353894, 227.79861427143203, 223.71242718311262, 217.54775474016472, 220.93766657512646, 226.26653114687545, 231.53748421066535, 236.20586928654726, 240.43624081146433, 244.2518806310149, 247.69609998159237, 250.64420463649182, 253.03013666826124, 255.17465108178823, 257.63849185338864, 260.2504100441424, 262.3014770265403, 264.1782539736208, 265.9796250306284, 267.6902310529156, 269.29375730981405, 270.8010435385265, 272.1835711847524, 273.3225109243239, 274.49483909689616, 275.64831875137503, 276.79733245982317, 277.9038395593891, 278.93903598022524, 279.96126157438425, 281.0014400361047, 281.94547871132966, 282.87832483583054, 283.785122763305, 284.59773233698985, 285.3935468118599, 286.18853157502156, 286.8606732820788, 287.5036033697905, 288.12821399224947, 288.92107282772395, 289.68711353927506, 290.40253304875705, 291.0673860996988, 291.6757049628364, 292.4865459688718, 293.38947098013705, 294.24633979558416, 295.0124654140881, 295.65951168219345, 296.29828682630415, 296.7487379410977, 296.72965296934933, 296.6018476927226, 297.1753079802388, 297.85448810172943, 298.5132485656586, 299.14368652854523]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9914368652854527e-07
+              }
+            },
+            {
+              "variable": "q_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.667471023812156e-05, 0.0005974730531977439, 0.0002667916584676508, 0.00013012593929669533, 6.676027315104144e-05, 8.956033616520714e-05, 0.00015013887375701338, 0.0002560341293584068, 0.0003932607461700854, 0.0005645203976769046, 0.000775426359597126, 0.0010347953960892888, 0.0013184594549773166, 0.0015673477438103572, 0.0016876027590833449, 0.0015809866987857135, 0.001457701118921772, 0.0015489268089665584, 0.0017104014900210715, 0.001896894424003457, 0.0020915674754697893, 0.002289545966948304, 0.002504768431501414, 0.0028158398509439448, 0.003437890091680809, 0.003951061579699844, 0.004289679534520708, 0.004519026468475605, 0.004797100479624819, 0.005135686768094795, 0.005407230356224059, 0.005575469149145607, 0.005844457800080517, 0.006006231432557401, 0.006134816423983755, 0.006453648332247959, 0.00678862382145758, 0.007162281497594072, 0.007756345481157059, 0.00848706185004902, 0.009335413588820406, 0.010120821845379801, 0.011057919837409036, 0.011954001600668977, 0.012917358775175993, 0.014020150514447426, 0.014407276772668667, 0.01435670581360799, 0.014387080702820387, 0.014459112897925005, 0.014471258018741506, 0.014512840161351454, 0.014506730027012603, 0.014451533587930976, 0.01454362031806467, 0.014843116061067061, 0.014930332309334726, 0.014910796202083623, 0.015095737757316338]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.509573775731634e-11
+              }
+            },
+            {
+              "variable": "qs_h_defined",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0007356775791629585, 0.00035961694424126135, 0.00017530023065040476, 6.676027315104144e-05, 8.956033616520714e-05, 0.0001535941877805075, 0.00025770223350604453, 0.00039804046763508994, 0.0005803231781864247, 0.0008040769987991771, 0.0010671836668876271, 0.0013439088434903145, 0.001605247918356365, 0.0018786438554700144, 0.0022713575010124792, 0.002781672456804401, 0.0032238550043603596, 0.003670028897050871, 0.004140774423563365, 0.0046235929059210736, 0.005103060531240153, 0.005573812278176317, 0.006013925395377658, 0.006359043545315368, 0.00673941020567618, 0.007136629409745283, 0.00755839030922074, 0.007984353692140608, 0.008395699434156608, 0.008823896578368101, 0.009288746935505427, 0.009717164368334424, 0.010161204728961428, 0.010610354166091032, 0.011013315492303895, 0.011422818606287728, 0.011850749426498792, 0.012199727701422922, 0.012539466685987401, 0.012877716843494574, 0.013373862692086918, 0.013867807122698611, 0.014336273938045993, 0.014776020493179226, 0.015178171004760575, 0.015794789128252287, 0.01653274534149097, 0.017255917712909997, 0.017910745972545144, 0.01845658981867222, 0.019012201821388144, 0.01936394260427513, 0.019171052591846385, 0.018860254011092505, 0.019186365259545705, 0.01980209691715875, 0.02034415630449416, 0.02097241071631253]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.097241071631253e-11
+              }
+            },
+            {
+              "variable": "Tu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.8065185546875, 231.40886080353894, 227.79861427143203, 223.71242718311262, 217.54775474016472, 220.93766657512646, 226.26653114687545, 231.53748421066535, 236.20586928654726, 240.43624081146433, 244.2518806310149, 247.69609998159237, 250.64420463649182, 253.03013666826124, 255.17465108178823, 257.63849185338864, 260.2504100441424, 262.3014770265403, 264.1782539736208, 265.9796250306284, 267.6902310529156, 269.29375730981405, 270.8010435385265, 272.1835711847524, 273.3225109243239, 274.49483909689616, 275.64831875137503, 276.79733245982317, 277.9038395593891, 278.93903598022524, 279.96126157438425, 281.0014400361047, 281.94547871132966, 282.87832483583054, 283.785122763305, 284.59773233698985, 285.3935468118599, 286.18853157502156, 286.8606732820788, 287.5036033697905, 288.12821399224947, 288.92107282772395, 289.68711353927506, 290.40253304875705, 291.0673860996988, 291.6757049628364, 292.4865459688718, 293.38947098013705, 294.24633979558416, 295.0124654140881, 295.65951168219345, 296.29828682630415, 296.7487379410977, 296.72965296934933, 296.6018476927226, 297.1753079802388, 297.85448810172943, 298.5132485656586, 299.14368652854523]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9914368652854527e-07
+              }
+            },
+            {
+              "variable": "Td",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.8065185546875, 231.40886080353894, 227.79861427143203, 223.71242718311262, 217.54775474016472, 220.93766657512646, 226.26653114687545, 231.53748421066535, 236.20586928654726, 240.43624081146433, 244.2518806310149, 247.69609998159237, 250.64420463649182, 253.03013666826124, 255.17465108178823, 257.63849185338864, 260.2504100441424, 262.3014770265403, 264.1782539736208, 265.9796250306284, 267.6902310529156, 269.29375730981405, 270.8010435385265, 272.1835711847524, 273.3225109243239, 274.49483909689616, 275.64831875137503, 276.79733245982317, 277.9038395593891, 278.93903598022524, 279.96126157438425, 281.0014400361047, 281.94547871132966, 282.87832483583054, 283.785122763305, 284.59773233698985, 285.3935468118599, 286.18853157502156, 286.8606732820788, 287.5036033697905, 288.12821399224947, 288.92107282772395, 289.68711353927506, 290.40253304875705, 291.0673860996988, 291.6757049628364, 292.4865459688718, 293.38947098013705, 294.24633979558416, 295.0124654140881, 295.65951168219345, 296.29828682630415, 296.7487379410977, 296.72965296934933, 296.6018476927226, 297.1753079802388, 297.85448810172943, 298.5132485656586, 299.14368652854523]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.9914368652854527e-07
+              }
+            },
+            {
+              "variable": "qu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.667471023812156e-05, 0.0005974730531977439, 0.0002667916584676508, 0.00013012593929669533, 6.676027315104144e-05, 8.956033616520714e-05, 0.00015013887375701338, 0.0002560341293584068, 0.0003932607461700854, 0.0005645203976769046, 0.000775426359597126, 0.0010347953960892888, 0.0013184594549773166, 0.0015673477438103572, 0.0016876027590833449, 0.0015809866987857135, 0.001457701118921772, 0.0015489268089665584, 0.0017104014900210715, 0.001896894424003457, 0.0020915674754697893, 0.002289545966948304, 0.002504768431501414, 0.0028158398509439448, 0.003437890091680809, 0.003951061579699844, 0.004289679534520708, 0.004519026468475605, 0.004797100479624819, 0.005135686768094795, 0.005407230356224059, 0.005575469149145607, 0.005844457800080517, 0.006006231432557401, 0.006134816423983755, 0.006453648332247959, 0.00678862382145758, 0.007162281497594072, 0.007756345481157059, 0.00848706185004902, 0.009335413588820406, 0.010120821845379801, 0.011057919837409036, 0.011954001600668977, 0.012917358775175993, 0.014020150514447426, 0.014407276772668667, 0.01435670581360799, 0.014387080702820387, 0.014459112897925005, 0.014471258018741506, 0.014512840161351454, 0.014506730027012603, 0.014451533587930976, 0.01454362031806467, 0.014843116061067061, 0.014930332309334726, 0.014910796202083623, 0.015095737757316338]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.509573775731634e-11
+              }
+            },
+            {
+              "variable": "qd",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.667471023812156e-05, 0.0005974730531977439, 0.0002667916584676508, 0.00013012593929669533, 6.676027315104144e-05, 8.956033616520714e-05, 0.00015013887375701338, 0.0002560341293584068, 0.0003932607461700854, 0.0005645203976769046, 0.000775426359597126, 0.0010347953960892888, 0.0013184594549773166, 0.0015673477438103572, 0.0016876027590833449, 0.0015809866987857135, 0.001457701118921772, 0.0015489268089665584, 0.0017104014900210715, 0.001896894424003457, 0.0020915674754697893, 0.002289545966948304, 0.002504768431501414, 0.0028158398509439448, 0.003437890091680809, 0.003951061579699844, 0.004289679534520708, 0.004519026468475605, 0.004797100479624819, 0.005135686768094795, 0.005407230356224059, 0.005575469149145607, 0.005844457800080517, 0.006006231432557401, 0.006134816423983755, 0.006453648332247959, 0.00678862382145758, 0.007162281497594072, 0.007756345481157059, 0.00848706185004902, 0.009335413588820406, 0.010120821845379801, 0.011057919837409036, 0.011954001600668977, 0.012917358775175993, 0.014020150514447426, 0.014407276772668667, 0.01435670581360799, 0.014387080702820387, 0.014459112897925005, 0.014471258018741506, 0.014512840161351454, 0.014506730027012603, 0.014451533587930976, 0.01454362031806467, 0.014843116061067061, 0.014930332309334726, 0.014910796202083623, 0.015095737757316338]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.509573775731634e-11
+              }
+            },
+            {
+              "variable": "lu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "uu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [5.000134468078613, 5.000134468078613, 5.000542640686035, 5.014927864074707, 5.100466728210449, 4.957741737365723, 4.790515422821045, 4.821328163146973, 4.880110740661621, 4.908707618713379, 4.926208019256592, 4.935844421386719, 4.949965476989746, 4.959413528442383, 4.956795692443848, 4.952331066131592, 4.9538350105285645, 4.954458236694336, 4.953527450561523, 4.954239845275879, 4.958259105682373, 4.963136672973633, 4.96702241897583, 4.960333824157715, 4.9130449295043945, 4.879591941833496, 4.848428726196289, 4.844834327697754, 4.834903717041016, 4.797990798950195, 4.7440595626831055, 4.654915809631348, 4.488432884216309, 4.258885383605957, 4.038578033447266, 3.787715435028076, 3.4995265007019043, 3.2453227043151855, 2.9735026359558105, 2.7151169776916504, 2.472179651260376, 2.239149570465088, 2.0370240211486816, 1.8834128379821777, 1.7801921367645264, 1.7384843826293945, 1.7423920631408691, 1.7302844524383545, 1.701667070388794, 1.6533608436584473, 1.6005489826202393, 1.5598316192626953, 1.5060417652130127, 1.3864262104034424, 1.2152562141418457, 1.0394536256790161, 1.0293487310409546, 1.0370490550994873, 1.0378669500350952]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.10046672821045e-09
+              }
+            },
+            {
+              "variable": "vu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [-8.23289155960083e-07, -8.23289155960083e-07, 0.00020285695791244507, -0.0007447823882102966, -0.04136008024215698, 0.029659152030944824, 0.0897769033908844, 0.07786308228969574, 0.055629193782806396, 0.0454259067773819, 0.039373911917209625, 0.03109852224588394, 0.02198304980993271, 0.01689097285270691, 0.014737844467163086, 0.014276266098022461, 0.012375613674521446, 0.013156436383724213, 0.014611676335334778, 0.014928385615348816, 0.013954222202301025, 0.013530373573303223, 0.015826940536499023, 0.020295366644859314, 0.03037252649664879, 0.03634878993034363, 0.041637029498815536, 0.04460620880126953, 0.050965338945388794, 0.0720403790473938, 0.102533258497715, 0.09696674346923828, 0.06426333636045456, 0.05015735328197479, 0.05771073326468468, 0.07958868145942688, 0.1252417415380478, 0.20426875352859497, 0.31689828634262085, 0.4430765211582184, 0.5382204651832581, 0.5891046524047852, 0.5945722460746765, 0.5574100613594055, 0.47712212800979614, 0.3603886365890503, 0.2601879835128784, 0.16040600836277008, 0.12375186383724213, -0.014937527477741241, -0.12701132893562317, -0.24550700187683105, -0.32206252217292786, -0.39701908826828003, -0.43852436542510986, -0.4585527181625366, -0.47917690873146057, -0.4968941807746887, -0.5068321228027344]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.945722460746766e-10
+              }
+            },
+            {
+              "variable": "lab",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "klwmin",
+              "time": 0.0,
+              "expected": 49.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "step689_col2_half_level_initialization",
+          "description": "cuinin on the chem170 single-column reference, step 689, TILE COLUMN 2 of 2 -- 17 LST, the OTHER column of the same step, where the trigger found SHALLOW convection (ktype 2). Two different convective outcomes from one model step is exactly the per-column variation that a regime table collapsing to one value per step would hide. Reference run: data/eqwefic/notes/chem170_scm_reference_run.md (em_scm_xy, Weisman-Klemp sounding over Kansas, 1997-06-20 12 UTC + 48 h, dx = 20 km, 59 levels, dt = 60 s, cu_physics = 16). Reference build: the real64 (kind_phys = real64) replay through kernels/ntiedtke_driver of WRF fork branch earthsciml-instrumented-chem170, with the seven constants cu_ntiedtke_init takes supplied at binary64 precision (they are ARGUMENTS); the scheme's own parameter block stays at its binary32 roundings, FORTRAN_BUGS N109. The values come from a stage dump taken immediately after the cuinin call, because every one of its outputs is a cumastrn local that the updraught and the rest overwrite before the routine returns. `qs_h` is asserted through `qs_h_defined`, which zeroes the top entry on both sides: cuinin never assigns `pqsenh(:,1)` even though the array is intent(out), so there is nothing there to match. Vertical ordering is the scheme's own TOP-DOWN kernel ordering, index 1 at the model top. Algebraic observeds at t = 0 with no ODE state, so the empty time_span is one static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/ci_step689_col2_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "T_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.81666564941406, 231.41826026838424, 227.86701221434453, 223.57720409752457, 217.46703910743383, 221.04280761670827, 226.31139865981302, 231.48280790700923, 236.25986315112112, 240.51547004402937, 244.28231086428642, 247.69302632195672, 250.63280153738185, 253.0314964666408, 255.15393289233432, 257.5572248518546, 260.171870832597, 262.2335549502575, 264.13360858858186, 265.97030924642047, 267.7123552842429, 269.32906978749594, 270.82274258302164, 272.21646284292274, 273.4593279422217, 274.62385381368193, 275.6718213931991, 276.8466357090798, 277.9924226590234, 279.03847128512984, 280.0350379037315, 281.0293628632018, 281.88211156507845, 282.56829018195657, 283.52245329674724, 284.45622330060354, 285.3577595020918, 286.31258818770436, 287.04857499920087, 287.67953750652833, 288.3069567420809, 288.9648758802379, 289.6298916629571, 290.2863300966549, 290.9214046563559, 291.6090706221459, 292.54895902107927, 293.41148027615264, 294.23570175994735, 295.0465988106553, 295.77621230713197, 296.2431275672994, 296.38231886940844, 296.3882704276828, 296.5581264760042, 297.0953374041058, 297.7741801485296, 298.4326071098635, 299.0254763021322]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.990254763021322e-07
+              }
+            },
+            {
+              "variable": "q_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.662038899075494e-05, 0.000597937707442741, 0.00026851128673922425, 0.00012883064494566753, 6.60528151580758e-05, 9.027310509525228e-05, 0.00014885592427593756, 0.00025150731388016425, 0.0003910632585202771, 0.0005652326336337947, 0.0007773361156609569, 0.0010387832451296904, 0.0013213535425969961, 0.0015741976652638428, 0.001709243025248243, 0.001606003156293352, 0.0014729683887397427, 0.0015665494385890108, 0.001723743349191417, 0.0019038133876931552, 0.002093949330457407, 0.002294002911215883, 0.002515077354606741, 0.002776883089894749, 0.0031935683186893795, 0.0036505346522772053, 0.0041857550112583955, 0.004424719183997685, 0.004659600039092794, 0.004997069885747881, 0.005327270249352513, 0.005570581769479897, 0.006050188274445031, 0.006782120949006224, 0.007006995559771865, 0.007062461154146536, 0.0072825634123739715, 0.007191582176598821, 0.007621884751909006, 0.008449130838996018, 0.009382622096641934, 0.010281705856688089, 0.011161204499409702, 0.01206819450666231, 0.01305915624733185, 0.01393043783628784, 0.013888440314323012, 0.014081268563003187, 0.014316715694479573, 0.014420125197986263, 0.014386770391762766, 0.014375907010264158, 0.014332351640779985, 0.014300476570085012, 0.014401465929183784, 0.014644832051099779, 0.014771432493577435, 0.014769335347652268, 0.015009484615839569]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.500948461583957e-11
+              }
+            },
+            {
+              "variable": "qs_h_defined",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0007364776365095701, 0.00036257449550115454, 0.00017237221376215366, 6.60528151580758e-05, 9.076946498914621e-05, 0.00015443261947090567, 0.00025607191468039324, 0.00040043398643012373, 0.0005852674292627826, 0.0008066134112724458, 0.0010668424864097804, 0.0013423803165575076, 0.0016054453951835318, 0.0018748122926510763, 0.002253596563146789, 0.0027611482855390518, 0.0032037653733198606, 0.003655360934299114, 0.004137367080644268, 0.004632107428169651, 0.005117596451372102, 0.005583176131694665, 0.00602872882549189, 0.006422750760242038, 0.006802500296564853, 0.007148664441229834, 0.007584895215195215, 0.008034265789511231, 0.008454160412061526, 0.0088691129548738, 0.009306652522266432, 0.00967539446349141, 0.009950204035313645, 0.010424550550750884, 0.010909460379184305, 0.011395281662365886, 0.011947440426916024, 0.012350282719746667, 0.012683573002227787, 0.01302736943528877, 0.013411162443109883, 0.013816418779484778, 0.014229732333506651, 0.014639000106115801, 0.015102986483417647, 0.015856255984640223, 0.016554926841998368, 0.0172439861869642, 0.017947930593121438, 0.018588691375561718, 0.018947661220882355, 0.01893544451708848, 0.01877552334431886, 0.018809586142240643, 0.01912319649558362, 0.019719592945968024, 0.020245248305456473, 0.020859296367621887]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.085929636762189e-11
+              }
+            },
+            {
+              "variable": "Tu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.81666564941406, 231.41826026838424, 227.86701221434453, 223.57720409752457, 217.46703910743383, 221.04280761670827, 226.31139865981302, 231.48280790700923, 236.25986315112112, 240.51547004402937, 244.28231086428642, 247.69302632195672, 250.63280153738185, 253.0314964666408, 255.15393289233432, 257.5572248518546, 260.171870832597, 262.2335549502575, 264.13360858858186, 265.97030924642047, 267.7123552842429, 269.32906978749594, 270.82274258302164, 272.21646284292274, 273.4593279422217, 274.62385381368193, 275.6718213931991, 276.8466357090798, 277.9924226590234, 279.03847128512984, 280.0350379037315, 281.0293628632018, 281.88211156507845, 282.56829018195657, 283.52245329674724, 284.45622330060354, 285.3577595020918, 286.31258818770436, 287.04857499920087, 287.67953750652833, 288.3069567420809, 288.9648758802379, 289.6298916629571, 290.2863300966549, 290.9214046563559, 291.6090706221459, 292.54895902107927, 293.41148027615264, 294.23570175994735, 295.0465988106553, 295.77621230713197, 296.2431275672994, 296.38231886940844, 296.3882704276828, 296.5581264760042, 297.0953374041058, 297.7741801485296, 298.4326071098635, 299.0254763021322]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.990254763021322e-07
+              }
+            },
+            {
+              "variable": "Td",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.81666564941406, 231.41826026838424, 227.86701221434453, 223.57720409752457, 217.46703910743383, 221.04280761670827, 226.31139865981302, 231.48280790700923, 236.25986315112112, 240.51547004402937, 244.28231086428642, 247.69302632195672, 250.63280153738185, 253.0314964666408, 255.15393289233432, 257.5572248518546, 260.171870832597, 262.2335549502575, 264.13360858858186, 265.97030924642047, 267.7123552842429, 269.32906978749594, 270.82274258302164, 272.21646284292274, 273.4593279422217, 274.62385381368193, 275.6718213931991, 276.8466357090798, 277.9924226590234, 279.03847128512984, 280.0350379037315, 281.0293628632018, 281.88211156507845, 282.56829018195657, 283.52245329674724, 284.45622330060354, 285.3577595020918, 286.31258818770436, 287.04857499920087, 287.67953750652833, 288.3069567420809, 288.9648758802379, 289.6298916629571, 290.2863300966549, 290.9214046563559, 291.6090706221459, 292.54895902107927, 293.41148027615264, 294.23570175994735, 295.0465988106553, 295.77621230713197, 296.2431275672994, 296.38231886940844, 296.3882704276828, 296.5581264760042, 297.0953374041058, 297.7741801485296, 298.4326071098635, 299.0254763021322]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.990254763021322e-07
+              }
+            },
+            {
+              "variable": "qu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.662038899075494e-05, 0.000597937707442741, 0.00026851128673922425, 0.00012883064494566753, 6.60528151580758e-05, 9.027310509525228e-05, 0.00014885592427593756, 0.00025150731388016425, 0.0003910632585202771, 0.0005652326336337947, 0.0007773361156609569, 0.0010387832451296904, 0.0013213535425969961, 0.0015741976652638428, 0.001709243025248243, 0.001606003156293352, 0.0014729683887397427, 0.0015665494385890108, 0.001723743349191417, 0.0019038133876931552, 0.002093949330457407, 0.002294002911215883, 0.002515077354606741, 0.002776883089894749, 0.0031935683186893795, 0.0036505346522772053, 0.0041857550112583955, 0.004424719183997685, 0.004659600039092794, 0.004997069885747881, 0.005327270249352513, 0.005570581769479897, 0.006050188274445031, 0.006782120949006224, 0.007006995559771865, 0.007062461154146536, 0.0072825634123739715, 0.007191582176598821, 0.007621884751909006, 0.008449130838996018, 0.009382622096641934, 0.010281705856688089, 0.011161204499409702, 0.01206819450666231, 0.01305915624733185, 0.01393043783628784, 0.013888440314323012, 0.014081268563003187, 0.014316715694479573, 0.014420125197986263, 0.014386770391762766, 0.014375907010264158, 0.014332351640779985, 0.014300476570085012, 0.014401465929183784, 0.014644832051099779, 0.014771432493577435, 0.014769335347652268, 0.015009484615839569]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.500948461583957e-11
+              }
+            },
+            {
+              "variable": "qd",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.662038899075494e-05, 0.000597937707442741, 0.00026851128673922425, 0.00012883064494566753, 6.60528151580758e-05, 9.027310509525228e-05, 0.00014885592427593756, 0.00025150731388016425, 0.0003910632585202771, 0.0005652326336337947, 0.0007773361156609569, 0.0010387832451296904, 0.0013213535425969961, 0.0015741976652638428, 0.001709243025248243, 0.001606003156293352, 0.0014729683887397427, 0.0015665494385890108, 0.001723743349191417, 0.0019038133876931552, 0.002093949330457407, 0.002294002911215883, 0.002515077354606741, 0.002776883089894749, 0.0031935683186893795, 0.0036505346522772053, 0.0041857550112583955, 0.004424719183997685, 0.004659600039092794, 0.004997069885747881, 0.005327270249352513, 0.005570581769479897, 0.006050188274445031, 0.006782120949006224, 0.007006995559771865, 0.007062461154146536, 0.0072825634123739715, 0.007191582176598821, 0.007621884751909006, 0.008449130838996018, 0.009382622096641934, 0.010281705856688089, 0.011161204499409702, 0.01206819450666231, 0.01305915624733185, 0.01393043783628784, 0.013888440314323012, 0.014081268563003187, 0.014316715694479573, 0.014420125197986263, 0.014386770391762766, 0.014375907010264158, 0.014332351640779985, 0.014300476570085012, 0.014401465929183784, 0.014644832051099779, 0.014771432493577435, 0.014769335347652268, 0.015009484615839569]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.500948461583957e-11
+              }
+            },
+            {
+              "variable": "lu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "uu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [5.000134468078613, 5.000134468078613, 5.000542640686035, 5.014927864074707, 5.100466728210449, 4.957741737365723, 4.790515422821045, 4.821328163146973, 4.880110740661621, 4.908707618713379, 4.926208019256592, 4.935844421386719, 4.949965476989746, 4.959413528442383, 4.956795692443848, 4.952331066131592, 4.9538350105285645, 4.954458236694336, 4.953527450561523, 4.954239845275879, 4.958259105682373, 4.963136672973633, 4.96702241897583, 4.960333824157715, 4.9130449295043945, 4.879591941833496, 4.848428726196289, 4.844834327697754, 4.834903717041016, 4.797990798950195, 4.7440595626831055, 4.654915809631348, 4.488432884216309, 4.258885383605957, 4.038578033447266, 3.787715435028076, 3.4995265007019043, 3.2453227043151855, 2.9735026359558105, 2.7151169776916504, 2.472179651260376, 2.239149570465088, 2.0370240211486816, 1.8834128379821777, 1.7801921367645264, 1.7384843826293945, 1.7423920631408691, 1.7302844524383545, 1.701667070388794, 1.6533608436584473, 1.6005489826202393, 1.5598316192626953, 1.5060417652130127, 1.3864262104034424, 1.2152562141418457, 1.0394536256790161, 1.0293487310409546, 1.0370490550994873, 1.0378669500350952]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.10046672821045e-09
+              }
+            },
+            {
+              "variable": "vu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [-7.953494787216187e-07, -7.953494787216187e-07, 0.00019180774688720703, -0.0009543076157569885, -0.042435646057128906, 0.025824174284934998, 0.08811962604522705, 0.07605192065238953, 0.056673526763916016, 0.047934673726558685, 0.041727542877197266, 0.03180783987045288, 0.02145645022392273, 0.015893861651420593, 0.014319077134132385, 0.014018725603818893, 0.012297872453927994, 0.013370059430599213, 0.014622174203395844, 0.014957748353481293, 0.014006711542606354, 0.013518288731575012, 0.01517397165298462, 0.019730567932128906, 0.03106844425201416, 0.036313626915216446, 0.038756296038627625, 0.04233532026410103, 0.0467941015958786, 0.06379677355289459, 0.09330182522535324, 0.09464116394519806, 0.060178183019161224, 0.03131669759750366, 0.0313979908823967, 0.05985704064369202, 0.11546218395233154, 0.22159536182880402, 0.3577403724193573, 0.4884670376777649, 0.5751818418502808, 0.6066045165061951, 0.5888248085975647, 0.5379875898361206, 0.4709056615829468, 0.39782875776290894, 0.3445242643356323, 0.18208599090576172, 0.07670466601848602, -0.027530381456017494, -0.11996699869632721, -0.22238537669181824, -0.292259156703949, -0.37083786725997925, -0.40999287366867065, -0.4257888197898865, -0.44679805636405945, -0.4657636880874634, -0.4776521921157837]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 6.066045165061951e-10
+              }
+            },
+            {
+              "variable": "lab",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "klwmin",
+              "time": 0.0,
+              "expected": 41.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "step918_col1_half_level_initialization",
+          "description": "cuinin on the chem170 single-column reference, step 918, TILE COLUMN 1 of 2 -- 21 LST, night, mid-level convection (ktype 3) with the cloud confined to a single level -- a quiescent column, where the stability sweep and the level of strongest ascent are what carry the signal. Reference run: data/eqwefic/notes/chem170_scm_reference_run.md (em_scm_xy, Weisman-Klemp sounding over Kansas, 1997-06-20 12 UTC + 48 h, dx = 20 km, 59 levels, dt = 60 s, cu_physics = 16). Reference build: the real64 (kind_phys = real64) replay through kernels/ntiedtke_driver of WRF fork branch earthsciml-instrumented-chem170, with the seven constants cu_ntiedtke_init takes supplied at binary64 precision (they are ARGUMENTS); the scheme's own parameter block stays at its binary32 roundings, FORTRAN_BUGS N109. The values come from a stage dump taken immediately after the cuinin call, because every one of its outputs is a cumastrn local that the updraught and the rest overwrite before the routine returns. `qs_h` is asserted through `qs_h_defined`, which zeroes the top entry on both sides: cuinin never assigns `pqsenh(:,1)` even though the array is intent(out), so there is nothing there to match. Vertical ordering is the scheme's own TOP-DOWN kernel ordering, index 1 at the model top. Algebraic observeds at t = 0 with no ODE state, so the empty time_span is one static evaluation.",
+          "parameter_overrides": {},
+          "expression_template_imports": [
+            {
+              "ref": "./tests/ci_step918_col1_inputs.esm"
+            }
+          ],
+          "time_span": {
+            "start": 0,
+            "end": 0
+          },
+          "tolerance": {
+            "rel": 1e-09
+          },
+          "assertions": [
+            {
+              "variable": "T_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.68470764160156, 231.29728226179188, 227.60834404679287, 223.49314201864172, 218.03235713879195, 220.64936067270926, 226.00367744796188, 231.24461885304095, 235.75661726630207, 239.81464721263265, 243.7391668519147, 247.34629649591255, 250.5850007820661, 253.2816560136736, 255.2646094189417, 257.67219944200866, 260.3843477617475, 262.4311793363027, 264.33661208114273, 266.12463912825996, 267.76309976931185, 269.23413682744626, 270.5662757591237, 271.8187015866317, 273.04527032609394, 274.29737822683416, 275.5234516248205, 276.71923921932563, 277.8469910729559, 278.88538592176457, 279.8392814115899, 280.7906909496845, 281.76992824858996, 282.7107344605623, 283.5805189548596, 284.4460448846081, 285.3593126360271, 286.2450511346363, 287.01741375878834, 287.6962118076125, 288.3135838062908, 288.9008530112049, 289.5029121192514, 290.13535044488094, 290.77428026777625, 291.4451933178222, 292.2187186101521, 293.05566705047664, 293.87989843288057, 294.6269749279223, 295.23218779694747, 295.6311650676505, 295.8333624604004, 295.98958259465985, 296.3079160153111, 296.8544953109565, 297.5332142213067, 298.19139515369307, 298.0315441493883]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.981913951536931e-07
+              }
+            },
+            {
+              "variable": "q_h",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.671865755606612e-05, 0.0005913961880780027, 0.0002621803725967733, 0.00012760857996313936, 6.929288494543551e-05, 8.484031474794778e-05, 0.00013943453416071741, 0.00022785388076165293, 0.0003590357981203268, 0.0005382014260873068, 0.0007585160465526617, 0.0009994871747110727, 0.0012587247856603243, 0.0016186770311315173, 0.001863244796358549, 0.0016946231144359667, 0.0015332132352450976, 0.0015290912454716088, 0.0016667103082580886, 0.0018491003559544734, 0.0020542425526422917, 0.0022905969912621095, 0.0025727732312818274, 0.003015434622416112, 0.0035717749664378588, 0.003992964227591588, 0.00428216098872705, 0.0045014679697799155, 0.004784810900776953, 0.005114529297917422, 0.005441858014609153, 0.005734518224087347, 0.006010377653910072, 0.006345792243078904, 0.0067231827575334885, 0.007066743441880033, 0.007238761414373487, 0.007328560046494806, 0.007600023330512001, 0.008146957053876485, 0.008907883605767615, 0.009835326601480133, 0.010854679366515779, 0.011861013742033466, 0.012824143383807664, 0.013648768342254099, 0.014074001783810528, 0.014215276274918495, 0.014279667253122557, 0.014348527223347405, 0.014401034496120515, 0.01441553301074887, 0.014451297294244657, 0.014616697239147883, 0.01484615526307024, 0.014982778369765202, 0.015071647209459993, 0.01504066871402048, 0.015314576172581066]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.5314576172581068e-11
+              }
+            },
+            {
+              "variable": "qs_h_defined",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0007262021856996765, 0.00035149690723783816, 0.0001705746221680376, 7.115341855206553e-05, 8.631780394559106e-05, 0.0001487570191396597, 0.00024908848088655634, 0.00037860113922582434, 0.0005428061359382305, 0.0007623079034886316, 0.0010301288219110173, 0.0013360621349510372, 0.0016455755577634633, 0.0018952379396632042, 0.002278706101330155, 0.0028168523987494943, 0.0032623530944414533, 0.0037221710216931996, 0.004193003586050262, 0.00465184380049438, 0.0050783659734273635, 0.005472126416987926, 0.0058501244380081115, 0.006231326865436977, 0.006643661520296544, 0.007072886110151851, 0.007516417132848909, 0.007952280517497096, 0.008364120332941856, 0.008749502588487622, 0.009155066884572308, 0.009601326797430094, 0.01004629630248423, 0.010465034955448852, 0.010901756907515053, 0.011396158631446116, 0.011894114215982968, 0.012324785628006407, 0.01269706481078242, 0.013032760297771877, 0.013355760691494932, 0.01370416722432024, 0.014093086772610052, 0.0145026826526651, 0.014957882212818133, 0.015530445464165508, 0.016190924636463374, 0.016867085110467844, 0.017488762929978193, 0.01797739287960735, 0.018250342903722093, 0.018309898790783843, 0.01832321723892957, 0.018524324994723708, 0.0189573401182623, 0.01948423531075431, 0.019952405239128272, 0.020420844139998406]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.0420844139998407e-11
+              }
+            },
+            {
+              "variable": "Tu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.68470764160156, 231.29728226179188, 227.60834404679287, 223.49314201864172, 218.03235713879195, 220.64936067270926, 226.00367744796188, 231.24461885304095, 235.75661726630207, 239.81464721263265, 243.7391668519147, 247.34629649591255, 250.5850007820661, 253.2816560136736, 255.2646094189417, 257.67219944200866, 260.3843477617475, 262.4311793363027, 264.33661208114273, 266.12463912825996, 267.76309976931185, 269.23413682744626, 270.5662757591237, 271.8187015866317, 273.04527032609394, 274.29737822683416, 275.5234516248205, 276.71923921932563, 277.8469910729559, 278.88538592176457, 279.8392814115899, 280.7906909496845, 281.76992824858996, 282.7107344605623, 283.5805189548596, 284.4460448846081, 285.3593126360271, 286.2450511346363, 287.01741375878834, 287.6962118076125, 288.3135838062908, 288.9008530112049, 289.5029121192514, 290.13535044488094, 290.77428026777625, 291.4451933178222, 292.2187186101521, 293.05566705047664, 293.87989843288057, 294.6269749279223, 295.23218779694747, 295.6311650676505, 295.8333624604004, 295.98958259465985, 296.3079160153111, 296.8544953109565, 297.5332142213067, 298.19139515369307, 298.0315441493883]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.981913951536931e-07
+              }
+            },
+            {
+              "variable": "Td",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [219.68470764160156, 231.29728226179188, 227.60834404679287, 223.49314201864172, 218.03235713879195, 220.64936067270926, 226.00367744796188, 231.24461885304095, 235.75661726630207, 239.81464721263265, 243.7391668519147, 247.34629649591255, 250.5850007820661, 253.2816560136736, 255.2646094189417, 257.67219944200866, 260.3843477617475, 262.4311793363027, 264.33661208114273, 266.12463912825996, 267.76309976931185, 269.23413682744626, 270.5662757591237, 271.8187015866317, 273.04527032609394, 274.29737822683416, 275.5234516248205, 276.71923921932563, 277.8469910729559, 278.88538592176457, 279.8392814115899, 280.7906909496845, 281.76992824858996, 282.7107344605623, 283.5805189548596, 284.4460448846081, 285.3593126360271, 286.2450511346363, 287.01741375878834, 287.6962118076125, 288.3135838062908, 288.9008530112049, 289.5029121192514, 290.13535044488094, 290.77428026777625, 291.4451933178222, 292.2187186101521, 293.05566705047664, 293.87989843288057, 294.6269749279223, 295.23218779694747, 295.6311650676505, 295.8333624604004, 295.98958259465985, 296.3079160153111, 296.8544953109565, 297.5332142213067, 298.19139515369307, 298.0315441493883]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 2.981913951536931e-07
+              }
+            },
+            {
+              "variable": "qu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.671865755606612e-05, 0.0005913961880780027, 0.0002621803725967733, 0.00012760857996313936, 6.929288494543551e-05, 8.484031474794778e-05, 0.00013943453416071741, 0.00022785388076165293, 0.0003590357981203268, 0.0005382014260873068, 0.0007585160465526617, 0.0009994871747110727, 0.0012587247856603243, 0.0016186770311315173, 0.001863244796358549, 0.0016946231144359667, 0.0015332132352450976, 0.0015290912454716088, 0.0016667103082580886, 0.0018491003559544734, 0.0020542425526422917, 0.0022905969912621095, 0.0025727732312818274, 0.003015434622416112, 0.0035717749664378588, 0.003992964227591588, 0.00428216098872705, 0.0045014679697799155, 0.004784810900776953, 0.005114529297917422, 0.005441858014609153, 0.005734518224087347, 0.006010377653910072, 0.006345792243078904, 0.0067231827575334885, 0.007066743441880033, 0.007238761414373487, 0.007328560046494806, 0.007600023330512001, 0.008146957053876485, 0.008907883605767615, 0.009835326601480133, 0.010854679366515779, 0.011861013742033466, 0.012824143383807664, 0.013648768342254099, 0.014074001783810528, 0.014215276274918495, 0.014279667253122557, 0.014348527223347405, 0.014401034496120515, 0.01441553301074887, 0.014451297294244657, 0.014616697239147883, 0.01484615526307024, 0.014982778369765202, 0.015071647209459993, 0.01504066871402048, 0.015314576172581066]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.5314576172581068e-11
+              }
+            },
+            {
+              "variable": "qd",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [7.671865755606612e-05, 0.0005913961880780027, 0.0002621803725967733, 0.00012760857996313936, 6.929288494543551e-05, 8.484031474794778e-05, 0.00013943453416071741, 0.00022785388076165293, 0.0003590357981203268, 0.0005382014260873068, 0.0007585160465526617, 0.0009994871747110727, 0.0012587247856603243, 0.0016186770311315173, 0.001863244796358549, 0.0016946231144359667, 0.0015332132352450976, 0.0015290912454716088, 0.0016667103082580886, 0.0018491003559544734, 0.0020542425526422917, 0.0022905969912621095, 0.0025727732312818274, 0.003015434622416112, 0.0035717749664378588, 0.003992964227591588, 0.00428216098872705, 0.0045014679697799155, 0.004784810900776953, 0.005114529297917422, 0.005441858014609153, 0.005734518224087347, 0.006010377653910072, 0.006345792243078904, 0.0067231827575334885, 0.007066743441880033, 0.007238761414373487, 0.007328560046494806, 0.007600023330512001, 0.008146957053876485, 0.008907883605767615, 0.009835326601480133, 0.010854679366515779, 0.011861013742033466, 0.012824143383807664, 0.013648768342254099, 0.014074001783810528, 0.014215276274918495, 0.014279667253122557, 0.014348527223347405, 0.014401034496120515, 0.01441553301074887, 0.014451297294244657, 0.014616697239147883, 0.01484615526307024, 0.014982778369765202, 0.015071647209459993, 0.01504066871402048, 0.015314576172581066]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 1.5314576172581068e-11
+              }
+            },
+            {
+              "variable": "lu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "uu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [4.999898433685303, 4.999898433685303, 5.000215530395508, 5.007175922393799, 4.982900619506836, 4.985485076904297, 4.99821138381958, 4.99871826171875, 5.0052595138549805, 5.01239013671875, 5.011737823486328, 5.010549068450928, 5.00430154800415, 4.9977006912231445, 4.997905254364014, 4.998751640319824, 4.991626739501953, 4.992433547973633, 4.993680000305176, 4.994820594787598, 4.994757652282715, 4.994604110717773, 4.9995269775390625, 4.991163730621338, 4.973369598388672, 4.965232849121094, 4.967501640319824, 4.972702503204346, 4.966860771179199, 4.962499618530273, 4.957698822021484, 4.851923942565918, 4.628661155700684, 4.383033752441406, 4.14385461807251, 3.9154281616210938, 3.714515209197998, 3.551650047302246, 3.429435968399048, 3.313119888305664, 3.169710397720337, 2.9918723106384277, 2.791142463684082, 2.5833756923675537, 2.380052089691162, 2.179859161376953, 1.9908716678619385, 1.822346568107605, 1.653954029083252, 1.429375410079956, 1.165153980255127, 0.9360144138336182, 0.7410002946853638, 0.5701379179954529, 0.42985403537750244, 0.3357083201408386, 0.24567711353302002, 0.15488256514072418, 0.12584954500198364]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 5.01239013671875e-09
+              }
+            },
+            {
+              "variable": "vu",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [-1.737847924232483e-06, -1.737847924232483e-06, -2.0420178771018982e-05, -0.01376447081565857, -0.11831635236740112, 0.0003547370433807373, 0.15620969235897064, 0.1600576639175415, 0.12780162692070007, 0.11457434296607971, 0.10237562656402588, 0.07879768311977386, 0.0534648597240448, 0.036991775035858154, 0.02747877687215805, 0.024725621566176414, 0.02416636049747467, 0.025306303054094315, 0.02768993191421032, 0.0285759586840868, 0.02762848138809204, 0.029819712042808533, 0.038731396198272705, 0.06388503313064575, 0.1098029688000679, 0.13366790115833282, 0.14533692598342896, 0.15034490823745728, 0.16779085993766785, 0.21389001607894897, 0.2969408333301544, 0.29929211735725403, 0.21034952998161316, 0.1605224609375, 0.1400877982378006, 0.1389310359954834, 0.1437673270702362, 0.1691574901342392, 0.22266362607479095, 0.2919312119483948, 0.357322096824646, 0.397888720035553, 0.3995931148529053, 0.36257198452949524, 0.27874448895454407, 0.1684999316930771, 0.034778088331222534, -0.10326863825321198, -0.23509615659713745, -0.35814017057418823, -0.4693349003791809, -0.56844162940979, -0.6308457851409912, -0.6180232763290405, -0.5976297855377197, -0.633431077003479, -0.7172973155975342, -0.8133373260498047, -0.8529232144355774]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 8.529232144355775e-10
+              }
+            },
+            {
+              "variable": "lab",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "lev"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    },
+                    "k"
+                  ]
+                }
+              },
+              "tolerance": {
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "klwmin",
+              "time": 0.0,
+              "expected": 38.0,
+              "tolerance": {
+                "abs": 0.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
