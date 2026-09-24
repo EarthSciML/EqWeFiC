@@ -541,3 +541,65 @@ wind-reversal limiter -- a PARAMETER of the tendency, visible in the argument
 list -- and not N107's hidden freeze. It is also distinct from N84, which is
 about the real32 cancellation in how WRF FORMS `rthcuten` and says nothing about
 dt. Recorded as FORTRAN_BUGS N111.
+
+
+## A second column that actually contains aromatics, isoprene and terpenes (2026-09-23)
+
+**`dumps/chem170_rich` is a SECOND reference run, not a recapture of the first.**
+`dumps/chem170_wrf` is untouched, and every test pinned to it is unchanged -- the
+four idealized trajectory regimes, six tendency regimes and four rate-coefficient
+regimes of `components/gaschem/cbmz` were verified assertion-by-assertion against
+`git show HEAD` to be byte-identical after the new regimes were added.
+
+**Why.** WRF-Chem's idealized gas profile leaves CBM-Z's aromatics, isoprene and
+terpenes at its 1e-11 to 1e-13 ppb floor, and the `CBMZ_MOSAIC_KPP` branch of
+`chemics_init.F` then sets `API` and `LIM` to exactly zero.  Twenty-one species
+sit below **one molecule per cubic centimetre** for the whole 48 h -- API and LIM
+reach 1e-94 and 1e-193 -- so the aromatic, isoprene and terpene branches of the
+mechanism carry no flux and a test on them asserts their absence.  A null test
+still catches a spurious source or a sign error, but a column where the species
+are present is strictly better: it exercises the reactions instead.
+
+**What changed, and only what changed.**  `ESM_RICH_IC=1` (WRF fork `31d2fe12`,
+`chem/chemics_init.F`) raises seven initial mixing ratios and nothing else:
+TOL 0.50, XYL 0.30, CSL 0.01, ISO 2.00, API 0.50, LIM 0.20 and C2H5OH 1.00 ppb.
+Same Weisman-Klemp sounding, same Kansas location, same 1997-06-20 12 UTC + 48 h,
+same namelist, same binary.  It is inert unless the variable is set.  Run script:
+`data/eqwefic/chem170_rich/run.sh`; dumped steps 1, 60, 230, 364, 601, 689
+(`cbmz_kpp` only); replays in `chem170_rich/replay`.
+The two columns are **not** the same run at different times: their meteorology
+diverges too, through the aerosol-scattering path of N86.
+
+**Coverage.**  Six hours of photochemistry populate the entire downstream chain.
+At local noon (step 364, surface): ARO1 1.4e8, ARO2 3.8e8, API1 2.6e8, API2 2.2e9,
+LIM1 6.1e8, LIM2 8.9e8, ISOPRD 1.3e10, ISOPP 2.7e8, ISOPO2 6.9e7, ISOPN 3.1e4,
+TO2 4.7e8, CRO 3.2e6, OPEN 5.0e8 molec/cm^3, against the 2.3e-3 floor every one of
+them sits at on the idealized column.  **The terpenes themselves do not survive
+that long**: alpha-pinene's lifetime against 30 ppb of ozone is under a quarter of
+a second and limonene's under an eighth, so reactions `{137:117}`..`{142:122}` are
+exercised at the run's FIRST chemistry call and nowhere else -- which is why the
+terpene regime is step 1 and its output times are **0.1 s and 1 s**, not 10 s and
+60 s.  At 10 s API is already at 2.4e-8.  Only `O1D` is still small everywhere,
+and that is physics, not absence: its steady state at this column is 1.5e-2
+molec/cm^3.
+
+**References are tighter here.**  RTOL 1e-9 and **ATOL 1e-9** (not 1e-3), which is
+what lets every species be pinned relatively; the test floor is `abs 1e-9` and
+binds only on API and LIM in the noon and afternoon regimes.  Measured worst
+residual over the species above 100 molec/cm^3: 6.4e-8 (LIM at 1 s, terpenes),
+1.6e-8 (noon), 1.8e-8 (afternoon).  Rate coefficients 5.7e-16, tendencies 1.5e-14.
+
+**N107 is LARGER on this column, by a factor of 19.**  Isoprene and terpene
+oxidation loads the lumped peroxy pool far more heavily, so freezing the ten
+state-dependent coefficients over WRF's 60 s step costs more: `nsub = 1` misses
+the continuous limit by **3.0e-2** (CH3OH at step 1) against 1.6e-3 on the
+idealized column.  Convergence is still clean first order --
+
+| nsub | 1 -> 100 | 100 -> 1000 | 1000 -> 10000 | 10000 -> 100000 |
+|---|---|---|---|---|
+| step 1, 60 s | 3.0e-2 | 1.6e-4 | 1.6e-5 | 1.6e-6 |
+
+-- so this column's 10 s and 60 s references use `nsub = 100000` (about 1.8e-7
+from the limit) and the sub-second terpene regime uses `nsub = 10000` (5e-10 at
+0.1 s, 2e-7 at 1 s).  The direction is the one that matters: a column with real
+biogenic chemistry splits worse, not better.
