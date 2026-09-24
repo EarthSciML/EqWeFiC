@@ -60,26 +60,48 @@ New Tiedtke at **every** step (1772 of 2880 steps have non-zero convective tende
 then classified by replaying the kernel in real64, which reports `ktype`. Verified on
 the dumps themselves (`chem170_scm/replay/replay_summary.txt`):
 
-| step | local | Tiedtke `ktype` | cloud base → top (kernel levels) | max \|rthcuten\| (K/s) | conv. precip over dt (mm) | MOSAIC nucleation |
-|---|---|---|---|---|---|---|
-| 1 | 06 LST | 1 deep | 44 → 5 | 2.6e-2 | 0.489 | active |
-| 60 | 07 LST | 0 none | — | 0 | 0 | — |
-| 230 | 09 LST | 0 none | — | 0 | 0 | active |
-| 364 | 12 LST | 1 deep | 46 → 5 | 8.6e-5 | 1.5e-4 | — |
-| 601 | 16 LST | 1 deep | 46 → 6 | 3.7e-3 | 0.112 | — |
-| 639 | 16 LST | 2 shallow | 45 → 32 | 2.4e-4 | 2.5e-3 | active |
-| 689 | 17 LST | 2 shallow | 45 → 32 | 2.5e-4 | 1.6e-3 | — |
-| 918 | 21 LST | 3 mid-level | 10 → 10 | 9.1e-6 | 0 | — |
-| 1080 | 00 LST | 3 mid-level | 13 → 13 | 0 | 0 | — |
-| 1621 | 09 LST | 3 mid-level | 14 → 14 | 1.0e-6 | 0 | — |
-| 1730 | 10 LST | 1 deep | 48 → 10 | 8.4e-5 | 5.5e-4 | active |
-| 1801 | 12 LST | 1 deep | 48 → 9 | 8.2e-5 | 3.9e-4 | — |
-| 2101 | 17 LST | 1 deep | 46 → 10 | 1.1e-3 | 2.5e-2 | — |
-| 2134 | 17 LST | 2 shallow | 46 → 30 | 1.1e-3 | 1.9e-3 | — |
-| 2400 | 22 LST | 3 mid-level | 10 → 10 | 0 | 0 | — |
-| 2521 | 00 LST | 3 mid-level | 13 → 13 | 0 | 0 | — |
+**The table below was re-derived on 2026-09-23 and REPLACES the one written on
+2026-09-22.** The dumps in `dumps/chem170_wrf` were recaptured at 17:04 on the
+23rd, after which the `chem170_scm/replay/f_nt_*.json` replays and the old table
+described a column state that no longer exists: `pt_out` had moved by up to
+0.32 K, the mid-level cloud base at step 918 had moved from kernel level 10 to
+13, and three steps had changed convection type. This is exactly the staleness
+trap CLAUDE.md documents. The fresh replays are `chem170_scm/nt64/`, produced by
+`nt_replay.py`, which regenerates the flats from the current dumps in the same
+pass; `chem170_scm/replay/f_nt_*.json` are superseded and must not be used. The
+other chem170 consumers were checked and are unaffected -- the CBM-Z, MOSAIC and
+Noah components were all re-filled after the recapture and are green (1666/1666).
 
-So all three New Tiedtke convection types fire, plus the inactive branch; Noah runs
+The old table also listed ONE `ktype` per step, which hid that the two columns of
+the SCM tile can convect differently. Both are listed here, and the SHALLOW branch
+survives only in column 2 of steps 689 and 2134 -- so a stage-2 test that took
+column 1 alone would silently lose the shallow regime. `nt_replay.py` also promotes
+the seven constants `cu_ntiedtke_init` takes to binary64, since they are arguments
+(FORTRAN_BUGS N109), and the driver now tapes every `cuadjtqn` call of the step,
+which is the last column below.
+
+| step | Tiedtke `ktype` (col 1 / col 2) | cloud base -> top (kernel levels) | max \|rthcuten\| (K/s) | conv. precip over dt (mm) | cuadjtqn calls |
+|---|---|---|---|---|---|
+| 1 | 1 deep | 44->5 | 2.6e-02 | 0.489 | 220 |
+| 60 | 0 none | -- | 0.0e+00 | 0 | 133 |
+| 230 | 0 none | -- | 0.0e+00 | 0 | 179 |
+| 364 | 1 deep | 46->5 | 8.6e-05 | 0.000153 | 231 |
+| 601 | 1 deep | 46->11 / 45->29 | 1.2e-03 | 0.0344 | 264 |
+| 639 | 1 deep | 45->25 / 45->27 | 2.0e-03 | 0.00391 | 238 |
+| 689 | 0 none / 2 shallow | 9->-1 / 45->33 | 4.0e-04 | 0.00469 | 233 |
+| 918 | 3 mid | 13->13 / 12->12 | 2.9e-13 | 0 | 146 |
+| 1080 | 3 mid | 13->13 | 1.1e-13 | 0 | 146 |
+| 1621 | 3 mid | 14->14 | 1.4e-13 | 0 | 175 |
+| 1730 | 1 deep | 48->9 | 8.5e-05 | 0.000502 | 212 |
+| 1801 | 1 deep | 47->9 | 7.8e-05 | 0.000297 | 212 |
+| 2101 | 1 deep | 46->23 / 46->25 | 2.2e-03 | 0.00551 | 196 |
+| 2134 | 3 mid / 2 shallow | 11->11 / 46->30 | 1.4e-04 | 0.000911 | 237 |
+| 2400 | 3 mid | 9->9 | 2.2e-13 | 0 | 151 |
+| 2521 | 3 mid | 10->10 | 2.8e-13 | 0 | 147 |
+
+So all three New Tiedtke convection types fire, plus the inactive branch (deep at
+six steps, shallow in column 2 of two steps, mid-level at six, and none at two);
+Noah runs
 day and night, dry and precipitating; and the MOSAIC gas-particle, coagulation and
 nucleation sub-processes are all exercised (coagulation changes `rsub` at every dumped
 step, nucleation only in bursts — steps 1, 230, 639 and 1730 of those dumped).

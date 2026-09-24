@@ -110,8 +110,24 @@ def _reference(dump_dir: str, spec: Any, col: int) -> dict[str, Any]:
 
 
 def _namespace(inputs: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any]:
+    def _spread(a: Any, key: Any, n: int) -> np.ndarray:
+        """``n`` elements of ``a``, evenly spaced through the ORDER of ``key``.
+
+        A fixed-size sample of a variable-length set that still spans its whole
+        range.  An esm index set is sized by a metaparameter, which a test cannot
+        rebind, so a component whose reference is a TAPE of however many calls a
+        step happened to make must take a fixed number of them; sampling along the
+        sorted key (temperature, say) keeps the cold and warm ends rather than
+        whichever end the tape was written from.  Deterministic in (a, key, n), so
+        the same call in an input field and in an assertion selects the same rows.
+        """
+        a = np.asarray(a, dtype=float).reshape(-1)
+        order = np.argsort(np.asarray(key, dtype=float).reshape(-1), kind="stable")
+        return a[order[np.linspace(0, order.size - 1, int(n)).round().astype(int)]]
+
     ns: dict[str, Any] = {"np": np, "concat": lambda *a: np.concatenate([np.atleast_1d(np.asarray(x, dtype=float)) for x in a]),
-                          "zeros": np.zeros, "cumsum0": lambda a: np.concatenate([[0.0], np.cumsum(np.asarray(a, dtype=float))])}
+                          "zeros": np.zeros, "spread": _spread,
+                          "cumsum0": lambda a: np.concatenate([[0.0], np.cumsum(np.asarray(a, dtype=float))])}
     ns.update(inputs)
     ns.update(ref)
     return ns
