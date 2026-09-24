@@ -2570,6 +2570,69 @@ real exposure at esm 2.0.0, and clearing it needs a migration PR there.
       anywhere, and the `wet_capped` branch is never reached: untested, not
       merely unused, and said so in their descriptions.
 
+1.4k Noah stage 2, eighth tranche (done 2026-09-23): SNOW_NEW and SNOWZ0, the
+    two small snow routines, and the first case where N99's rule has nothing to
+    bite on.
+
+    `components/land_surface/noah/snow_new.esm` **180/180** and
+    `snow_roughness.esm` **252/252**. Neither needed any instrumentation.
+
+    - **SNOW_NEW** (fresh-snow density: Gottlib's 1980 fit, plus the
+      depth-weighted average with the pack it lands on). Its two outputs ARE the
+      state SNOWPACK receives at entry, which 1.4i's hook already publishes, and
+      that nothing moves them in between is verified rather than assumed --
+      a double-precision reconstruction from the dumped arguments reproduces both
+      publishers BITWISE at all 66 pack steps. **The reference step goes UP again**
+      (60 s), the second component to do so and the first to do it by applying
+      N99's rule rather than discovering it: nothing is differenced, and
+      `newsn = prcp dt 0.001` makes the fresh layer's weight in the density
+      average proportional to the step -- 1.0e-3 to 1.3e-1 at 60 s, 1.7e-8 of
+      that at 1e-6 s.
+    - **The rule is also visible INSIDE each SNOW_NEW test**, which is why two
+      differenced assertions were kept rather than dropped. `sndens_out` and
+      `snowh_out` are published and hold at rel 3e-16 against a 1e-9 bound;
+      `hnewc` and `fresh_fraction` have no publisher and must come from
+      `(snp_snowh_in - snowh)`, whose relative precision is eps divided by that
+      same weight, so their bounds are PER TEST, 1e-13 to 1e-9, at twenty times
+      that floor. Measured: they still pass at the floor itself and start failing
+      five times below it.
+    - **SNOWZ0** (roughness over snow: vegetation treated as seven roughness
+      lengths tall, the exposed height collapsing linearly, cover-weighted against
+      the background). Its output is the Registry `Z0`, already dumped as
+      `z0_out`, and the component reproduces it **BITWISE at all 84 steps**, so it
+      is asserted at ZERO tolerance -- the `frozen_soil.esm` precedent.
+    - **SNOWZ0 is the first Noah component where N99's rule has nothing to bite
+      on, and that is worth saying explicitly.** It has no step dependence at all:
+      four lines of algebra on the current state, no dt in them, nothing
+      differenced. So no replay pass is more accurate than another and the choice
+      is about WHICH STATE to ask about, not about precision. The 1e-6 s pass is
+      used because it is the one where the cover input is unambiguous -- at 60 s,
+      case D step 553's pack vanishes mid-step and SNOPAC zeroes `sncovr`
+      afterwards, so the dumped cover is no longer the one SNFRAC handed SNOWZ0
+      earlier in the same call -- and because it is the pass `snow_cover.esm`,
+      which supplies that input, is referenced against.
+    - **Two SNOWZ0 inputs are not the obvious ones, and both were settled by
+      measurement.** `z0brd` must be REDPRM's greenness-selected value
+      (**FORTRAN_BUGS N96, now extended to a fourth quantity**): the dumped
+      argument takes 0.05 m at some steps against 0.150000006 m actually used. And
+      `snowh` is the CURRENT post-SNOW_NEW depth, NOT the previous step's that
+      SFLX's comment above the call claims -- the previous depth reproduces WRF to
+      only 7.1e-12 relative against bitwise agreement with the current one. That
+      the discrepancy is small is an accident of this surface (burial height
+      1.05 m against a pack never deeper than 0.31 m) and would not survive a
+      smoother one.
+    - **Guards: one load-bearing, one not.** SNOW_NEW is the identity at
+      `newsn = 0` only while the pack is thicker than 1e-3 cm; below that WRF's
+      degenerate-average branch would RAISE the density out of nothing, so a
+      consumer must reproduce SFLX's SNOWNG/FRZGRA guard. SNOWZ0's
+      `IF (SNCOVR > 0) ... ELSE Z0 = Z0BRD` is by contrast an optimisation: the
+      cover-weighted average already gives exactly `z0brd` at zero cover, which
+      the 17 snow-free steps test.
+    - Untested branches, named rather than transcribed blind: SNOW_NEW's dsnew
+      floor (the set never snows below -8.7 C) and its degenerate average;
+      SNOWZ0's fully-buried branch (needs 1.05 m of snow against 0.31 m
+      available) and its entire UA_PHYS branch.
+
 1.4j Noah stage 2, seventh tranche (done 2026-09-23): the frozen soil column as a
     COUPLING, not a component.
 
