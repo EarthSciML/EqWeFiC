@@ -180,6 +180,19 @@ def _fields_library(test: dict[str, Any], ns: dict[str, Any], esm_name: str) -> 
     }
 
 
+def _tol(tol: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pin `rel` beside any absolute bound.
+
+    The runner ORs the two bounds and defaults `rel` to ~1e-6 when it is absent,
+    so an abs-only tolerance does NOT bind: `{"abs": 0.0}` is not zero tolerance
+    and `{"abs": 1e-14}` is satisfied by a 1e-6 relative error.  Every absolute
+    bound this tool writes therefore carries an explicit `"rel": 0.0`.
+    """
+    if isinstance(tol, dict) and "abs" in tol and "rel" not in tol:
+        return dict(tol, rel=0.0)
+    return tol
+
+
 def _assertions(test: dict[str, Any], ns: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for a in test["assertions"]:
@@ -189,13 +202,13 @@ def _assertions(test: dict[str, Any], ns: dict[str, Any]) -> list[dict[str, Any]
             arr = np.asarray(val, dtype=float).reshape(-1)
             d = dict(base, reduce=a["reduce"], expected=0.0, reference=_const_gather(arr, a["axis"]))
             if "tolerance" in a:
-                d["tolerance"] = a["tolerance"]
+                d["tolerance"] = _tol(a["tolerance"])
             elif "tol_rel_max" in a:
                 # Normalise by the COLUMN maximum rather than per cell.  A per-cell relative
                 # tolerance is not supportable wherever the quantity is a difference that
                 # nearly cancels (FORTRAN_BUGS N85 for GWDO); the honest bound is a fraction
                 # of the profile's own amplitude.  An identically-zero profile keeps abs = 0.
-                d["tolerance"] = {"abs": float(a["tol_rel_max"]) * float(np.abs(arr).max())}
+                d["tolerance"] = {"abs": float(a["tol_rel_max"]) * float(np.abs(arr).max()), "rel": 0.0}
             out.append(d)
         elif "coords" in a:
             arr = np.asarray(val, dtype=float).reshape(-1)
@@ -203,12 +216,12 @@ def _assertions(test: dict[str, Any], ns: dict[str, Any]) -> list[dict[str, Any]
             for lev in levels:
                 d = dict(base, coords={axis: int(lev)}, expected=float(arr[int(lev) - 1]))
                 if "tolerance" in a:
-                    d["tolerance"] = a["tolerance"]
+                    d["tolerance"] = _tol(a["tolerance"])
                 out.append(d)
         else:
             d = dict(base, expected=float(np.asarray(val).reshape(-1)[0]))
             if "tolerance" in a:
-                d["tolerance"] = a["tolerance"]
+                d["tolerance"] = _tol(a["tolerance"])
             out.append(d)
     return out
 
