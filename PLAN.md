@@ -2368,8 +2368,32 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
   So write the component cancellation-free, or add the publisher, BEFORE
   choosing the step -- the choice follows from that decision, not the other way
   round. N97's sink and N98's melt rate both moved from the first case to the
-  second the moment they were published rather than differenced. State the
-  choice and its reason in every test `description`.
+  second the moment they were published rather than differenced.
+  **CORRECTION, 2026-09-23, from the snow-covered frozen columns: the V's RIGHT
+  branch is usually a DISCRETE SWITCH FLIP, not smooth truncation, so it is a
+  property of the COLUMN and not of the scheme -- and a column can have no
+  right branch at all.** Where a scheme carries a limiter or a clamp, the large
+  step does not degrade the answer gradually; it changes a decision, and until
+  it does, growing dt only improves the differenced reference. Measured over the
+  five frozen-column coupling documents, worst absolute residual at
+  1e-6 / 0.01 / 60 s: the MELT column 4.53e-11 / 4.64e-14 / **1.0 -- an
+  indicator flip**, where WRF's interval clamp changes decision in two layers and
+  the phase term stops being a rate; the FROST column 1.24e-11 / 1.24e-15 /
+  **1.31e-18, monotone down**, because its clamp decisions are identical at all
+  three passes and 60 s is simply its best. **So do not extrapolate a V from one
+  column.** Measure the candidate steps on the column at hand, and check the
+  scheme's switch decisions across them explicitly -- a residual that jumps to
+  O(1) is a flipped indicator, not a tolerance to widen. The interior minimum of
+  the first case above is where a floor and a flip both exist; it is not
+  guaranteed to exist at all.
+  **And say which of the two bounds the tolerance was sized from.** Once the
+  splitting error exceeds the cancellation floor the bound stops being about
+  arithmetic: the melt column's 2e-13 is set by an O(dt) OPERATOR-SPLITTING
+  error of 4.2e-14 (1.1e-8 relative) against a 6.7e-15 eps/dt floor, the first
+  Noah bound sized from a modelling error rather than from precision, while the
+  frost column's 1e-14 is set by the floor. A reader cannot tell which without
+  being told. State the choice, its reason and which bound set it in every test
+  `description`.
 - Column components shaped over `lev`; geometry supplied by the consumer.
 - Constants only from `lib/wrf_constants.esm`.
 - Tolerances: `rel 1e-9` for real64 kernel references, `rel 1e-5` for real32.
