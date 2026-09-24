@@ -1,0 +1,2234 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "NTiedtkePrecipitationFlux",
+    "description": "The convective rain and snow flux profiles of WRF's New Tiedtke scheme -- blocks 2 and 3 of `cuflxn` (`phys/physics_mmm/cu_ntiedtke.F90:2974-3057`, WRF 4.8). Given the precipitation the updraught and downdraught generate in each layer, it carries the falling water down the column, splits it between rain and snow by temperature, melts the snow that falls through the freezing level, and evaporates what it can into the sub-cloud air. The surface convective rainfall is the bottom value of the rain flux.\n\nTWO SWEEPS, AND THEY CANNOT BE FUSED. The Fortran runs the phase-partition sweep over the whole cloud, from one level above cloud top to the surface, and then runs the evaporation sweep again over the sub-cloud part, from cloud base to the surface, re-writing what the first left there. It is tempting to read that as one pass with a branch -- I wrote it that way first -- but the first sweep computes the MELTING RATE and the ADJUSTED SATURATION HUMIDITY, and the second sweep READS both. Fusing them recomputes the melting against the evaporation sweep's flux instead of the partition sweep's, which is a different number: measured on this reference set, up to 0.31 of the flux amplitude. So the ordering is a real data dependency and not an arbitrary choice, and the two stages are written out separately here. Tried, measured, rejected.\n\nWHY NEITHER SWEEP IS A CYCLE, which is the reason this component exists at all. Each looks like a recurrence between TWO variables: the rain flux and the snow flux each depend on both of themselves at the level above, because when either goes negative the scheme rebalances them against each other. esm-spec 4.3.1.1 rejects a cycle between distinct variables at any lag, so written that way neither sweep is admissible. They are not cycles. MELTING CANCELS OUT OF THE TOTAL -- it moves mass from snow to rain and leaves the falling water alone -- and so does the rebalance, which only ever moves a deficit from one phase to the other. What remains is\n\n    total[k+1] = max(total[k] + generation[k], 0)\n\nwhich reads only itself, and a rain flux that is its own unconstrained value clamped into [0, total[k+1]] -- a read of another variable at the SAME cell, which is not a cycle. Two single-variable recurrences in a DAG. Verified against the Fortran over all 17 convecting columns of the reference set at 4.3e-16 of the flux amplitude, which is the check that turned the reformulation from plausible into settled.\n\nTHE STAGE BOUNDARY IS NOT THE ROUTINE BOUNDARY. `cumastrn` runs a post-correction after `cuflxn` returns: it rescales the downdraught mass flux and adds the remainder back into the rain flux, then recomputes the precipitation generation as the flux difference. The fluxes visible to the next stage are therefore NOT the ones this component produces, and a test pinned against them disagrees by up to 0.31 of the amplitude on exactly the columns whose downdraught was rescaled while being bit-exact on the others. This component is pinned against `cuflxn`'s OWN exit, and the post-correction belongs to whatever component owns the downdraught rescaling (FORTRAN_BUGS N113).\n\nVertical ordering is the scheme's own TOP-DOWN kernel ordering: index 1 is the model top, index NLEV the surface, and the sweeps run in the direction the rain falls, from low index to high.\n\nNOT YET PINNED, deliberately. The sidecar `precipitation_flux.esm.fill.json` carries ten regimes and the component reproduces the Fortran on the quantities that leave it -- rain, snow, the net precipitation source and the column-integrated generation agree with the `cx_*` tape to 1e-14 -- but two things are unfinished and a green test block would hide both. (1) THREE of the flux assertions fail at 1e-14 against a bound of 1e-9 times the profile maximum: on a column whose peak flux is 1e-5 that bound is 1e-14, which is below the round-off floor of the arithmetic producing it, since the pressures and humidities it is built from are of order 1e-2 to 1e5. The bound has to be sized by the scale of the arithmetic rather than of the output, and that needs measuring, not widening. (2) The `qs` DIAGNOSTIC -- the saturation humidity after melting, re-applied to the finished partition profile -- disagrees with the Fortran at the melting levels by about 1e-4, while the same formula fed WRF's own melting rate reproduces it EXACTLY. So the discrepancy is in the melting rate the post-hoc array recomputes, not in the thermodynamics, and since the evaporation that `rain` depends on reads `qs` INSIDE the sweep and `rain` is correct to 1e-14, the sweep's own value is right and only the re-application is wrong. That is a real inconsistency and it is worth understanding rather than dropping the assertion for: an unpinned diagnostic is a place a later error can hide.",
+    "license": "MIT",
+    "tags": [
+      "wrf",
+      "convection",
+      "new-tiedtke",
+      "precipitation",
+      "melting",
+      "evaporation",
+      "recurrence",
+      "column"
+    ],
+    "references": [
+      {
+        "citation": "Tiedtke, M. (1989). A comprehensive mass flux scheme for cumulus parameterization in large-scale models. Mon. Wea. Rev. 117, 1779-1800.",
+        "doi": "10.1175/1520-0493(1989)117<1779:ACMFSF>2.0.CO;2"
+      },
+      {
+        "citation": "Kessler, E. (1969). On the distribution and continuity of water substance in atmospheric circulations. Meteor. Monogr. 10, No. 32. (the evaporation rate of falling precipitation)"
+      },
+      {
+        "citation": "NCAR/MMM-physics cu_ntiedtke.F90 (WRF 4.8 phys/physics_mmm submodule), subroutine cuflxn blocks 2 and 3."
+      }
+    ]
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 59,
+      "description": "Number of model layers in the scheme's top-down ordering (the kernel's klev); 59 is the chem170 single-column reference. The flux arrays live on the NLEV+1 interfaces."
+    }
+  },
+  "index_sets": {
+    "lev": {
+      "kind": "interval",
+      "size": "NLEV"
+    },
+    "lev_nodes": {
+      "kind": "interval",
+      "size": {
+        "op": "+",
+        "args": [
+          "NLEV",
+          1
+        ]
+      }
+    }
+  },
+  "models": {
+    "NTiedtkePrecipitationFlux": {
+      "expression_template_imports": [
+        {
+          "ref": "./moist_thermodynamics.esm"
+        }
+      ],
+      "subsystems": {
+        "wrf": {
+          "ref": "../../../lib/wrf_constants.esm"
+        },
+        "par": {
+          "ref": "./ntiedtke_parameters.esm"
+        }
+      },
+      "variables": {
+        "T": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer temperature; it sets the phase of the condensate and drives the melting."
+        },
+        "q": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer water-vapour mixing ratio; the sub-saturation it implies is what the falling precipitation evaporates into."
+        },
+        "qs_in": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer saturation mixing ratio as the sweeps first see it."
+        },
+        "paph": {
+          "type": "unknown",
+          "units": "Pa",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "Half-level pressure, increasing with the index because the ordering is top-down."
+        },
+        "pap": {
+          "type": "unknown",
+          "units": "Pa",
+          "shape": [
+            "lev"
+          ],
+          "description": "Layer mid-point pressure."
+        },
+        "gen_up": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Precipitation generated in the layer by the UPDRAUGHT, as `cuflxn` has it after zeroing the levels outside the cloud."
+        },
+        "gen_dd_in": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Precipitation generated (negative: evaporated) in the layer by the DOWNDRAUGHT, likewise after the zeroing."
+        },
+        "kctop": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Cloud-top level index. The partition sweep starts one level above it."
+        },
+        "kcbot": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Cloud-base level index. The evaporation sweep starts here and re-writes the partition sweep's result below it."
+        },
+        "rhevap": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Relative humidity the sub-cloud layer may be brought to by evaporation: 0.7 over land, 0.9 over water. The bound is what stops one step of evaporation from saturating the sub-cloud air."
+        },
+        "deltim": {
+          "type": "unknown",
+          "units": "s",
+          "description": "Model step. It enters ONLY the evaporation limiter, through zcons2 = 3/(g dt), which caps how much water a single step may evaporate. That makes it a parameter of this stage in the same sense as GWDO's deltim -- prescribed by the mounting document, not inherited from the integrator."
+        },
+        "melt_cap": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Most snow the layer's heat content can melt in one relaxation time, cp (1 + (T - T0)/2) (T - T0) dp / (L_f g tau). The factor (1 + (T-T0)/2) is the scheme's own warm-bias enhancement and has no derivation in the source."
+        },
+        "melt": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Snow actually melted in the layer -- the partition sweep applies this through the `melt_at` template at the cell it has just published; the array here re-applies the same template to the finished profile so the rate can be asserted."
+        },
+        "qs": {
+          "type": "unknown",
+          "units": "kg/kg",
+          "shape": [
+            "lev"
+          ],
+          "description": "Saturation mixing ratio AFTER the melting has cooled the layer, re-applied to the finished partition profile. The evaporation sweep READS it -- one of the two quantities that make the two sweeps unfusable."
+        },
+        "liq_frac": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "Fraction of the layer's generated condensate that falls as rain rather than snow. It is the mixed-phase weight foealfa, EXCEPT that it is forced to zero wherever the layer is below the triple point -- the scheme's 'no liquid precipitation above the melting level' rule, which overrides the smooth weight with a hard cut."
+        },
+        "glaciation": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Condensate reassigned from liquid to ice by that hard cut, which the scheme books as latent heat of freezing elsewhere."
+        },
+        "tot_p": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "TOTAL falling precipitation at each interface after the phase-partition sweep -- rain plus snow. This is the recurrence that carries the sweep, and it is a single variable because melting and the negativity rebalance both conserve it: max(total + generation, 0), floored because the column cannot deliver water it does not have."
+        },
+        "neg_p": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "1 where the partition sweep's rebalance fires because the generation would drive the total negative -- the downdraught asking to evaporate more than is falling."
+        },
+        "gen_dd": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Downdraught generation as the rebalance leaves it: limited, where it fires, to exactly the water available."
+        },
+        "rain_p": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "Rain flux after the partition sweep: its own unconstrained value clamped into [0, total]. The clamp IS the three-way rebalance -- below zero the rain is emptied into the snow, above the total the snow is emptied into the rain -- written as a clamp rather than as three branches because that is what it is."
+        },
+        "snow_p": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "Snow flux after the partition sweep, the remainder of the total."
+        },
+        "evap_dry": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "description": "1 where the evaporation sweep finds essentially no precipitation arriving (total at or below prec_min) and zeroes everything below rather than evaporating. Applied inside the sweep through the matching template; this array re-applies it to the finished profile so it can be asserted."
+        },
+        "evap_raw": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Kessler evaporation rate of the falling precipitation into the layer's sub-saturation, before the humidity limiter. Applied inside the sweep through the matching template; this array re-applies it to the finished profile so it can be asserted."
+        },
+        "evap_floor": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Least precipitation flux the humidity limiter permits to survive the layer: what would remain if evaporation brought the layer to rhevap times saturation within one step. The limiter is why `deltim` appears at all. Applied inside the sweep through the matching template; this array re-applies it to the finished profile so it can be asserted."
+        },
+        "evap": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Evaporation actually applied, negative or zero: the Kessler rate limited by the humidity bound and by the water available. Applied inside the sweep through the matching template; this array re-applies it to the finished profile so it can be asserted."
+        },
+        "tot": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "FINAL total precipitation flux: the partition sweep's profile above cloud base and the evaporating profile below it, in one recurrence whose update switches at cloud base."
+        },
+        "rain": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "FINAL rain flux. Its value at the surface interface is the scheme's convective rainfall rate."
+        },
+        "snow": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev_nodes"
+          ],
+          "description": "FINAL snow flux; its surface value is the convective snowfall rate."
+        },
+        "gen_up_out": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "shape": [
+            "lev"
+          ],
+          "description": "Updraught generation with the evaporation folded in, which is what the scheme carries forward as the layer's net precipitation source."
+        },
+        "prain": {
+          "type": "unknown",
+          "units": "kg/(m^2*s)",
+          "description": "Column-integrated precipitation generated by the updraught, accumulated over the partition sweep's range. A masked sum, not a sweep: it reads the generation before the evaporation sweep touches it."
+        }
+      },
+      "expression_templates": {
+        "in_partition": {
+          "params": [
+            "kz"
+          ],
+          "description": "1 at the levels the phase-partition sweep visits: from one level above cloud top to the surface, and never above the scheme's own ktopm2 = 2.",
+          "body": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">=",
+                "args": [
+                  "kz",
+                  {
+                    "op": "max",
+                    "args": [
+                      2,
+                      {
+                        "op": "-",
+                        "args": [
+                          "kctop",
+                          1
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "clamp_into_total": {
+          "params": [
+            "x",
+            "cap"
+          ],
+          "description": "min(max(x, 0), cap): the three-way negativity rebalance of the rain and snow fluxes, written as the clamp it is. Below zero the phase is emptied into the other; above the total the other phase is emptied into it; in between neither fires.",
+          "body": {
+            "op": "min",
+            "args": [
+              {
+                "op": "max",
+                "args": [
+                  "x",
+                  0.0
+                ]
+              },
+              "cap"
+            ]
+          }
+        },
+        "melt_at": {
+          "params": [
+            "kz"
+          ],
+          "description": "Snow melted in layer kz: the lesser of the snow arriving there and what the layer's heat content can melt in one relaxation time, and zero unless snow is arriving into air above the triple point. It is a TEMPLATE rather than an array because the partition sweep needs it at the cell it has just published -- defining it as its own observed makes melt, melt_active and the rain flux a three-variable cycle that esm-spec 4.9.6 rejects, even though every read is of a cell the sweep has already written. The same template is applied afterwards to the finished profile so the melting rate can be asserted.",
+          "body": {
+            "op": "*",
+            "args": [
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          {
+                            "op": "-",
+                            "args": [
+                              {
+                                "op": "index",
+                                "args": [
+                                  "tot_p",
+                                  "kz"
+                                ]
+                              },
+                              {
+                                "op": "index",
+                                "args": [
+                                  "rain_p",
+                                  "kz"
+                                ]
+                              }
+                            ]
+                          },
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": ">",
+                        "args": [
+                          {
+                            "op": "index",
+                            "args": [
+                              "T",
+                              "kz"
+                            ]
+                          },
+                          "par.tmelt"
+                        ]
+                      }
+                    ]
+                  },
+                  1.0,
+                  0.0
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "neg_p",
+                          "kz"
+                        ]
+                      },
+                      0.0
+                    ]
+                  },
+                  0.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "min",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "tot_p",
+                          "kz"
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "rain_p",
+                          "kz"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "melt_cap",
+                          "kz"
+                        ]
+                      },
+                      {
+                        "op": "-",
+                        "args": [
+                          {
+                            "op": "index",
+                            "args": [
+                              "T",
+                              "kz"
+                            ]
+                          },
+                          "par.tmelt"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "qs_at": {
+          "params": [
+            "kz"
+          ],
+          "description": "Saturation mixing ratio in layer kz after the melting has cooled it. A template for the same reason as melt_at, and read by the evaporation sweep -- which is the second of the two quantities that make the two sweeps unfusable.",
+          "body": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": "and",
+                        "args": [
+                          {
+                            "op": ">",
+                            "args": [
+                              {
+                                "op": "-",
+                                "args": [
+                                  {
+                                    "op": "index",
+                                    "args": [
+                                      "tot_p",
+                                      "kz"
+                                    ]
+                                  },
+                                  {
+                                    "op": "index",
+                                    "args": [
+                                      "rain_p",
+                                      "kz"
+                                    ]
+                                  }
+                                ]
+                              },
+                              0.0
+                            ]
+                          },
+                          {
+                            "op": ">",
+                            "args": [
+                              {
+                                "op": "index",
+                                "args": [
+                                  "T",
+                                  "kz"
+                                ]
+                              },
+                              "par.tmelt"
+                            ]
+                          }
+                        ]
+                      },
+                      1.0,
+                      0.0
+                    ]
+                  },
+                  0.0
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foeewm",
+                    "bindings": {
+                      "tt": {
+                        "op": "-",
+                        "args": [
+                          {
+                            "op": "index",
+                            "args": [
+                              "T",
+                              "kz"
+                            ]
+                          },
+                          {
+                            "op": "/",
+                            "args": [
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "op": "-",
+                                    "args": [
+                                      {
+                                        "op": "index",
+                                        "args": [
+                                          "tot_p",
+                                          "kz"
+                                        ]
+                                      },
+                                      {
+                                        "op": "index",
+                                        "args": [
+                                          "rain_p",
+                                          "kz"
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      {
+                                        "op": "index",
+                                        "args": [
+                                          "melt_cap",
+                                          "kz"
+                                        ]
+                                      },
+                                      {
+                                        "op": "-",
+                                        "args": [
+                                          {
+                                            "op": "index",
+                                            "args": [
+                                              "T",
+                                              "kz"
+                                            ]
+                                          },
+                                          "par.tmelt"
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "index",
+                                "args": [
+                                  "melt_cap",
+                                  "kz"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "pap",
+                      "kz"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "qs_in",
+                  "kz"
+                ]
+              }
+            ]
+          }
+        },
+        "evap_dry_at": {
+          "params": [
+            "kz"
+          ],
+          "description": "1 where the evaporation sweep finds essentially no precipitation arriving at layer kz and zeroes the flux below rather than evaporating. A TEMPLATE rather than an array because the evaporation sweep needs it at the cell it has just published; as an observed it closes a cycle with the total flux that esm-spec 4.9.6 rejects, even though every read is of a published cell. Re-applied afterwards to the finished profile so it can be asserted.",
+          "body": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "tot",
+                      "kz"
+                    ]
+                  },
+                  "par.prec_min"
+                ]
+              },
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "evap_raw_at": {
+          "params": [
+            "kz"
+          ],
+          "description": "Kessler evaporation rate of the precipitation falling into layer kz, before the humidity limiter. A TEMPLATE rather than an array because the evaporation sweep needs it at the cell it has just published; as an observed it closes a cycle with the total flux that esm-spec 4.9.6 rejects, even though every read is of a published cell. Re-applied afterwards to the finished profile so it can be asserted.",
+          "body": {
+            "op": "*",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  "par.zcpecons",
+                  "wrf.g"
+                ]
+              },
+              {
+                "op": "max",
+                "args": [
+                  0.0,
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "apply_expression_template",
+                        "args": [],
+                        "name": "qs_at",
+                        "bindings": {
+                          "kz": "kz"
+                        }
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "q",
+                          "kz"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "par.zcucov",
+              {
+                "op": "^",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "sqrt",
+                            "args": [
+                              {
+                                "op": "/",
+                                "args": [
+                                  {
+                                    "op": "index",
+                                    "args": [
+                                      "paph",
+                                      "kz"
+                                    ]
+                                  },
+                                  {
+                                    "op": "index",
+                                    "args": [
+                                      "paph",
+                                      {
+                                        "op": "+",
+                                        "args": [
+                                          "NLEV",
+                                          1
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          "par.evap_c1"
+                        ]
+                      },
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "max",
+                            "args": [
+                              {
+                                "op": "index",
+                                "args": [
+                                  "tot",
+                                  "kz"
+                                ]
+                              },
+                              "par.prec_min"
+                            ]
+                          },
+                          "par.zcucov"
+                        ]
+                      }
+                    ]
+                  },
+                  "par.evap_expo"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "paph",
+                      {
+                        "op": "+",
+                        "args": [
+                          "kz",
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "paph",
+                      "kz"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "evap_floor_at": {
+          "params": [
+            "kz"
+          ],
+          "description": "Least flux the humidity limiter lets survive layer kz: what would remain if evaporation brought it to rhevap times saturation within one step. A TEMPLATE rather than an array because the evaporation sweep needs it at the cell it has just published; as an observed it closes a cycle with the total flux that esm-spec 4.9.6 rejects, even though every read is of a published cell. Re-applied afterwards to the finished profile so it can be asserted.",
+          "body": {
+            "op": "-",
+            "args": [
+              {
+                "op": "index",
+                "args": [
+                  "tot",
+                  "kz"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "par.zcucov",
+                  {
+                    "op": "max",
+                    "args": [
+                      0.0,
+                      {
+                        "op": "-",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              "rhevap",
+                              {
+                                "op": "apply_expression_template",
+                                "args": [],
+                                "name": "qs_at",
+                                "bindings": {
+                                  "kz": "kz"
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "op": "index",
+                            "args": [
+                              "q",
+                              "kz"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      3.0,
+                      {
+                        "op": "*",
+                        "args": [
+                          "wrf.g",
+                          "deltim"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "paph",
+                          {
+                            "op": "+",
+                            "args": [
+                              "kz",
+                              1
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "paph",
+                          "kz"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "evap_at": {
+          "params": [
+            "kz"
+          ],
+          "description": "Evaporation applied in layer kz, negative or zero: the Kessler rate limited by the humidity bound and by the water available. A TEMPLATE rather than an array because the evaporation sweep needs it at the cell it has just published; as an observed it closes a cycle with the total flux that esm-spec 4.9.6 rejects, even though every read is of a published cell. Re-applied afterwards to the finished profile so it can be asserted.",
+          "body": {
+            "op": "min",
+            "args": [
+              0.0,
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      0.0,
+                      {
+                        "op": "max",
+                        "args": [
+                          {
+                            "op": "-",
+                            "args": [
+                              {
+                                "op": "index",
+                                "args": [
+                                  "tot",
+                                  "kz"
+                                ]
+                              },
+                              {
+                                "op": "apply_expression_template",
+                                "args": [],
+                                "name": "evap_raw_at",
+                                "bindings": {
+                                  "kz": "kz"
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "op": "apply_expression_template",
+                            "args": [],
+                            "name": "evap_floor_at",
+                            "bindings": {
+                              "kz": "kz"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "tot",
+                      "kz"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "equations": [
+        {
+          "lhs": "T",
+          "rhs": {
+            "op": "input_pf_T",
+            "args": []
+          }
+        },
+        {
+          "lhs": "q",
+          "rhs": {
+            "op": "input_pf_q",
+            "args": []
+          }
+        },
+        {
+          "lhs": "qs_in",
+          "rhs": {
+            "op": "input_pf_qs",
+            "args": []
+          }
+        },
+        {
+          "lhs": "paph",
+          "rhs": {
+            "op": "input_pf_paph",
+            "args": []
+          }
+        },
+        {
+          "lhs": "pap",
+          "rhs": {
+            "op": "input_pf_pap",
+            "args": []
+          }
+        },
+        {
+          "lhs": "gen_up",
+          "rhs": {
+            "op": "input_pf_genup",
+            "args": []
+          }
+        },
+        {
+          "lhs": "gen_dd_in",
+          "rhs": {
+            "op": "input_pf_gendd",
+            "args": []
+          }
+        },
+        {
+          "lhs": "kctop",
+          "rhs": {
+            "op": "input_pf_kctop",
+            "args": []
+          }
+        },
+        {
+          "lhs": "kcbot",
+          "rhs": {
+            "op": "input_pf_kcbot",
+            "args": []
+          }
+        },
+        {
+          "lhs": "rhevap",
+          "rhs": {
+            "op": "input_pf_rhevap",
+            "args": []
+          }
+        },
+        {
+          "lhs": "deltim",
+          "rhs": {
+            "op": "input_pf_deltim",
+            "args": []
+          }
+        },
+        {
+          "lhs": "melt_cap",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "T",
+              "paph"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "/",
+                  "args": [
+                    "wrf.cp",
+                    {
+                      "op": "*",
+                      "args": [
+                        "wrf.xlf",
+                        "wrf.g",
+                        "par.ztaumel"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "+",
+                  "args": [
+                    1.0,
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "-",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "T",
+                                "k"
+                              ]
+                            },
+                            "par.tmelt"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "-",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "paph",
+                        {
+                          "op": "+",
+                          "args": [
+                            "k",
+                            1
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "paph",
+                        "k"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "tot_p",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "m"
+            ],
+            "args": [
+              "gen_up",
+              "gen_dd_in"
+            ],
+            "ranges": {
+              "m": {
+                "from": "lev_nodes"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<=",
+                  "args": [
+                    "m",
+                    {
+                      "op": "max",
+                      "args": [
+                        2,
+                        {
+                          "op": "-",
+                          "args": [
+                            "kctop",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                0.0,
+                {
+                  "op": "max",
+                  "args": [
+                    0.0,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "tot_p",
+                            {
+                              "op": "-",
+                              "args": [
+                                "m",
+                                1
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "gen_up",
+                            {
+                              "op": "-",
+                              "args": [
+                                "m",
+                                1
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "gen_dd_in",
+                            {
+                              "op": "-",
+                              "args": [
+                                "m",
+                                1
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "liq_frac",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<",
+                "args": [
+                  "T",
+                  "par.tmelt"
+                ]
+              },
+              0.0,
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "foealfa",
+                "bindings": {
+                  "tt": "T"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "glaciation",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "T",
+              "gen_up",
+              "gen_dd"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "T",
+                        "k"
+                      ]
+                    },
+                    "par.tmelt"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "apply_expression_template",
+                      "args": [],
+                      "name": "foealfa",
+                      "bindings": {
+                        "tt": {
+                          "op": "index",
+                          "args": [
+                            "T",
+                            "k"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "gen_up",
+                            "k"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "gen_dd",
+                            "k"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                0.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "neg_p",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "tot_p",
+              "gen_up",
+              "gen_dd_in"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "tot_p",
+                            "k"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "gen_up",
+                            "k"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "gen_dd_in",
+                            "k"
+                          ]
+                        }
+                      ]
+                    },
+                    0.0
+                  ]
+                },
+                1.0,
+                0.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "gen_dd",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "neg_p",
+              "tot_p",
+              "gen_up",
+              "gen_dd_in"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": ">",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "neg_p",
+                        "k"
+                      ]
+                    },
+                    0.0
+                  ]
+                },
+                {
+                  "op": "-",
+                  "args": [
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "tot_p",
+                            "k"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "gen_up",
+                            "k"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "gen_dd_in",
+                    "k"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "rain_p",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "m"
+            ],
+            "args": [
+              "liq_frac",
+              "gen_up",
+              "gen_dd",
+              "melt",
+              "tot_p"
+            ],
+            "ranges": {
+              "m": {
+                "from": "lev_nodes"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<=",
+                  "args": [
+                    "m",
+                    {
+                      "op": "max",
+                      "args": [
+                        2,
+                        {
+                          "op": "-",
+                          "args": [
+                            "kctop",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                0.0,
+                {
+                  "op": "apply_expression_template",
+                  "args": [],
+                  "name": "clamp_into_total",
+                  "bindings": {
+                    "x": {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "rain_p",
+                            {
+                              "op": "-",
+                              "args": [
+                                "m",
+                                1
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "liq_frac",
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "m",
+                                    1
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "gen_up",
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        "m",
+                                        1
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "gen_dd",
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        "m",
+                                        1
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "melt_at",
+                          "bindings": {
+                            "kz": {
+                              "op": "-",
+                              "args": [
+                                "m",
+                                1
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "cap": {
+                      "op": "index",
+                      "args": [
+                        "tot_p",
+                        "m"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "snow_p",
+          "rhs": {
+            "op": "-",
+            "args": [
+              "tot_p",
+              "rain_p"
+            ]
+          }
+        },
+        {
+          "lhs": "melt",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "tot_p",
+              "rain_p",
+              "melt_cap",
+              "T",
+              "neg_p"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "melt_at",
+              "bindings": {
+                "kz": "k"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "qs",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "tot_p",
+              "rain_p",
+              "melt_cap",
+              "T",
+              "pap",
+              "qs_in"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "qs_at",
+              "bindings": {
+                "kz": "k"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "prain",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [],
+            "reduce": "+",
+            "args": [
+              "gen_up"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "filter": {
+              "op": ">=",
+              "args": [
+                "k",
+                {
+                  "op": "max",
+                  "args": [
+                    2,
+                    {
+                      "op": "-",
+                      "args": [
+                        "kctop",
+                        1
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "gen_up",
+                "k"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "tot",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "m"
+            ],
+            "args": [
+              "tot_p",
+              "gen_dd",
+              "evap",
+              "evap_dry"
+            ],
+            "ranges": {
+              "m": {
+                "from": "lev_nodes"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<=",
+                  "args": [
+                    "m",
+                    {
+                      "op": "max",
+                      "args": [
+                        2,
+                        "kcbot"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "tot_p",
+                    "m"
+                  ]
+                },
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": ">",
+                      "args": [
+                        {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "evap_dry_at",
+                          "bindings": {
+                            "kz": {
+                              "op": "-",
+                              "args": [
+                                "m",
+                                1
+                              ]
+                            }
+                          }
+                        },
+                        0.0
+                      ]
+                    },
+                    0.0,
+                    {
+                      "op": "max",
+                      "args": [
+                        0.0,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "tot",
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "m",
+                                    1
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "gen_dd",
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "m",
+                                    1
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "apply_expression_template",
+                              "args": [],
+                              "name": "evap_at",
+                              "bindings": {
+                                "kz": {
+                                  "op": "-",
+                                  "args": [
+                                    "m",
+                                    1
+                                  ]
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "rain",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "m"
+            ],
+            "args": [
+              "rain_p",
+              "liq_frac",
+              "gen_dd",
+              "melt",
+              "tot",
+              "evap",
+              "evap_dry"
+            ],
+            "ranges": {
+              "m": {
+                "from": "lev_nodes"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<=",
+                  "args": [
+                    "m",
+                    {
+                      "op": "max",
+                      "args": [
+                        2,
+                        "kcbot"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "rain_p",
+                    "m"
+                  ]
+                },
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": ">",
+                      "args": [
+                        {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "evap_dry_at",
+                          "bindings": {
+                            "kz": {
+                              "op": "-",
+                              "args": [
+                                "m",
+                                1
+                              ]
+                            }
+                          }
+                        },
+                        0.0
+                      ]
+                    },
+                    0.0,
+                    {
+                      "op": "apply_expression_template",
+                      "args": [],
+                      "name": "clamp_into_total",
+                      "bindings": {
+                        "x": {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "rain",
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "m",
+                                    1
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "liq_frac",
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        "m",
+                                        1
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "gen_dd",
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        "m",
+                                        1
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "apply_expression_template",
+                              "args": [],
+                              "name": "melt_at",
+                              "bindings": {
+                                "kz": {
+                                  "op": "-",
+                                  "args": [
+                                    "m",
+                                    1
+                                  ]
+                                }
+                              }
+                            },
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "apply_expression_template",
+                                      "args": [],
+                                      "name": "evap_at",
+                                      "bindings": {
+                                        "kz": {
+                                          "op": "-",
+                                          "args": [
+                                            "m",
+                                            1
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "rain",
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "m",
+                                            1
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "max",
+                                  "args": [
+                                    "par.prec_min",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "tot",
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "m",
+                                            1
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        "cap": {
+                          "op": "index",
+                          "args": [
+                            "tot",
+                            "m"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "snow",
+          "rhs": {
+            "op": "-",
+            "args": [
+              "tot",
+              "rain"
+            ]
+          }
+        },
+        {
+          "lhs": "evap_dry",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "tot",
+              "qs",
+              "q",
+              "paph"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "evap_dry_at",
+              "bindings": {
+                "kz": "k"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "evap_raw",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "tot",
+              "qs",
+              "q",
+              "paph"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "evap_raw_at",
+              "bindings": {
+                "kz": "k"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "evap_floor",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "tot",
+              "qs",
+              "q",
+              "paph"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "evap_floor_at",
+              "bindings": {
+                "kz": "k"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "evap",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "tot",
+              "qs",
+              "q",
+              "paph"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "evap_at",
+              "bindings": {
+                "kz": "k"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "gen_up_out",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [
+              "gen_up",
+              "evap",
+              "evap_dry",
+              "kcbot"
+            ],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "gen_up",
+                    "k"
+                  ]
+                },
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "and",
+                      "args": [
+                        {
+                          "op": ">=",
+                          "args": [
+                            "k",
+                            {
+                              "op": "max",
+                              "args": [
+                                2,
+                                "kcbot"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "<=",
+                          "args": [
+                            {
+                              "op": "apply_expression_template",
+                              "args": [],
+                              "name": "evap_dry_at",
+                              "bindings": {
+                                "kz": "k"
+                              }
+                            },
+                            0.0
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "apply_expression_template",
+                      "args": [],
+                      "name": "evap_at",
+                      "bindings": {
+                        "kz": "k"
+                      }
+                    },
+                    0.0
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tests": []
+    }
+  }
+}
