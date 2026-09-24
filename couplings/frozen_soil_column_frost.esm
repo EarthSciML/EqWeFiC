@@ -1,0 +1,1097 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "NoahFrozenSoilColumnFrost",
+  "description": "A FROSTING snow column of WRF's unified Noah land-surface model: the snow-surface energy balance, vertical water transport and the freeze/thaw phase change, mounted together, with the frost deliberately NOT routed into the soil. WHY A COUPLING DOCUMENT. Each of the three mounted components is pinned on its own: `snow_energy.esm` reproduces SNOPAC's closure and melt rate against a pre-limiter publisher, `soil_moisture.esm` reproduces SMFLX/SRT as Richards' equation, and `frozen_soil.esm` reproduces the freeze/thaw sink exactly. None of them, alone, says anything about the quantity a consumer integrates, which is the SUM of the last two driven by the first -- and WRF never forms that sum. SFLX runs SNOPAC, which adds the melt to the surface water (`PRCP1 = PRCP1 + EX`); then SMFLX, which advances the liquid water; then SHFLX -> HRT, whose sink acts on what SMFLX has already moved. WRF's answer is a sequential composition; a continuous formulation is the sum evaluated at ONE instantaneous state. WHAT A SNOW COLUMN ADDS THAT BARE GROUND CANNOT. On the bare-ground documents the surface supply is dew, of order 1e-9 m/s. Here it is snowmelt from a third mount, up to 8.0e-7 m/s -- two to three orders larger, and the dominant term in the liquid budget. It also brings in a routing distinction that does not exist on bare ground: NOPAC adds frost to the soil water, SNOPAC does not, because under a pack the frost is deposited on the SNOW. `dew_to_soil` = 0 carries that, and it is not cosmetic. THE THREE CLAIMS ARE UNCHANGED, and every assertion below is labelled with the one it serves. (1) LIQUID BUDGET -- transport + phase = WRF's total step: `dsh2o_dt_total`. Its new term is checked in its own right by `melt` (against SNOPAC's own melt rate) and `water_supply` (against SNOPAC's own PRCP1, which the assembly must reconstruct as precipitation plus melt and NOT plus frost). (2) TOTAL-WATER BUDGET -- transport alone reproduces WRF's `smc` step, because the phase change moves water between liquid and ice within a layer and does not change the total: `dsmc_dt_total` and `dsice_dt`. An error that leaked transport into the phase term passes (1) and fails (2). (3) THE SWITCHES, AT ZERO TOLERANCE -- `phase_active`, the frozen sink's clamp decision made at the assembly's shared state against WRF's at its post-SMFLX state, and `melting`, SNOPAC's own branch. (3) is what licenses (1): the phase rate depends on the liquid water only through that discrete switch, so a switch that does not flip cannot admit the splitting error. PRECONDITION, not a result: `supersaturation_active` = 0. SSTEP's redistribution is a post-step projection that no tendency can carry, and the sum is only meaningful while it is inactive. THE REFERENCE STEP IS A FLOOR CASE (FORTRAN_BUGS N99, PLAN section 6) and its V is the same one the bare-ground documents measured: the reference (sh2o_out - sh2o_in)/dt is a difference, so cancellation bounds it below, while above it WRF's interval clamp starts flipping. Over the snow-covered steps the clamp decisions at 1e-6 s and 0.01 s agree everywhere and the 60 s ones do not, so 0.01 s it is. SCOPE. `qtot` is consumer-supplied, as in `frozen_soil.esm`'s own tests, so this isolates the WATER budget; the heat budget behind qtot is the soil-heat component's and joins in a larger assembly. The UA_PHYS canopy-shading branch is off everywhere and is not transcribed. THIS COLUMN: case C step 1, a thin pack over soil that will later thaw, on SNOPAC's SUB-FREEZING branch so that the melt rate is exactly zero and the only surface water is what the routing decides. etp = -23.55 W/m^2, so the surface is gaining frost at 9.4e-09 m/s -- and under a pack that frost belongs to the SNOW. This is the column where `dew_to_soil` = 0 is load-bearing: routing the frost into the soil instead, as the snow-free default would, moves the liquid tendency by about 6 %% and breaks both claim 1 and the `water_supply` check. The frozen sink is held at `sh2o` in the lower three layers and runs in the top one.",
+  "license": "MIT",
+  "tags": [
+   "wrf",
+   "land-surface",
+   "noah",
+   "coupling",
+   "snowmelt",
+   "soil-moisture",
+   "frozen-soil",
+   "operator-splitting"
+  ],
+  "references": [
+   {
+    "citation": "Koren, V., Schaake, J., Mitchell, K., Duan, Q.-Y., Chen, F., & Baker, J. M. (1999). A parameterization of snowpack and frozen ground intended for NCEP weather and climate models. J. Geophys. Res., 104(D16), 19569-19585."
+   },
+   {
+    "citation": "Ek, M. B., et al. (2003). Implementation of Noah land surface model advances in the NCEP operational mesoscale Eta model. J. Geophys. Res., 108(D22), 8851."
+   },
+   {
+    "citation": "wrf-model/WRF v4.8.0 phys/module_sf_noahlsm.F: SNOPAC's PRCP1 = PRCP1 + EX, then SMFLX, then SHFLX -> HRT -> SNKSRC -- the sequential composition this document sums instead."
+   }
+  ]
+ },
+ "metaparameters": {
+  "NLEV": {
+   "type": "integer",
+   "default": 4,
+   "description": "Number of soil layers. Declared at document level and bound into both soil mount edges, so the two share one vertical grid."
+  }
+ },
+ "models": {
+  "Sno": {
+   "ref": "../components/land_surface/noah/snow_energy.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/snowcol_C1_sno_inputs.esm"
+    }
+   ]
+  },
+  "Sm": {
+   "ref": "../components/land_surface/noah/soil_moisture.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/snowcol_C1_sm_inputs.esm"
+    }
+   ]
+  },
+  "Frz": {
+   "ref": "../components/land_surface/noah/frozen_soil.esm",
+   "bindings": {
+    "NLEV": "NLEV"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/snowcol_C1_frz_inputs.esm"
+    }
+   ]
+  },
+  "NoahFrozenSoilColumnFrost": {
+   "variables": {
+    "smcmax0": {
+     "type": "parameter",
+     "units": "m^3/m^3",
+     "default": 0.476,
+     "description": "Soil porosity. SHARED by the transport and the phase change from one assembly copy. Test-settable; the document's single copy."
+    },
+    "smcmax": {
+     "type": "unknown",
+     "units": "m^3/m^3",
+     "description": "Assembly value of smcmax, mapped into the mount(s)."
+    },
+    "bexp0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 5.33,
+     "description": "Clapp-Hornberger b. SHARED by both soil mounts. Test-settable; the document's single copy."
+    },
+    "bexp": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of bexp, mapped into the mount(s)."
+    },
+    "edir0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Direct soil evaporation. Under a pack SNOPAC scales it by (1 - sncovr) before SMFLX sees it, and the dump records the scaled value. Test-settable; the document's single copy."
+    },
+    "edir": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of edir, mapped into the mount(s)."
+    },
+    "ec0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Canopy evaporation, likewise scaled by (1 - sncovr) under a pack. Test-settable; the document's single copy."
+    },
+    "ec": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of ec, mapped into the mount(s)."
+    },
+    "etp0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Potential evaporation; read by the transport only for its SIGN, to decide whether the surface is gaining frost. Under a pack that frost does not reach the soil -- see dew_to_soil. Test-settable; the document's single copy."
+    },
+    "etp": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of etp, mapped into the mount(s)."
+    },
+    "prcp0": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 0.0,
+     "description": "Precipitation reaching the surface. Where it falls as snow SFLX sets PRCPF = 0 and the whole of it goes to the pack, so the transport sees nothing from it directly. Test-settable; the document's single copy."
+    },
+    "prcp": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Assembly value of prcp, mapped into the mount(s)."
+    },
+    "shdfac0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.5,
+     "description": "Green vegetation fraction, which splits the surface water between canopy interception and throughfall -- melt water included. Test-settable; the document's single copy."
+    },
+    "shdfac": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of shdfac, mapped into the mount(s)."
+    },
+    "cmc0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Canopy water content. Test-settable; the document's single copy."
+    },
+    "cmc": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Assembly value of cmc, mapped into the mount(s)."
+    },
+    "smcwlt0": {
+     "type": "parameter",
+     "units": "m^3/m^3",
+     "default": 0.03,
+     "description": "Wilting-point soil moisture. Test-settable; the document's single copy."
+    },
+    "smcwlt": {
+     "type": "unknown",
+     "units": "m^3/m^3",
+     "description": "Assembly value of smcwlt, mapped into the mount(s)."
+    },
+    "dksat0": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 7.2e-06,
+     "description": "Saturated hydraulic conductivity. Test-settable; the document's single copy."
+    },
+    "dksat": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Assembly value of dksat, mapped into the mount(s)."
+    },
+    "dwsat0": {
+     "type": "parameter",
+     "units": "m^2/s",
+     "default": 5.1e-06,
+     "description": "Saturated soil-water diffusivity. Test-settable; the document's single copy."
+    },
+    "dwsat": {
+     "type": "unknown",
+     "units": "m^2/s",
+     "description": "Assembly value of dwsat, mapped into the mount(s)."
+    },
+    "kdt0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 3.0,
+     "description": "Infiltration parameter. Test-settable; the document's single copy."
+    },
+    "kdt": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of kdt, mapped into the mount(s)."
+    },
+    "frzx0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.15,
+     "description": "Frozen-ground infiltration parameter. Test-settable; the document's single copy."
+    },
+    "frzx": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of frzx, mapped into the mount(s)."
+    },
+    "slope0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.1,
+     "description": "Slope-type baseflow coefficient. Test-settable; the document's single copy."
+    },
+    "slope": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of slope, mapped into the mount(s)."
+    },
+    "tsurf0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 273.0,
+     "description": "HRT's linearised surface temperature, the upper end of the profile the phase change reads. Test-settable; the document's single copy."
+    },
+    "tsurf": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Assembly value of tsurf, mapped into the mount(s)."
+    },
+    "tbot0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 285.0,
+     "description": "Deep soil temperature. Test-settable; the document's single copy."
+    },
+    "tbot": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Assembly value of tbot, mapped into the mount(s)."
+    },
+    "z_deep0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 8.0,
+     "description": "Depth of the lower temperature boundary. Test-settable; the document's single copy."
+    },
+    "z_deep": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Assembly value of z_deep, mapped into the mount(s)."
+    },
+    "psisat0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.3548,
+     "description": "Saturated soil matric potential. Test-settable; the document's single copy."
+    },
+    "psisat": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Assembly value of psisat, mapped into the mount(s)."
+    },
+    "sfctmp0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 265.0,
+     "description": "Air temperature at the lowest model level. Test-settable; the document's single copy."
+    },
+    "sfctmp": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Assembly value of sfctmp, mapped into the mount(s)."
+    },
+    "th20": {
+     "type": "parameter",
+     "units": "K",
+     "default": 265.0,
+     "description": "Potential temperature at the lowest model level. Test-settable; the document's single copy."
+    },
+    "th2": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Assembly value of th2, mapped into the mount(s)."
+    },
+    "t1_in0": {
+     "type": "parameter",
+     "units": "K",
+     "default": 265.0,
+     "description": "Skin temperature carried in from the previous step, read only by the precipitation heat term. Test-settable; the document's single copy."
+    },
+    "t1_in": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Assembly value of t1_in, mapped into the mount(s)."
+    },
+    "rch0": {
+     "type": "parameter",
+     "units": "W/(m^2*K)",
+     "default": 10.0,
+     "description": "Bulk heat-transfer coefficient in energy units. Test-settable; the document's single copy."
+    },
+    "rch": {
+     "type": "unknown",
+     "units": "W/(m^2*K)",
+     "description": "Assembly value of rch, mapped into the mount(s)."
+    },
+    "rr0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 2.0,
+     "description": "Resistance ratio. Test-settable; the document's single copy."
+    },
+    "rr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of rr, mapped into the mount(s)."
+    },
+    "t240": {
+     "type": "parameter",
+     "units": "K^4",
+     "default": 4900000000.0,
+     "description": "Fourth power of the AIR temperature, the linearisation point of the surface emission. Test-settable; the document's single copy."
+    },
+    "t24": {
+     "type": "unknown",
+     "units": "K^4",
+     "description": "Assembly value of t24, mapped into the mount(s)."
+    },
+    "fdown0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 300.0,
+     "description": "Total absorbed downward radiation at the surface. Test-settable; the document's single copy."
+    },
+    "fdown": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of fdown, mapped into the mount(s)."
+    },
+    "flx20": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Freezing-rain latent heat. Test-settable; the document's single copy."
+    },
+    "flx2": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of flx2, mapped into the mount(s)."
+    },
+    "emissi0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.95,
+     "description": "Surface emissivity, from the snow-cover component. Test-settable; the document's single copy."
+    },
+    "emissi": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of emissi, mapped into the mount(s)."
+    },
+    "df10": {
+     "type": "parameter",
+     "units": "W/(m*K)",
+     "default": 0.2,
+     "description": "Conductivity of the combined snow-and-soil path. Test-settable; the document's single copy."
+    },
+    "df1": {
+     "type": "unknown",
+     "units": "W/(m*K)",
+     "description": "Assembly value of df1, mapped into the mount(s)."
+    },
+    "snowh0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.3,
+     "description": "Physical depth of the pack. Test-settable; the document's single copy."
+    },
+    "snowh": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Assembly value of snowh, mapped into the mount(s)."
+    },
+    "sncovr0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.98,
+     "description": "Snow-cover fraction. Test-settable; the document's single copy."
+    },
+    "sncovr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of sncovr, mapped into the mount(s)."
+    },
+    "snowing0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Indicator for WRF's SNOWNG. Test-settable; the document's single copy."
+    },
+    "snowing": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value of snowing, mapped into the mount(s)."
+    },
+    "esd0": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.06,
+     "description": "Snow water equivalent entering the step; read only by the two pack projections. Test-settable; the document's single copy."
+    },
+    "esd": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Assembly value of esd, mapped into the mount(s)."
+    },
+    "dt_pack0": {
+     "type": "parameter",
+     "units": "s",
+     "default": 0.01,
+     "description": "Sub-step for the pack projections. A parameter of the projections, not the integrator's step; set to the reference step here. Test-settable; the document's single copy."
+    },
+    "dt_pack": {
+     "type": "unknown",
+     "units": "s",
+     "description": "Assembly value of dt_pack, mapped into the mount(s)."
+    },
+    "etanrg0": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Total latent-heat flux the snow-surface balance must dispose of. Test-settable; the document's single copy."
+    },
+    "etanrg": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Assembly value of etanrg, mapped into the mount(s)."
+    },
+    "esnow_rate0": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Sublimation rate from the pack, read only by the pack-exhaustion projection. Test-settable; the document's single copy."
+    },
+    "esnow_rate": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Assembly value of esnow_rate, mapped into the mount(s)."
+    },
+    "dew_to_soil0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "0 here, and that is the point: under a pack SNOPAC deposits frost on the SNOW and never routes it into the soil, unlike NOPAC. Leaving the transport's snow-free default of 1 would add that frost to the soil water that WRF gives to the pack."
+    },
+    "dew_to_soil": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Assembly value, mapped into the transport."
+    },
+    "dsh2o_dt_transport_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives the transport tendency through the coupling."
+    },
+    "dsh2o_dt_phase_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives the phase tendency through the coupling."
+    },
+    "dsmc_dt_transport_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives the total-water tendency through the coupling."
+    },
+    "phase_active_in": {
+     "type": "parameter",
+     "units": "1",
+     "shape": [
+      "lev"
+     ],
+     "default": 0.0,
+     "description": "Receives the clamp decision through the coupling."
+    },
+    "supersaturation_active_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives the SSTEP's projection indicator through the coupling."
+    },
+    "ex_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Receives the melt rate through the coupling."
+    },
+    "melting_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Receives the SNOPAC branch indicator through the coupling."
+    },
+    "water_supply_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Receives the total surface water supply through the coupling."
+    },
+    "dsh2o_dt_transport": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "CLAIM 1 term. Liquid-water tendency from vertical transport, evaluated at the assembly's column state and driven by a surface supply that now includes snowmelt."
+    },
+    "dsh2o_dt_phase": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "CLAIM 1 term. Liquid-water tendency from the freeze/thaw phase change, at the SAME column state."
+    },
+    "dsh2o_dt_total": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "CLAIM 1. The sum, which is what a consumer integrating the soil column adds to its liquid water, asserted against WRF's own (sh2o_out - sh2o_in)/dt."
+    },
+    "dsmc_dt_total": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "CLAIM 2. Total-water tendency: the transport alone, because the phase change conserves total water within a layer."
+    },
+    "dsice_dt": {
+     "type": "unknown",
+     "units": "1/s",
+     "shape": [
+      "lev"
+     ],
+     "description": "CLAIM 2. Soil-ice tendency, which reduces identically to minus the phase rate -- claim 2 read the other way round, and the form a heat-equation consumer needs."
+    },
+    "phase_active": {
+     "type": "unknown",
+     "units": "1",
+     "shape": [
+      "lev"
+     ],
+     "description": "CLAIM 3. Which layers the phase change runs in, decided at the assembly's shared state and asserted at zero tolerance against WRF's decision at its post-SMFLX state."
+    },
+    "melting": {
+     "type": "unknown",
+     "units": "1",
+     "description": "CLAIM 3. Which SNOPAC branch the snow-surface energy balance selected, asserted at zero tolerance against the reference's own record."
+    },
+    "melt": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "CLAIM 1, new term. The melt rate the snow-energy component produces and the transport consumes. Referenced against SNOPAC's own EX; the pack-exhaustion limiter never fires in this reference set, so the pre-limiter rate the component computes and the post-limiter rate the water budget saw are the same number."
+    },
+    "water_supply": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "CLAIM 1, new term. The total liquid water the transport actually sees, prcp1 + dew_to_soil*dew + melt, asserted against SNOPAC's own PRCP1. This is the assertion that would fail if the frost were routed into the soil, and it is the one that makes dew_to_soil = 0 a tested claim rather than a comment."
+    },
+    "supersaturation_active": {
+     "type": "unknown",
+     "units": "1",
+     "description": "PRECONDITION. SSTEP's redistribution indicator, which must be zero for WRF's step to be the sum of two rates at all."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "smcmax",
+     "rhs": "smcmax0"
+    },
+    {
+     "lhs": "bexp",
+     "rhs": "bexp0"
+    },
+    {
+     "lhs": "edir",
+     "rhs": "edir0"
+    },
+    {
+     "lhs": "ec",
+     "rhs": "ec0"
+    },
+    {
+     "lhs": "etp",
+     "rhs": "etp0"
+    },
+    {
+     "lhs": "prcp",
+     "rhs": "prcp0"
+    },
+    {
+     "lhs": "shdfac",
+     "rhs": "shdfac0"
+    },
+    {
+     "lhs": "cmc",
+     "rhs": "cmc0"
+    },
+    {
+     "lhs": "smcwlt",
+     "rhs": "smcwlt0"
+    },
+    {
+     "lhs": "dksat",
+     "rhs": "dksat0"
+    },
+    {
+     "lhs": "dwsat",
+     "rhs": "dwsat0"
+    },
+    {
+     "lhs": "kdt",
+     "rhs": "kdt0"
+    },
+    {
+     "lhs": "frzx",
+     "rhs": "frzx0"
+    },
+    {
+     "lhs": "slope",
+     "rhs": "slope0"
+    },
+    {
+     "lhs": "tsurf",
+     "rhs": "tsurf0"
+    },
+    {
+     "lhs": "tbot",
+     "rhs": "tbot0"
+    },
+    {
+     "lhs": "z_deep",
+     "rhs": "z_deep0"
+    },
+    {
+     "lhs": "psisat",
+     "rhs": "psisat0"
+    },
+    {
+     "lhs": "sfctmp",
+     "rhs": "sfctmp0"
+    },
+    {
+     "lhs": "th2",
+     "rhs": "th20"
+    },
+    {
+     "lhs": "t1_in",
+     "rhs": "t1_in0"
+    },
+    {
+     "lhs": "rch",
+     "rhs": "rch0"
+    },
+    {
+     "lhs": "rr",
+     "rhs": "rr0"
+    },
+    {
+     "lhs": "t24",
+     "rhs": "t240"
+    },
+    {
+     "lhs": "fdown",
+     "rhs": "fdown0"
+    },
+    {
+     "lhs": "flx2",
+     "rhs": "flx20"
+    },
+    {
+     "lhs": "emissi",
+     "rhs": "emissi0"
+    },
+    {
+     "lhs": "df1",
+     "rhs": "df10"
+    },
+    {
+     "lhs": "snowh",
+     "rhs": "snowh0"
+    },
+    {
+     "lhs": "sncovr",
+     "rhs": "sncovr0"
+    },
+    {
+     "lhs": "snowing",
+     "rhs": "snowing0"
+    },
+    {
+     "lhs": "esd",
+     "rhs": "esd0"
+    },
+    {
+     "lhs": "dt_pack",
+     "rhs": "dt_pack0"
+    },
+    {
+     "lhs": "etanrg",
+     "rhs": "etanrg0"
+    },
+    {
+     "lhs": "esnow_rate",
+     "rhs": "esnow_rate0"
+    },
+    {
+     "lhs": "dew_to_soil",
+     "rhs": "dew_to_soil0"
+    },
+    {
+     "lhs": "dsh2o_dt_transport",
+     "rhs": "dsh2o_dt_transport_in"
+    },
+    {
+     "lhs": "dsh2o_dt_phase",
+     "rhs": "dsh2o_dt_phase_in"
+    },
+    {
+     "lhs": "dsmc_dt_total",
+     "rhs": "dsmc_dt_transport_in"
+    },
+    {
+     "lhs": "phase_active",
+     "rhs": "phase_active_in"
+    },
+    {
+     "lhs": "supersaturation_active",
+     "rhs": "supersaturation_active_in"
+    },
+    {
+     "lhs": "melting",
+     "rhs": "melting_in"
+    },
+    {
+     "lhs": "melt",
+     "rhs": "ex_in"
+    },
+    {
+     "lhs": "water_supply",
+     "rhs": "water_supply_in"
+    },
+    {
+     "lhs": "dsh2o_dt_total",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "dsh2o_dt_transport",
+       "dsh2o_dt_phase"
+      ]
+     }
+    },
+    {
+     "lhs": "dsice_dt",
+     "rhs": {
+      "op": "-",
+      "args": [
+       "dsmc_dt_total",
+       "dsh2o_dt_total"
+      ]
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "cold_C1_snow_column",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 0.01 s. THE ASSERTIONS BY CLAIM. CLAIM 1, the liquid budget: `dsh2o_dt_total` per layer against WRF's own (sh2o_out - sh2o_in)/dt, plus its new term checked in its own right by `melt` (against SNOPAC's EX) and `water_supply` (against SNOPAC's PRCP1). CLAIM 2, the total-water budget: `dsmc_dt_total` and `dsice_dt`, which say that the phase change moves water between liquid and ice within a layer and does not change the total -- an error leaking transport into the phase term passes claim 1 and fails this. CLAIM 3, the switches at zero tolerance: `phase_active`, the frozen sink's clamp decision made at the assembly's shared state against WRF's at its post-SMFLX state, and `melting`, SNOPAC's own branch. PRECONDITION, not a result: `supersaturation_active` = 0. BOTH NEW EDGES ARE LOAD-BEARING, CHECKED BY BREAKING THEM. Removing the snowmelt coupling library turns 5 of these 20 assertions red; setting `dew_to_soil` back to its snow-free default of 1 turns 3 red on the frost column. A coupling that passes with its edge cut proves nothing, so both were cut. THE REFERENCE STEP. Worst absolute residual over this document's assertions: 1.24e-11 at ESM_DT = 1e-6 s, 1.24e-15 at 0.01 s and 1.31e-18 at 60 s. Unlike every other document in this family this column's V HAS NO RIGHT-HAND BRANCH -- its clamp decisions are the same at all three passes, so the residual just keeps falling as the differenced reference gains digits, and 60 s is numerically the best of the three. That is worth recording precisely because it is the exception: the right branch of the V is a discrete clamp flip, not a smooth truncation error, so it is absent entirely until a column happens to sit near a threshold. 0.01 s is used anyway, for consistency with the other four documents and because the melt column shows what the 60 s pass can do. The bound is 1e-14, eight times the measured residual and above the eps(sh2o)/dt = 6.7e-15 floor it sits at. A NOTE ON WHAT THE BOUND MEANS, because it is load-bearing here and was not at first. An esm tolerance of `{abs: x}` ALONE is satisfied by a 1e-6 RELATIVE error -- the runner ORs the absolute bound with a default relative one -- so an absolute bound only binds when `rel: 0.0` is written beside it. Every assertion in this document pins `rel: 0.0`, and the indicators are `{abs: 0.0, rel: 0.0}`, which is genuinely exact rather than exact-looking. Verified by construction: with `rel` left implicit these assertions also pass at `abs: 0`, which is the tell. THIS COLUMN: case C step 1, a thin pack over soil that will later thaw, on SNOPAC's SUB-FREEZING branch, so the melt rate is exactly zero and the only surface water is what the routing decides. etp = -23.55 W/m^2, so the surface is gaining frost at 9.4e-09 m/s -- and under a pack that frost belongs to the SNOW, not the soil. This is the column where `dew_to_soil` = 0 is load-bearing: routing the frost into the soil as the snow-free default would moves the liquid tendency by about 6 % and turns three assertions red. The frozen sink is held at `sh2o` in the lower three layers and runs in the top one.",
+       "parameter_overrides": {
+         "smcmax0": 0.47600001096725464,
+         "bexp0": 5.329999923706055,
+         "edir0": 0.0,
+         "ec0": 0.0,
+         "etp0": -23.549447626460747,
+         "prcp0": 0.0,
+         "shdfac0": 0.5,
+         "cmc0": 0.0,
+         "smcwlt0": 0.08399999886751175,
+         "dksat0": 2.8100000690756133e-06,
+         "dwsat0": 2.390000008745119e-05,
+         "kdt0": 4.215000114255272,
+         "frzx0": 0.17460114362402857,
+         "slope0": 0.10000000149011612,
+         "tsurf0": 266.44599412043084,
+         "tbot0": 276.0,
+         "z_deep0": 8.0,
+         "psisat0": 0.7590000033378601,
+         "sfctmp0": 264.81134033203125,
+         "th20": 265.08447265625,
+         "t1_in0": 271.0,
+         "rch0": 24.171723128403073,
+         "rr0": 1.1696753809977403,
+         "t240": 4917522072.076789,
+         "fdown0": 173.4457550048828,
+         "flx20": 0.0,
+         "emissi0": 0.9749635201505887,
+         "df10": 0.3236200250879231,
+         "snowh0": 0.02499999850988388,
+         "sncovr0": 0.2867568586410364,
+         "snowing0": 0.0,
+         "esd0": 0.005000000353902578,
+         "dt_pack0": 0.01,
+         "etanrg0": -23.549447626460747,
+         "esnow_rate0": 0.0,
+         "dew_to_soil0": 0.0
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "dsh2o_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": -1.05852645260196e-06,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsh2o_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": -3.2682190287403046e-11,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsh2o_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": -1.0585976539800868e-11,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsh2o_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 1.815214645262131e-11,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsmc_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": -4.011790899483003e-11,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsmc_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": -3.2682190287403046e-11,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsmc_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": -1.0585976539800868e-11,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsmc_dt_total",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 1.815214645262131e-11,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsice_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 1.0584863346929652e-06,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsice_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsice_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "dsice_dt",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 1e-14,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "phase_active",
+           "time": 0.0,
+           "coords": {
+             "lev": 1
+           },
+           "expected": 1.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "phase_active",
+           "time": 0.0,
+           "coords": {
+             "lev": 2
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "phase_active",
+           "time": 0.0,
+           "coords": {
+             "lev": 3
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "phase_active",
+           "time": 0.0,
+           "coords": {
+             "lev": 4
+           },
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "melt",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-09,
+             "abs": 1e-20
+           }
+         },
+         {
+           "variable": "water_supply",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-09,
+             "abs": 1e-20
+           }
+         },
+         {
+           "variable": "melting",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "supersaturation_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         }
+       ]
+     }
+   ]
+  }
+ },
+ "coupling": [
+  {
+   "type": "coupling_import",
+   "ref": "lib/noah_soilwater_frozen.esm",
+   "bind": {
+    "Col": "NoahFrozenSoilColumnFrost",
+    "Sm": "Sm",
+    "Frz": "Frz"
+   },
+   "description": "Noah transport <-> phase change: the shared soil parameters into both mounts from one assembly copy, and the two tendencies, the clamp decision and SSTEP's indicator back out."
+  },
+  {
+   "type": "coupling_import",
+   "ref": "lib/noah_snowmelt_soilwater.esm",
+   "bind": {
+    "Col": "NoahFrozenSoilColumnFrost",
+    "Sno": "Sno",
+    "Sm": "Sm"
+   },
+   "description": "Noah snow-surface energy balance -> soil water: the melt rate becomes the surface supply, and the transport is told it is under a pack so that frost goes to the snow and not the soil."
+  }
+ ]
+}

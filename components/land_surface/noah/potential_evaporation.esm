@@ -4,134 +4,664 @@
   "name": "NoahPotentialEvaporation",
   "description": "Linearised Penman potential evaporation of WRF's unified Noah land-surface model, SUBROUTINE PENMAN of phys/module_sf_noahlsm.F (WRF 4.8, sf_surface_physics = 2), together with the partial sums rch, rr, t24 and epsca that PENMAN passes back for the rest of SFLX to reuse. Penman (1948) combination form, linearised about the air temperature: epsca = (a rr + rad delta)/(delta + rr), where a = elcp1 (q2sat - q2) is the vapour-pressure deficit expressed as a temperature, rad = fnet/rch + th2 - sfctmp the available-energy term likewise, delta = elcp1 dqsdt2 the saturation slope and rr the radiative-plus-aerodynamic resistance ratio; etp = epsca rch / lvs. Snow blends two latent heats through the snow-cover fraction sncovr: elcp1 and lvs both interpolate between the liquid (lsubc) and the ice (lsubs) value, so that over full snow cover the potential flux is a sublimation. Falling precipitation adds its own sensible-heat capacity to rr -- cph2o for rain, cpice for snow -- and freezing rain adds the latent heat of fusion released on impact as flx2 = -lsubf prcp, which is subtracted from the net radiation. THREE things a consumer must know. (1) The `ssoil` this routine subtracts from the net radiation is NOT the ground heat flux SHFLX returns at the end of the step; it is the flux diagnosed from the INCOMING skin temperature, ssoil = df1 (t1 - stc[1])/(0.5 |zsoil[1]|), which SFLX computes just before the call. (2) PENMAN declares its OWN cp = 1004.6, which disagrees with the cp = 1004.5 that module_model_constants supplies to every other routine in the same module (FORTRAN_BUGS N88); it enters only through rho -> rch. (3) The radiative term of rr is the hard-coded literal 6.48e-8 standing for 4 sigma rd / cp, whose exact value with Noah's own sigma and rd is 6.48048e-8 -- a 7.4e-5 relative difference that this component reproduces by keeping the literal, because the object here is WRF's answer and not the exact one (FORTRAN_BUGS N89). The UA_PHYS canopy-shading branch (flx4, etpn) is not transcribed: it is off in both reference runs and is a separate parameterization. The component is algebraic in the consumer's state and owns nothing.",
   "license": "MIT",
-  "tags": ["wrf", "land-surface", "noah", "penman", "potential-evaporation", "surface-energy-balance"],
+  "tags": [
+   "wrf",
+   "land-surface",
+   "noah",
+   "penman",
+   "potential-evaporation",
+   "surface-energy-balance"
+  ],
   "references": [
-   {"citation": "Penman, H. L. (1948). Natural evaporation from open water, bare soil and grass. Proc. R. Soc. Lond. A, 193, 120-145."},
-   {"citation": "Mahrt, F., and M. Ek (1984). The influence of atmospheric stability on potential evaporation. J. Climate Appl. Meteor., 23, 222-234."},
-   {"citation": "Chen, F., and J. Dudhia (2001). Coupling an advanced land surface-hydrology model with the Penn State-NCAR MM5 modeling system. Part I. Mon. Wea. Rev., 129, 569-585."},
-   {"citation": "wrf-model/WRF v4.8.0 phys/module_sf_noahlsm.F SUBROUTINE PENMAN lines 2195-2312, called from SFLX line 735 (instrumented in ctessum-claude/WRF branch earthsciml-instrumented-chem170, commit ac6d4cc)."}
+   {
+    "citation": "Penman, H. L. (1948). Natural evaporation from open water, bare soil and grass. Proc. R. Soc. Lond. A, 193, 120-145."
+   },
+   {
+    "citation": "Mahrt, F., and M. Ek (1984). The influence of atmospheric stability on potential evaporation. J. Climate Appl. Meteor., 23, 222-234."
+   },
+   {
+    "citation": "Chen, F., and J. Dudhia (2001). Coupling an advanced land surface-hydrology model with the Penn State-NCAR MM5 modeling system. Part I. Mon. Wea. Rev., 129, 569-585."
+   },
+   {
+    "citation": "wrf-model/WRF v4.8.0 phys/module_sf_noahlsm.F SUBROUTINE PENMAN lines 2195-2312, called from SFLX line 735 (instrumented in ctessum-claude/WRF branch earthsciml-instrumented-chem170, commit ac6d4cc)."
+   }
   ]
  },
  "models": {
   "NoahPotentialEvaporation": {
    "subsystems": {
-    "par": {"ref": "./noah_parameters.esm"}
+    "par": {
+     "ref": "./noah_parameters.esm"
+    }
    },
    "variables": {
-    "sfctmp": {"type": "parameter", "units": "K", "default": 300.0,
-     "description": "Air temperature at the lowest model level, WRF's SFCTMP."},
-    "sfcprs": {"type": "parameter", "units": "Pa", "default": 100000.0,
-     "description": "Air pressure at the lowest model level, WRF's SFCPRS."},
-    "th2": {"type": "parameter", "units": "K", "default": 300.0,
-     "description": "Potential temperature at the lowest model level referenced to the surface pressure, WRF's TH2, supplied by the driver."},
-    "q2": {"type": "parameter", "units": "kg/kg", "default": 0.01,
-     "description": "Specific humidity at the lowest model level, WRF's Q2."},
-    "q2sat": {"type": "parameter", "units": "kg/kg", "default": 0.02,
-     "description": "Saturation specific humidity at the lowest model level, WRF's Q2SAT."},
-    "dqsdt2": {"type": "parameter", "units": "kg/(kg*K)", "default": 0.001,
-     "description": "Slope of the saturation specific humidity with temperature at the lowest model level, WRF's DQSDT2."},
-    "ch": {"type": "parameter", "units": "m/s", "default": 0.01,
-     "description": "Surface exchange coefficient for heat and moisture from the surface-layer scheme, WRF's CH."},
-    "prcp": {"type": "parameter", "units": "kg/(m^2*s)", "default": 0.0,
-     "description": "Precipitation rate reaching the surface, WRF's PRCP. Enters only through the sensible-heat capacity of the falling hydrometeors."},
-    "fdown": {"type": "parameter", "units": "W/m^2", "default": 600.0,
-     "description": "Total absorbed downward radiation at the surface, WRF's FDOWN = solnet + lwdn (net shortwave plus DOWNWARD longwave; the upward longwave is the emissi sigma t24 term subtracted below)."},
-    "ssoil": {"type": "parameter", "units": "W/m^2", "default": 0.0,
-     "description": "Ground heat flux diagnosed from the INCOMING skin temperature, df1 (t1 - stc[1])/(0.5 |zsoil[1]|), positive downward into the soil. SFLX computes this immediately before calling PENMAN; it is NOT the ssoil that SHFLX returns after the step."},
-    "emissi": {"type": "parameter", "units": "1", "default": 0.985,
-     "description": "Surface emissivity, WRF's EMISSI."},
-    "sncovr": {"type": "parameter", "units": "1", "default": 0.0,
-     "description": "Fraction of the grid cell covered by snow, WRF's SNCOVR. Blends the liquid and ice latent heats in elcp1 and lvs."},
-    "aoasis": {"type": "parameter", "units": "1", "default": 1.0,
-     "description": "Oasis-effect multiplier on a POSITIVE epsca, WRF's AOASIS (1 = off, the default and the value in both reference runs)."},
-    "snowing": {"type": "parameter", "units": "1", "default": 0.0,
-     "description": "Indicator (1/0) for WRF's SNOWNG, set by the driver when the precipitation reaching the ground is frozen. Selects cpice rather than cph2o for the hydrometeor heat capacity, and removes the prcp > 0 guard that the rain branch carries."},
-    "freezing_rain": {"type": "parameter", "units": "1", "default": 0.0,
-     "description": "Indicator (1/0) for WRF's FRZGRA, set by the driver when liquid precipitation falls onto a below-freezing surface. Activates flx2."},
-    "t2v": {"type": "unknown", "units": "K",
-     "description": "Virtual temperature at the lowest model level, sfctmp (1 + 0.61 q2), used for the air density."},
-    "rho": {"type": "unknown", "units": "kg/m^3",
-     "description": "Air density at the lowest model level, sfcprs/(rd t2v), with Noah's rd = 287.04."},
-    "rch": {"type": "unknown", "units": "W/(m^2*K)",
-     "description": "Bulk heat-transfer coefficient in energy units, rho cp ch. PENMAN's own cp = 1004.6 enters here and nowhere else (FORTRAN_BUGS N88)."},
-    "elcp1": {"type": "unknown", "units": "J/kg",
-     "description": "Snow-weighted (L/cp) group, (1 - sncovr) elcp + sncovr elcp lsubs/lvh2o; equals elcp over snow-free ground."},
-    "lvs": {"type": "unknown", "units": "J/kg",
-     "description": "Snow-weighted latent heat, (1 - sncovr) lvh2o + sncovr lsubs; equals lvh2o over snow-free ground."},
-    "t24": {"type": "unknown", "units": "K^4",
-     "description": "Fourth power of the air temperature, sfctmp^4, the linearisation point of the surface longwave emission."},
-    "delta": {"type": "unknown", "units": "1",
-     "description": "Saturation-humidity slope in the Penman combination, elcp1 dqsdt2."},
-    "rr_rad": {"type": "unknown", "units": "1",
-     "description": "Radiative part of the resistance ratio, emissi t24 6.48e-8/(sfcprs ch) + 1. The literal 6.48e-8 stands for 4 sigma rd/cp and is kept as WRF writes it (FORTRAN_BUGS N89)."},
-    "rr": {"type": "unknown", "units": "1",
-     "description": "Resistance ratio including the sensible-heat capacity of falling precipitation: rr_rad + cph2o prcp/rch for rain, + cpice prcp/rch for snow."},
-    "flx2": {"type": "unknown", "units": "W/m^2",
-     "description": "Latent heat released by freezing rain on impact, -lsubf prcp when freezing_rain is set and zero otherwise. Subtracted from fnet."},
-    "fnet": {"type": "unknown", "units": "W/m^2",
-     "description": "Net energy available at the surface for the potential-evaporation estimate, fdown - emissi sigma t24 - ssoil - flx2."},
-    "rad": {"type": "unknown", "units": "K",
-     "description": "Available energy expressed as a temperature, fnet/rch + th2 - sfctmp."},
-    "a": {"type": "unknown", "units": "K",
-     "description": "Vapour-pressure deficit expressed as a temperature, elcp1 (q2sat - q2)."},
-    "epsca_raw": {"type": "unknown", "units": "K",
-     "description": "Penman combination before the oasis multiplier, (a rr + rad delta)/(delta + rr)."},
-    "epsca": {"type": "unknown", "units": "K",
-     "description": "Penman potential evaporation expressed as a temperature difference, epsca_raw scaled by aoasis where it is positive. Negative epsca means dew."},
-    "etp": {"type": "unknown", "units": "kg/(m^2*s)",
-     "description": "Potential evaporation as a kinematic (mass) flux, epsca rch / lvs. This is the ETP that NOPAC/SNOPAC divide among the evaporation components."},
-    "etp_energy": {"type": "unknown", "units": "W/m^2",
-     "description": "The same potential evaporation in energy units, etp ((1 - sncovr) lvh2o + sncovr lsubs), which is the conversion SFLX applies before returning ETP and therefore the quantity WRF reports. Because that factor is exactly lvs, it reduces to epsca rch."}
+    "sfctmp": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "Air temperature at the lowest model level, WRF's SFCTMP."
+    },
+    "sfcprs": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 100000.0,
+     "description": "Air pressure at the lowest model level, WRF's SFCPRS."
+    },
+    "th2": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "Potential temperature at the lowest model level referenced to the surface pressure, WRF's TH2, supplied by the driver."
+    },
+    "q2": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.01,
+     "description": "Specific humidity at the lowest model level, WRF's Q2."
+    },
+    "q2sat": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.02,
+     "description": "Saturation specific humidity at the lowest model level, WRF's Q2SAT."
+    },
+    "dqsdt2": {
+     "type": "parameter",
+     "units": "kg/(kg*K)",
+     "default": 0.001,
+     "description": "Slope of the saturation specific humidity with temperature at the lowest model level, WRF's DQSDT2."
+    },
+    "ch": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.01,
+     "description": "Surface exchange coefficient for heat and moisture from the surface-layer scheme, WRF's CH."
+    },
+    "prcp": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 0.0,
+     "description": "Precipitation rate reaching the surface, WRF's PRCP. Enters only through the sensible-heat capacity of the falling hydrometeors."
+    },
+    "fdown": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 600.0,
+     "description": "Total absorbed downward radiation at the surface, WRF's FDOWN = solnet + lwdn (net shortwave plus DOWNWARD longwave; the upward longwave is the emissi sigma t24 term subtracted below)."
+    },
+    "ssoil": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Ground heat flux diagnosed from the INCOMING skin temperature, df1 (t1 - stc[1])/(0.5 |zsoil[1]|), positive downward into the soil. SFLX computes this immediately before calling PENMAN; it is NOT the ssoil that SHFLX returns after the step."
+    },
+    "emissi": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.985,
+     "description": "Surface emissivity, WRF's EMISSI."
+    },
+    "sncovr": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Fraction of the grid cell covered by snow, WRF's SNCOVR. Blends the liquid and ice latent heats in elcp1 and lvs."
+    },
+    "aoasis": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Oasis-effect multiplier on a POSITIVE epsca, WRF's AOASIS (1 = off, the default and the value in both reference runs)."
+    },
+    "snowing": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Indicator (1/0) for WRF's SNOWNG, set by the driver when the precipitation reaching the ground is frozen. Selects cpice rather than cph2o for the hydrometeor heat capacity, and removes the prcp > 0 guard that the rain branch carries."
+    },
+    "freezing_rain": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Indicator (1/0) for WRF's FRZGRA, set by the driver when liquid precipitation falls onto a below-freezing surface. Activates flx2."
+    },
+    "t2v": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Virtual temperature at the lowest model level, sfctmp (1 + 0.61 q2), used for the air density."
+    },
+    "rho": {
+     "type": "unknown",
+     "units": "kg/m^3",
+     "description": "Air density at the lowest model level, sfcprs/(rd t2v), with Noah's rd = 287.04."
+    },
+    "rch": {
+     "type": "unknown",
+     "units": "W/(m^2*K)",
+     "description": "Bulk heat-transfer coefficient in energy units, rho cp ch. PENMAN's own cp = 1004.6 enters here and nowhere else (FORTRAN_BUGS N88)."
+    },
+    "elcp1": {
+     "type": "unknown",
+     "units": "J/kg",
+     "description": "Snow-weighted (L/cp) group, (1 - sncovr) elcp + sncovr elcp lsubs/lvh2o; equals elcp over snow-free ground."
+    },
+    "lvs": {
+     "type": "unknown",
+     "units": "J/kg",
+     "description": "Snow-weighted latent heat, (1 - sncovr) lvh2o + sncovr lsubs; equals lvh2o over snow-free ground."
+    },
+    "t24": {
+     "type": "unknown",
+     "units": "K^4",
+     "description": "Fourth power of the air temperature, sfctmp^4, the linearisation point of the surface longwave emission."
+    },
+    "delta": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Saturation-humidity slope in the Penman combination, elcp1 dqsdt2."
+    },
+    "rr_rad": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Radiative part of the resistance ratio, emissi t24 6.48e-8/(sfcprs ch) + 1. The literal 6.48e-8 stands for 4 sigma rd/cp and is kept as WRF writes it (FORTRAN_BUGS N89)."
+    },
+    "rr": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Resistance ratio including the sensible-heat capacity of falling precipitation: rr_rad + cph2o prcp/rch for rain, + cpice prcp/rch for snow."
+    },
+    "flx2": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Latent heat released by freezing rain on impact, -lsubf prcp when freezing_rain is set and zero otherwise. Subtracted from fnet."
+    },
+    "fnet": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Net energy available at the surface for the potential-evaporation estimate, fdown - emissi sigma t24 - ssoil - flx2."
+    },
+    "rad": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Available energy expressed as a temperature, fnet/rch + th2 - sfctmp."
+    },
+    "a": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Vapour-pressure deficit expressed as a temperature, elcp1 (q2sat - q2)."
+    },
+    "epsca_raw": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Penman combination before the oasis multiplier, (a rr + rad delta)/(delta + rr)."
+    },
+    "epsca": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Penman potential evaporation expressed as a temperature difference, epsca_raw scaled by aoasis where it is positive. Negative epsca means dew."
+    },
+    "etp": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Potential evaporation as a kinematic (mass) flux, epsca rch / lvs. This is the ETP that NOPAC/SNOPAC divide among the evaporation components."
+    },
+    "etp_energy": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "The same potential evaporation in energy units, etp ((1 - sncovr) lvh2o + sncovr lsubs), which is the conversion SFLX applies before returning ETP and therefore the quantity WRF reports. Because that factor is exactly lvs, it reduces to epsca rch."
+    }
    },
    "equations": [
-    {"lhs": "t2v", "rhs": {"op": "*", "args": ["sfctmp", {"op": "+", "args": [1.0, {"op": "*", "args": [0.61, "q2"]}]}]}},
-    {"lhs": "rho", "rhs": {"op": "/", "args": ["sfcprs", {"op": "*", "args": ["par.rd", "t2v"]}]}},
-    {"lhs": "rch", "rhs": {"op": "*", "args": [{"op": "*", "args": ["rho", "par.cp_penman"]}, "ch"]}},
-    {"lhs": "elcp1", "rhs": {"op": "+", "args": [
-      {"op": "*", "args": [{"op": "-", "args": [1.0, "sncovr"]}, "par.elcp"]},
-      {"op": "*", "args": [{"op": "*", "args": ["sncovr", "par.elcp"]},
-                           {"op": "/", "args": ["par.lsubs", "par.lvh2o"]}]}]}},
-    {"lhs": "lvs", "rhs": {"op": "+", "args": [
-      {"op": "*", "args": [{"op": "-", "args": [1.0, "sncovr"]}, "par.lvh2o"]},
-      {"op": "*", "args": ["sncovr", "par.lsubs"]}]}},
-    {"lhs": "t24", "rhs": {"op": "^", "args": ["sfctmp", 4.0]}},
-    {"lhs": "delta", "rhs": {"op": "*", "args": ["elcp1", "dqsdt2"]}},
-    {"lhs": "rr_rad", "rhs": {"op": "+", "args": [
-      {"op": "/", "args": [
-        {"op": "*", "args": [{"op": "*", "args": ["emissi", "t24"]}, 6.48e-8]},
-        {"op": "*", "args": ["sfcprs", "ch"]}]},
-      1.0]}},
-    {"lhs": "rr", "rhs": {"op": "ifelse", "args": [
-      {"op": "==", "args": ["snowing", 1.0]},
-      {"op": "+", "args": ["rr_rad", {"op": "/", "args": [{"op": "*", "args": ["par.cpice", "prcp"]}, "rch"]}]},
-      {"op": "ifelse", "args": [
-        {"op": ">", "args": ["prcp", 0.0]},
-        {"op": "+", "args": ["rr_rad", {"op": "/", "args": [{"op": "*", "args": ["par.cph2o", "prcp"]}, "rch"]}]},
-        "rr_rad"]}]}},
-    {"lhs": "flx2", "rhs": {"op": "ifelse", "args": [
-      {"op": "==", "args": ["freezing_rain", 1.0]},
-      {"op": "*", "args": [{"op": "-", "args": [0.0, "par.lsubf"]}, "prcp"]},
-      0.0]}},
-    {"lhs": "fnet", "rhs": {"op": "-", "args": [
-      {"op": "-", "args": [
-        {"op": "-", "args": ["fdown", {"op": "*", "args": [{"op": "*", "args": ["emissi", "par.sigma"]}, "t24"]}]},
-        "ssoil"]},
-      "flx2"]}},
-    {"lhs": "rad", "rhs": {"op": "-", "args": [
-      {"op": "+", "args": [{"op": "/", "args": ["fnet", "rch"]}, "th2"]}, "sfctmp"]}},
-    {"lhs": "a", "rhs": {"op": "*", "args": ["elcp1", {"op": "-", "args": ["q2sat", "q2"]}]}},
-    {"lhs": "epsca_raw", "rhs": {"op": "/", "args": [
-      {"op": "+", "args": [{"op": "*", "args": ["a", "rr"]}, {"op": "*", "args": ["rad", "delta"]}]},
-      {"op": "+", "args": ["delta", "rr"]}]}},
-    {"lhs": "epsca", "rhs": {"op": "ifelse", "args": [
-      {"op": ">", "args": ["epsca_raw", 0.0]},
-      {"op": "*", "args": ["epsca_raw", "aoasis"]},
-      "epsca_raw"]}},
-    {"lhs": "etp", "rhs": {"op": "/", "args": [{"op": "*", "args": ["epsca", "rch"]}, "lvs"]}},
-    {"lhs": "etp_energy", "rhs": {"op": "*", "args": ["etp",
-      {"op": "+", "args": [
-        {"op": "*", "args": [{"op": "-", "args": [1.0, "sncovr"]}, "par.lvh2o"]},
-        {"op": "*", "args": ["sncovr", "par.lsubs"]}]}]}}
+    {
+     "lhs": "t2v",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "sfctmp",
+       {
+        "op": "+",
+        "args": [
+         1.0,
+         {
+          "op": "*",
+          "args": [
+           0.61,
+           "q2"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "rho",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "sfcprs",
+       {
+        "op": "*",
+        "args": [
+         "par.rd",
+         "t2v"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "rch",
+     "rhs": {
+      "op": "*",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         "rho",
+         "par.cp_penman"
+        ]
+       },
+       "ch"
+      ]
+     }
+    },
+    {
+     "lhs": "elcp1",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           "sncovr"
+          ]
+         },
+         "par.elcp"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "sncovr",
+           "par.elcp"
+          ]
+         },
+         {
+          "op": "/",
+          "args": [
+           "par.lsubs",
+           "par.lvh2o"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "lvs",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           1.0,
+           "sncovr"
+          ]
+         },
+         "par.lvh2o"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "sncovr",
+         "par.lsubs"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "t24",
+     "rhs": {
+      "op": "^",
+      "args": [
+       "sfctmp",
+       4.0
+      ]
+     }
+    },
+    {
+     "lhs": "delta",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "elcp1",
+       "dqsdt2"
+      ]
+     }
+    },
+    {
+     "lhs": "rr_rad",
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "emissi",
+             "t24"
+            ]
+           },
+           6.48e-08
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "sfcprs",
+           "ch"
+          ]
+         }
+        ]
+       },
+       1.0
+      ]
+     }
+    },
+    {
+     "lhs": "rr",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "==",
+        "args": [
+         "snowing",
+         1.0
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "rr_rad",
+         {
+          "op": "/",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "par.cpice",
+             "prcp"
+            ]
+           },
+           "rch"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "ifelse",
+        "args": [
+         {
+          "op": ">",
+          "args": [
+           "prcp",
+           0.0
+          ]
+         },
+         {
+          "op": "+",
+          "args": [
+           "rr_rad",
+           {
+            "op": "/",
+            "args": [
+             {
+              "op": "*",
+              "args": [
+               "par.cph2o",
+               "prcp"
+              ]
+             },
+             "rch"
+            ]
+           }
+          ]
+         },
+         "rr_rad"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "flx2",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "==",
+        "args": [
+         "freezing_rain",
+         1.0
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           0.0,
+           "par.lsubf"
+          ]
+         },
+         "prcp"
+        ]
+       },
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "fnet",
+     "rhs": {
+      "op": "-",
+      "args": [
+       {
+        "op": "-",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           "fdown",
+           {
+            "op": "*",
+            "args": [
+             {
+              "op": "*",
+              "args": [
+               "emissi",
+               "par.sigma"
+              ]
+             },
+             "t24"
+            ]
+           }
+          ]
+         },
+         "ssoil"
+        ]
+       },
+       "flx2"
+      ]
+     }
+    },
+    {
+     "lhs": "rad",
+     "rhs": {
+      "op": "-",
+      "args": [
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "/",
+          "args": [
+           "fnet",
+           "rch"
+          ]
+         },
+         "th2"
+        ]
+       },
+       "sfctmp"
+      ]
+     }
+    },
+    {
+     "lhs": "a",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "elcp1",
+       {
+        "op": "-",
+        "args": [
+         "q2sat",
+         "q2"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "epsca_raw",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "a",
+           "rr"
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "rad",
+           "delta"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "+",
+        "args": [
+         "delta",
+         "rr"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "epsca",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": ">",
+        "args": [
+         "epsca_raw",
+         0.0
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         "epsca_raw",
+         "aoasis"
+        ]
+       },
+       "epsca_raw"
+      ]
+     }
+    },
+    {
+     "lhs": "etp",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         "epsca",
+         "rch"
+        ]
+       },
+       "lvs"
+      ]
+     }
+    },
+    {
+     "lhs": "etp_energy",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "etp",
+       {
+        "op": "+",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           {
+            "op": "-",
+            "args": [
+             1.0,
+             "sncovr"
+            ]
+           },
+           "par.lvh2o"
+          ]
+         },
+         {
+          "op": "*",
+          "args": [
+           "sncovr",
+           "par.lsubs"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
    ],
    "tests": [
      {
@@ -196,7 +726,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -271,7 +802,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -346,7 +878,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -421,7 +954,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -496,7 +1030,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -571,7 +1106,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -646,7 +1182,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -721,7 +1258,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -796,7 +1334,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -871,7 +1410,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -946,7 +1486,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -1021,7 +1562,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -1096,7 +1638,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -1171,7 +1714,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -1246,7 +1790,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {
@@ -1321,7 +1866,8 @@
            "time": 0.0,
            "expected": 0.0,
            "tolerance": {
-             "abs": 0.0
+             "abs": 0.0,
+             "rel": 0.0
            }
          },
          {

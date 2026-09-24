@@ -2331,6 +2331,21 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
 
 - Tendencies are observeds; assert at `time: 0.0`. Trajectory assertions only
   for genuinely in-place steps.
+- **An absolute tolerance does not bind unless you write `rel: 0.0` beside it**
+  (found 2026-09-23). The runner ORs the two bounds and supplies a DEFAULT
+  relative tolerance of 1e-6 when `rel` is absent, so `{"abs": 1e-14}` alone is
+  satisfied by a 1e-6 relative error and `{"abs": 0.0}` alone is not zero
+  tolerance at all. Verified directly: a value 5e-7 relative from its expectation
+  passes `{"abs": 1e-12}` and fails `{"abs": 1e-12, "rel": 0.0}`. This matters
+  most where the claim is exactness or where a quantity spans orders within one
+  column -- a per-layer soil tendency running 1.7e-11 to 4.0e-6 per second is
+  bounded by the 1e-6 default, not by the absolute number written. **Write
+  `rel: 0.0` on every assertion whose absolute bound is meant to be the binding
+  one**, and treat "asserted at zero tolerance" as a claim that requires
+  `{"abs": 0.0, "rel": 0.0}`. Repo-wide at the time of writing: 3049 assertions
+  were `abs`-only and 2256 carried neither bound. The `components/land_surface`
+  tree was repaired in place (all 5511 still pass, so the claims were true, just
+  not enforced); the rest is outstanding and is a mechanical sidecar edit.
 - **Choosing a reference step: ask whether there is a cancellation floor
   (FORTRAN_BUGS N99).** A reference step is squeezed from above by truncation
   (the finite-step answer is not the dt -> 0 one) and from below by
@@ -2569,6 +2584,55 @@ real exposure at esm 2.0.0, and clearing it needs a migration PR there.
       branch of the caller's `esd > 0` guard. Neither density limit fires
       anywhere, and the `wet_capped` branch is never reached: untested, not
       merely unused, and said so in their descriptions.
+
+1.4l Noah stage 2, ninth tranche (done 2026-09-23): the SNOW-COVERED frozen
+    column, and an absolute tolerance that was not binding.
+
+    `couplings/frozen_soil_column_melt.esm` and `_frost.esm`, **40/40**, plus
+    `couplings/lib/noah_snowmelt_soilwater.esm` (roles Col, Sno, Sm, 23 edges).
+    THREE mounts now: `snow_energy.esm` joins the transport and the phase change.
+
+    - **What a snow column adds that bare ground cannot.** On the three
+      bare-ground documents the surface water supply is dew, of order 1e-9 m/s.
+      Here it is snowmelt from the third mount, up to 8.0e-7 m/s -- two to three
+      orders larger and the dominant term in the liquid budget. `soil_moisture.esm`
+      gained a `melt` parameter (default 0) for it, which is WRF's
+      `PRCP1 = PRCP1 + EX`: the melt joins the supply where rain does and goes
+      through the same canopy split.
+    - **And a routing distinction that does not exist on bare ground.** NOPAC adds
+      frost to the soil water; SNOPAC does NOT, because under a pack the frost is
+      deposited on the SNOW. `soil_moisture.esm` gained `dew_to_soil` (default 1,
+      so no snow-free test moves) and the snow documents set it to 0. It is not
+      cosmetic: at the frost column it is about 6 % of the liquid tendency.
+    - **The three-claim shape is unchanged and every assertion is labelled with
+      the claim it serves** -- liquid budget, total-water budget, and the switches
+      at zero tolerance -- with the new term checked in its own right by `melt`
+      (against SNOPAC's EX) and `water_supply` (against SNOPAC's PRCP1, which the
+      assembly must reconstruct as precipitation plus melt and NOT plus frost).
+    - **Both new edges were checked by BREAKING them**: removing the snowmelt
+      library turns 5 of 20 assertions red, and restoring `dew_to_soil = 1` turns
+      3 red. A coupling that passes with its edge cut proves nothing.
+    - **The melt column is the first where the bound is physics, not precision.**
+      Worst residual 4.53e-11 at 1e-6 s, 4.64e-14 at 0.01 s, and **1.0 -- an
+      indicator flip -- at 60 s**, where the interval clamp changes decision in
+      two layers. The left branch scales as 1/dt and contributes 4.5e-15 at
+      0.01 s, near the eps(sh2o)/dt = 6.7e-15 floor; the measured 4.64e-14 is
+      seven times that, and the excess is O(dt): the operator-splitting error
+      itself, 1.1e-8 relative, made visible by a large surface flux driving a
+      nonlinear infiltration limiter. The bound, 2e-13, is sized from the
+      SPLITTING error and not from the reference's precision.
+    - **The frost column is the exception that shows what the V's right branch
+      really is.** Its clamp decisions are identical at all three passes, so it has
+      NO right branch at all -- 1.24e-11, 1.24e-15, 1.31e-18, monotone down. The
+      right branch is a discrete clamp flip, not a smooth truncation error, so it
+      is absent entirely until a column sits near a threshold.
+    - **A tolerance bug of my own, repo-wide in its implications** (section 6): an
+      esm `{"abs": x}` with no `rel` is ORed with a DEFAULT 1e-6 relative bound, so
+      none of these absolute bounds was binding as written, and `{"abs": 0.0}` was
+      not zero tolerance. Every assertion in `components/land_surface` and in the
+      five frozen-column documents now pins `rel: 0.0`; all 5511 + 103 still pass,
+      so the claims were true, merely unenforced. 3049 `abs`-only assertions remain
+      elsewhere in the repo.
 
 1.4k Noah stage 2, eighth tranche (done 2026-09-23): SNOW_NEW and SNOWZ0, the
     two small snow routines, and the first case where N99's rule has nothing to
