@@ -1,0 +1,2242 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "NoahSnowNew",
+  "description": "The density and depth of freshly fallen snow in WRF's unified Noah land-surface model, SUBROUTINE SNOW_NEW of phys/module_sf_noahlsm.F (WRF 4.8, sf_surface_physics = 2): how much depth a step's snowfall occupies, and what it does to the density of the pack it lands on. THE PHYSICS, IN TWO PARTS. First, how dense the falling snow is: Gottlib's (1980) fit makes it a floor plus a 3/2 power of how far the air is above -15 C, so warm snow falls denser (0.077 at -8.7 C, 0.122 at -2.9 C over this reference set) and cold snow is capped at the floor. Second, how it combines with what is already there: the water equivalent newsn expands into a physical depth hnewc = newsn/dsnew, that depth is ADDED to the pack, and the new density is the DEPTH-WEIGHTED average of old and new -- the only combination that conserves depth times density, i.e. water. Because fresh snow is always lighter than a settled pack, a snowfall step always lowers the mean density, and SNOWPACK's compaction then works against that. The two routines are the pack's density budget between them, which is why this component is authored beside `snow_compaction.esm` and shares its constants. WHAT IT DOES NOT DO. It does not add the water equivalent -- SFLX does that (`SNEQV = SNEQV + SN_NEW`) before calling -- so this component conserves nothing on its own and is not a closed budget. Nor does it decide WHETHER it runs: SFLX calls it only when SNOWNG (frozen precipitation) or FRZGRA (freezing rain onto a sub-freezing surface), and the guard belongs to the caller. That guard is load-bearing here in a way it is not for most routines, because this component is the identity at newsn = 0 ONLY while the pack is thicker than par.snow_new_hmin; below that WRF's degenerate-average branch would RAISE the density to the fresh-snow value out of nothing. A consumer must therefore reproduce the guard rather than mount this unconditionally, and `thin_pack` reports when it would matter. THE REFERENCE STEP IS THE LARGEST AVAILABLE, for the reason FORTRAN_BUGS N99 states as a rule and this is the second Noah component to meet. Nothing here is recovered by differencing -- both outputs are published where they form, at full magnitude -- so there is no cancellation floor pushing the step down. Meanwhile newsn is proportional to the step, so the fresh layer's weight in the density average is too: 0.0010 to 0.13 at WRF's own 60 s step, and about 2e-11 of that at 1e-6 s. A smaller step would leave a rel 1e-9 assertion testing nothing at all. So the reference is the 60 s replay pass. NOT TRANSCRIBED: nothing. SNOW_NEW has no UA_PHYS branch and no options; the whole routine is here.",
+  "license": "MIT",
+  "tags": [
+   "wrf",
+   "land-surface",
+   "noah",
+   "snow",
+   "snow-density",
+   "snowfall"
+  ],
+  "references": [
+   {
+    "citation": "Gottlib, L. (1980). A general runoff model for snowcovered and glacierized basins. 6th Nordic Hydrological Conference, Vemadolen, Sweden, 172-177."
+   },
+   {
+    "citation": "Koren, V., Schaake, J., Mitchell, K., Duan, Q.-Y., Chen, F., & Baker, J. M. (1999). A parameterization of snowpack and frozen ground intended for NCEP weather and climate models. J. Geophys. Res., 104(D16), 19569-19585."
+   },
+   {
+    "citation": "wrf-model/WRF v4.8.0 phys/module_sf_noahlsm.F SUBROUTINE SNOW_NEW lines 3601-3650, called from SFLX at line 3539 (cold-season reference run instrumented in ctessum-claude/WRF branch earthsciml-instrumented-noahcold)."
+   }
+  ]
+ },
+ "models": {
+  "NoahSnowNew": {
+   "subsystems": {
+    "par": {
+     "ref": "./noah_parameters.esm"
+    }
+   },
+   "variables": {
+    "sfctmp": {
+     "type": "parameter",
+     "units": "K",
+     "default": 265.0,
+     "description": "Air temperature at the lowest model level, WRF's TEMP argument. It is the ONLY thing that sets how dense the falling snow is; the pack's own temperature does not enter."
+    },
+    "newsn": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "New snowfall over the step as a LIQUID WATER EQUIVALENT depth, WRF's SN_NEW = prcp dt 0.001. It is proportional to the step, which is where all of this component's step dependence comes from, and it is the caller that decides whether there is any: SFLX forms it only when SNOWNG (frozen precipitation) or FRZGRA (freezing rain onto a sub-freezing surface), and calls SNOW_NEW only then."
+    },
+    "snowh_in": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.3,
+     "description": "Physical depth of the pack before the snowfall is added. Unlike SNOWPACK's, this depth IS read (FORTRAN_BUGS N100 is about the other routine): it is the weight the old pack carries in the density average."
+    },
+    "sndens_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.2,
+     "description": "Density of the pack before the snowfall, as a fraction of the density of water. SFLX forms it as sneqv/snowh just before this routine, or leaves it at zero on bare ground."
+    },
+    "tempc": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Air temperature above freezing, WRF's TEMPC."
+    },
+    "cold_snowfall": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Indicator, 1 where the air is at or below par.snow_new_tcold and the fresh-snow density takes its floor instead of the fit. UNTESTED, not merely unused: the cold-season reference set never gets below -8.7 C at the surface while it is snowing, so all 30 snowfall steps take the fit."
+    },
+    "dsnew": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Density of the snow falling NOW, from Gottlib's (1980) fit: the floor plus a 3/2 power of how far the air is above the cutoff. Warm snow falls denser -- 0.077 at -8.7 C and 0.122 at -2.9 C over this reference set -- and it is always lighter than a settled pack, which is why fresh snow lowers the mean density."
+    },
+    "snowhc": {
+     "type": "unknown",
+     "units": "cm",
+     "description": "Old pack depth in SNOW_NEW's own simulation units, centimetres."
+    },
+    "newsnc": {
+     "type": "unknown",
+     "units": "cm",
+     "description": "New snowfall water equivalent in centimetres."
+    },
+    "hnewc": {
+     "type": "unknown",
+     "units": "cm",
+     "description": "PHYSICAL depth of the fresh layer, newsnc/dsnew -- the water equivalent expanded by how fluffy the new snow is. This is the quantity the step length scales, and the whole of what this component adds to the pack."
+    },
+    "thin_pack": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Indicator for WRF's guard on the density average, 1 where the old pack and the new snow TOGETHER are thinner than par.snow_new_hmin and the average's denominator would be meaningless. UNTESTED: the thinnest snowfall step here is 0.0063 cm of old pack, six times the threshold, and the thinnest pack in the whole cold set is 0.0055 cm. The branch matters for a consumer, though, because it is the one place this component is NOT the identity at newsn = 0: on a pack below the threshold it would RAISE the density to the fresh-snow value. That is why a consumer must apply SFLX's own SNOWNG/FRZGRA guard rather than mounting this unconditionally."
+    },
+    "sndens_out": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Density after the snowfall: the depth-weighted average of the old pack and the fresh layer, which is the only sensible combination when what is conserved is depth times density. Fresh snow always lowers it."
+    },
+    "snowh_out": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Depth after the snowfall, simply the old depth plus the fresh layer. SNOW_NEW conserves neither density nor water equivalent on its own -- the water equivalent is added by the caller, and this routine only decides how much depth that water occupies."
+    },
+    "fresh_fraction": {
+     "type": "unknown",
+     "units": "1",
+     "description": "hnewc/(snowhc + hnewc), the weight the fresh layer carries in the density average -- i.e. how much of the answer is new snow rather than old pack. It runs from 1.0e-3 to 0.13 over the reference set at WRF's 60 s step, and it is proportional to the step, which is the argument for referencing this component at the LARGEST step available rather than the smallest."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "tempc",
+     "rhs": {
+      "op": "-",
+      "args": [
+       "sfctmp",
+       "par.t0"
+      ]
+     }
+    },
+    {
+     "lhs": "cold_snowfall",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "<=",
+        "args": [
+         "tempc",
+         "par.snow_new_tcold"
+        ]
+       },
+       1.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "dsnew",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "==",
+        "args": [
+         "cold_snowfall",
+         1.0
+        ]
+       },
+       "par.snow_new_dens",
+       {
+        "op": "+",
+        "args": [
+         "par.snow_new_dens",
+         {
+          "op": "*",
+          "args": [
+           "par.snow_new_coef",
+           {
+            "op": "^",
+            "args": [
+             {
+              "op": "-",
+              "args": [
+               "tempc",
+               "par.snow_new_tcold"
+              ]
+             },
+             1.5
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "snowhc",
+     "rhs": {
+      "op": "*",
+      "args": [
+       100.0,
+       "snowh_in"
+      ]
+     }
+    },
+    {
+     "lhs": "newsnc",
+     "rhs": {
+      "op": "*",
+      "args": [
+       100.0,
+       "newsn"
+      ]
+     }
+    },
+    {
+     "lhs": "hnewc",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "newsnc",
+       "dsnew"
+      ]
+     }
+    },
+    {
+     "lhs": "thin_pack",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "<",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           "snowhc",
+           "hnewc"
+          ]
+         },
+         "par.snow_new_hmin"
+        ]
+       },
+       1.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "sndens_out",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "==",
+        "args": [
+         "thin_pack",
+         1.0
+        ]
+       },
+       {
+        "op": "max",
+        "args": [
+         "dsnew",
+         "sndens_in"
+        ]
+       },
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "+",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             "snowhc",
+             "sndens_in"
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             "hnewc",
+             "dsnew"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "+",
+          "args": [
+           "snowhc",
+           "hnewc"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "snowh_out",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.01,
+       {
+        "op": "+",
+        "args": [
+         "snowhc",
+         "hnewc"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fresh_fraction",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "hnewc",
+       {
+        "op": "+",
+        "args": [
+         "snowhc",
+         "hnewc"
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "cold_caseA_step26",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.276e-01 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.7e-15 here. Their bound is 1e-13, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 26 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -8.44 C, so the fresh snow falls at density 0.07859 against a pack already at 0.07875, and the fresh layer carries 1.276e-01 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 264.714111328125,
+         "newsn": 7.200639265647624e-07,
+         "snowh_in": 6.265289266593754e-05,
+         "sndens_in": 0.07875117960298912
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.0787306049123627,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 7.181518719233137e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0009162294526393825,
+           "tolerance": {
+             "rel": 1e-13
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.127581572709069,
+           "tolerance": {
+             "rel": 1e-13
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step51",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 5.715e-02 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 3.9e-15 here. Their bound is 1e-13, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 51 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -8.54 C, so the fresh snow falls at density 0.07788 against a pack already at 0.07817, and the fresh layer carries 5.715e-02 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 264.6050720214844,
+         "newsn": 5.119829729665071e-06,
+         "snowh_in": 0.001084580784663558,
+         "sndens_in": 0.0781702658987656
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.07815370609839009,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.0011503203436357468,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.006573955897218884,
+           "tolerance": {
+             "rel": 1e-13
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.057148914505336705,
+           "tolerance": {
+             "rel": 1e-13
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step76",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 2.111e-02 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.1e-14 here. Their bound is 1e-12, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 76 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -8.62 C, so the fresh snow falls at density 0.07737 against a pack already at 0.07785, and the fresh layer carries 2.111e-02 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 264.5255432128906,
+         "newsn": 4.45439392933622e-06,
+         "snowh_in": 0.0026703651528805494,
+         "sndens_in": 0.07785150091144656
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.0778412719019753,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.0027279401257743704,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.005757497289382097,
+           "tolerance": {
+             "rel": 1e-12
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.021105658569935574,
+           "tolerance": {
+             "rel": 1e-12
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step101",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 9.584e-03 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 2.3e-14 here. Their bound is 1e-12, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 101 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -8.69 C, so the fresh snow falls at density 0.07693 against a pack already at 0.07763, and the fresh layer carries 9.584e-03 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 264.4576721191406,
+         "newsn": 2.935624943347648e-06,
+         "snowh_in": 0.003943329211324453,
+         "sndens_in": 0.07763229291582012
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.07762557168115519,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.003981488401913154,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0038159190588700487,
+           "tolerance": {
+             "rel": 1e-12
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.00958415214028114,
+           "tolerance": {
+             "rel": 1e-12
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step328",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 6.173e-04 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 3.6e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 328 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -6.27 C, so the fresh snow falls at density 0.09383 against a pack already at 0.08080, and the fresh layer carries 6.173e-04 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 266.8771057128906,
+         "newsn": 4.28909515903797e-07,
+         "snowh_in": 0.007400842849165201,
+         "sndens_in": 0.08080160941897815
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.08080965052100912,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.0074054140678384275,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0004571218673226317,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.000617280631623157,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step364",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 6.199e-04 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 3.6e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 364 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -5.83 C, so the fresh snow falls at density 0.09719 against a pack already at 0.08222, and the fresh layer carries 6.199e-04 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 267.3176574707031,
+         "newsn": 4.932359297527e-07,
+         "snowh_in": 0.008181992918252945,
+         "sndens_in": 0.0822234289979179
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.08223270564547115,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.008187067960620712,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0005075042367767499,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0006198852131407894,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step397",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 7.491e-04 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 3.0e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 397 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -5.69 C, so the fresh snow falls at density 0.09830 against a pack already at 0.08374, and the fresh layer carries 7.491e-04 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 267.46044921875,
+         "newsn": 6.643082815571689e-07,
+         "snowh_in": 0.009015229530632496,
+         "sndens_in": 0.08374194307682342
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.0837528448684635,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.00902198782198983,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0006758291357334897,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0007490911637967975,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step519",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.447e-02 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.5e-14 here. Their bound is 1e-12, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 519 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -5.51 C, so the fresh snow falls at density 0.09971 against a pack already at 0.08809, and the fresh layer carries 1.447e-02 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 267.6418762207031,
+         "newsn": 1.7693301779218017e-05,
+         "snowh_in": 0.012081330642104149,
+         "sndens_in": 0.08809207245014929
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.08826029243299223,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.012258771483440283,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.017744084133613364,
+           "tolerance": {
+             "rel": 1e-12
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.014474602253237934,
+           "tolerance": {
+             "rel": 1e-12
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step679",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.674e-03 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.3e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 679 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -6.74 C, so the fresh snow falls at density 0.09035 against a pack already at 0.08952, and the fresh layer carries 1.674e-03 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 266.4090576171875,
+         "newsn": 2.1024338639108464e-06,
+         "snowh_in": 0.013881165534257889,
+         "sndens_in": 0.08951729135630779
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.08951868511619737,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.013904435389589931,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0023269855332042413,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0016735562919343169,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step1761",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 3.990e-03 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 5.6e-14 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 1761 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -5.69 C, so the fresh snow falls at density 0.09827 against a pack already at 0.08971, and the fresh layer carries 3.990e-03 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 267.4577941894531,
+         "newsn": 1.4974214136600495e-05,
+         "snowh_in": 0.038037508726119995,
+         "sndens_in": 0.08971407185423484
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.0897482270718234,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.03818987981127347,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.015237108515347292,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.003989828873682229,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step1824",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.316e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.7e-11 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 1824 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -5.07 C, so the fresh snow falls at density 0.10317 against a pack already at 0.09502, and the fresh layer carries 1.316e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 268.0764465332031,
+         "newsn": 4.9066820793086664e-08,
+         "snowh_in": 0.036144647747278214,
+         "sndens_in": 0.09501853516179584
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.0950186423774112,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.036145123354475,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 4.7560719678568786e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 1.3158267357989377e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step1849",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.461e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.5e-11 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 1849 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -4.80 C, so the fresh snow falls at density 0.10537 against a pack already at 0.09707, and the fresh layer carries 1.461e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 268.3482360839844,
+         "newsn": 5.413766757556005e-08,
+         "snowh_in": 0.03516868129372597,
+         "sndens_in": 0.09707135072312216
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.09707147189276946,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.035169195103704275,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 5.138099783072447e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 1.4609659868306925e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step1874",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.365e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.6e-11 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 1874 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -4.55 C, so the fresh snow falls at density 0.10741 against a pack already at 0.09912, and the fresh layer carries 1.365e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 268.5982971191406,
+         "newsn": 5.016889986109163e-08,
+         "snowh_in": 0.034208543598651886,
+         "sndens_in": 0.0991200342140174
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.09912014745183785,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.03420901066009331,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 4.670614414253871e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 1.3653170097966028e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step1899",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.183e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.9e-11 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 1899 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -4.32 C, so the fresh snow falls at density 0.10934 against a pack already at 0.10116, and the fresh layer carries 1.183e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 268.83026123046875,
+         "newsn": 4.30322529609839e-08,
+         "snowh_in": 0.033275604248046875,
+         "sndens_in": 0.1011637738302297
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.10116387049394708,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.03327599782442115,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 3.935763742760057e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 1.1827635533356153e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step1924",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.112e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 2.0e-11 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 1924 of case A, snow falling onto initially bare frozen ground: frozen precipitation (SNOWNG); air at -4.12 C, so the fresh snow falls at density 0.11100 against a pack already at 0.10320, and the fresh layer carries 1.112e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 269.0285949707031,
+         "newsn": 3.9982070347832633e-08,
+         "snowh_in": 0.03238306939601898,
+         "sndens_in": 0.1032022007039418
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.10320228740684458,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.03238342960474269,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 3.602087237097873e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 1.1123241982283222e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step2089",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 7.386e-03 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 3.0e-14 here. Their bound is 1e-12, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 2089 of case A, snow falling onto initially bare frozen ground: FREEZING RAIN onto a sub-freezing surface (FRZGRA) -- the same routine, reached by SFLX's other guard; air at -4.18 C, so the fresh snow falls at density 0.11051 against a pack already at 0.11037, and the fresh layer carries 7.386e-03 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 268.9700927734375,
+         "newsn": 2.523045928683132e-05,
+         "snowh_in": 0.030685460194945335,
+         "sndens_in": 0.11037496454289455
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.11037592919214192,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.030913778622388692,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.022831842744335668,
+           "tolerance": {
+             "rel": 1e-12
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.00738565253482153,
+           "tolerance": {
+             "rel": 1e-12
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseA_step2114",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.250e-03 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.8e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 2114 of case A, snow falling onto initially bare frozen ground: FREEZING RAIN onto a sub-freezing surface (FRZGRA) -- the same routine, reached by SFLX's other guard; air at -4.59 C, so the fresh snow falls at density 0.10709 against a pack already at 0.11055, and the fresh layer carries 1.250e-03 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 268.55841064453125,
+         "newsn": 4.356243152869865e-06,
+         "snowh_in": 0.032493770122528076,
+         "sndens_in": 0.11054866993102878
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.11054433964872809,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.03253445018235569,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0040680059827616355,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0012503687506506026,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseB_step26",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 2.952e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 7.5e-12 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 26 of case B, a 30 cm pack melting under warm advection: frozen precipitation (SNOWNG); air at -8.31 C, so the fresh snow falls at density 0.07941 against a pack already at 0.20000, and the fresh layer carries 2.952e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 264.8386535644531,
+         "newsn": 7.033503243292216e-07,
+         "snowh_in": 0.30001741647720337,
+         "sndens_in": 0.20000203140704292
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.19999847116775002,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.3000262739655066,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.000885748830320443,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 2.952237544443444e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseB_step51",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 2.179e-04 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.0e-12 here. Their bound is 1e-10, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 51 of case B, a 30 cm pack melting under warm advection: frozen precipitation (SNOWNG); air at -8.33 C, so the fresh snow falls at density 0.07928 against a pack already at 0.19962, and the fresh layer carries 2.179e-04 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 264.8194580078125,
+         "newsn": 5.2001200674567376e-06,
+         "snowh_in": 0.3009808361530304,
+         "sndens_in": 0.19962168444143474
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.1995954649678384,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.30104642721821867,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.006559106518827518,
+           "tolerance": {
+             "rel": 1e-10
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.00021787690953306137,
+           "tolerance": {
+             "rel": 1e-10
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseB_step100",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.337e-04 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.7e-12 here. Their bound is 1e-10, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 100 of case B, a 30 cm pack melting under warm advection: frozen precipitation (SNOWNG); air at -8.36 C, so the fresh snow falls at density 0.07909 against a pack already at 0.19853, and the fresh layer carries 1.337e-04 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 264.7906799316406,
+         "newsn": 3.2133066997630522e-06,
+         "snowh_in": 0.30376335978507996,
+         "sndens_in": 0.19853165387422472
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.19851568117713758,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.3038039874412125,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.004062765613255248,
+           "tolerance": {
+             "rel": 1e-10
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.00013372983177323874,
+           "tolerance": {
+             "rel": 1e-10
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseB_step435",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 6.544e-04 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 3.4e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 435 of case B, a 30 cm pack melting under warm advection: frozen precipitation (SNOWNG); air at -6.60 C, so the fresh snow falls at density 0.09142 against a pack already at 0.19603, and the fresh layer carries 6.544e-04 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 266.554931640625,
+         "newsn": 1.8546244245953857e-05,
+         "snowh_in": 0.3098119795322418,
+         "sndens_in": 0.19603108392857915
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.19596263353876026,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.3100148396096843,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.020286007744246826,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0006543560227564387,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseB_step463",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 6.072e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 3.7e-12 here. Their bound is 1e-10, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 463 of case B, a 30 cm pack melting under warm advection: frozen precipitation (SNOWNG); air at -6.29 C, so the fresh snow falls at density 0.09369 against a pack already at 0.19576, and the fresh layer carries 6.072e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 266.8583984375,
+         "newsn": 1.7660030425759033e-06,
+         "snowh_in": 0.310437947511673,
+         "sndens_in": 0.19576132745820624
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.19575512985495824,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.3104567974609801,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0018849949307120362,
+           "tolerance": {
+             "rel": 1e-10
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 6.071681941346292e-05,
+           "tolerance": {
+             "rel": 1e-10
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseB_step492",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.267e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.8e-11 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 492 of case B, a 30 cm pack melting under warm advection: frozen precipitation (SNOWNG); air at -6.20 C, so the fresh snow falls at density 0.09438 against a pack already at 0.19558, and the fresh layer carries 1.267e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 266.94970703125,
+         "newsn": 3.715282400662545e-07,
+         "snowh_in": 0.3108033537864685,
+         "sndens_in": 0.19557859079110504
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.19557730896860487,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.31080729045466454,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.00039366681960362193,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 1.266594548112904e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseB_step517",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.036e-03 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 2.1e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 517 of case B, a 30 cm pack melting under warm advection: frozen precipitation (SNOWNG); air at -6.18 C, so the fresh snow falls at density 0.09452 against a pack already at 0.19550, and the fresh layer carries 1.036e-03 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 266.9682312011719,
+         "newsn": 3.04878072347492e-05,
+         "snowh_in": 0.31090250611305237,
+         "sndens_in": 0.19549596742073572
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.19539130833452667,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.31122507204478117,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.03225659317288021,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0010364394154028474,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseB_step561",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 2.649e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 8.4e-12 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 561 of case B, a 30 cm pack melting under warm advection: frozen precipitation (SNOWNG); air at -5.67 C, so the fresh snow falls at density 0.09848 against a pack already at 0.19515, and the fresh layer carries 2.649e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 267.4836730957031,
+         "newsn": 8.130840615194757e-07,
+         "snowh_in": 0.31172868609428406,
+         "sndens_in": 0.1951508951489783
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.19514833462133443,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.31173694275700564,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0008256662721584096,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 2.648599376308134e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseC_step26",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 6.554e-04 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 3.4e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 26 of case C, a thin pack over soil that thaws and refreezes: frozen precipitation (SNOWNG); air at -8.05 C, so the fresh snow falls at density 0.08116 against a pack already at 0.19975, and the fresh layer carries 6.554e-04 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 265.10174560546875,
+         "newsn": 1.3333585593500174e-06,
+         "snowh_in": 0.02504994161427021,
+         "sndens_in": 0.19974579109995588
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.19966806782197208,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.02506637049130947,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0016428877039259548,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0006554150727547673,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseC_step56",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 2.407e-03 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 9.2e-14 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 56 of case C, a thin pack over soil that thaws and refreezes: frozen precipitation (SNOWNG); air at -8.07 C, so the fresh snow falls at density 0.08099 against a pack already at 0.19414, and the fresh layer carries 2.407e-03 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 265.0768737792969,
+         "newsn": 5.136220279382542e-06,
+         "snowh_in": 0.02628016471862793,
+         "sndens_in": 0.19413903382338266
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.1938666593204854,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.026343580816701566,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0063416098073636185,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.002407269479228542,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseC_step169",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 2.059e-03 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.1e-13 here. Their bound is 1e-11, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 169 of case C, a thin pack over soil that thaws and refreezes: frozen precipitation (SNOWNG); air at -7.77 C, so the fresh snow falls at density 0.08306 against a pack already at 0.17992, and the fresh layer carries 2.059e-03 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 265.3818054199219,
+         "newsn": 5.147486517671496e-06,
+         "snowh_in": 0.03003288432955742,
+         "sndens_in": 0.17991617909495428
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.1797167326084254,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.030094856521105082,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.006197219154766356,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0020592286759766863,
+           "tolerance": {
+             "rel": 1e-11
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseC_step268",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 1.637e-04 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 1.4e-12 here. Their bound is 1e-10, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 268 of case C, a thin pack over soil that thaws and refreezes: frozen precipitation (SNOWNG); air at -5.33 C, so the fresh snow falls at density 0.10110 against a pack already at 0.17761, and the fresh layer carries 1.637e-04 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 267.8174743652344,
+         "newsn": 5.090740160085261e-07,
+         "snowh_in": 0.03075668215751648,
+         "sndens_in": 0.17761091262016448
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.17759838855166268,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.03076171752308218,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 0.0005035365565699695,
+           "tolerance": {
+             "rel": 1e-10
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 0.0001636893506326943,
+           "tolerance": {
+             "rel": 1e-10
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     },
+     {
+       "id": "cold_caseC_step380",
+       "description": "Reference: WRF 4.8 em_scm_xy COLD-SEASON single-column run, data/eqwefic/noahcold_scm, dumped by ctessum-claude/WRF branch earthsciml-instrumented-noahcold and replayed through the real64 (-fdefault-real-8) kernels/noah_driver at ESM_DT = 60 s, WRF's OWN step. THE OUTPUTS ARE PUBLISHED, NOT DIFFERENCED. `sndens_out` and `snowh_out` are asserted against the `snp_sndens_in` and `snp_snowh_in` publishers -- the state SNOWPACK receives at entry, added on the N99 pass for the compaction component next door. That nothing modifies the density or the depth between SNOW_NEW and SNOWPACK is not an assumption: reconstructing SNOW_NEW in double precision from the dumped arguments reproduces both publishers BITWISE at all 66 pack steps of the cold set -- the 30 snowfall steps through the routine and the other 36 through SFLX's plain sneqv/snowh. So SNOW_NEW needed no instrumentation of its own; the compaction hook already carried it. WHY THE LARGEST STEP AND NOT THE SMALLEST (FORTRAN_BUGS N99, PLAN section 6). Nothing here is recovered by differencing, so there is no cancellation floor pushing the step down; and `newsn` = prcp dt 0.001 is proportional to the step, so the fresh layer's weight in the density average is too. At WRF's 60 s that weight is 2.796e-05 on this column (1.0e-3 to 1.3e-1 across the set), and at a 1e-6 s step it would be 1.7e-8 of that -- a rel 1e-9 assertion would test the snowfall physics not at all. This is the second Noah component whose reference step had to go UP rather than down, after snow compaction. ONE ASSERTION PAIR IS DIFFERENCED AND IS BOUNDED ACCORDINGLY, which puts the N99 rule inside a single test. `sndens_out` and `snowh_out` are published and hold at rel 3e-16 -- binary64 -- against their 1e-9 bound. `hnewc` and `fresh_fraction` have no publisher and must be recovered as (snp_snowh_in - snowh), a difference whose relative precision is eps divided by that same weight: 7.9e-12 here. Their bound is 1e-09, twenty times that floor, and it is a property of the REFERENCE, not of the component, which reproduces the routine bitwise. Step 380 of case C, a thin pack over soil that thaws and refreezes: frozen precipitation (SNOWNG); air at -2.88 C, so the fresh snow falls at density 0.12177 against a pack already at 0.18452, and the fresh layer carries 2.796e-05 of the density average.",
+       "parameter_overrides": {
+         "sfctmp": 270.2742614746094,
+         "newsn": 9.789480373001425e-08,
+         "snowh_in": 0.02874927408993244,
+         "sndens_in": 0.1845206198080695
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 0.0
+       },
+       "assertions": [
+         {
+           "variable": "sndens_out",
+           "time": 0.0,
+           "expected": 0.18451886504883896,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "snowh_out",
+           "time": 0.0,
+           "expected": 0.02875007803405908,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "hnewc",
+           "time": 0.0,
+           "expected": 8.039441266385894e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "fresh_fraction",
+           "time": 0.0,
+           "expected": 2.7963198071538747e-05,
+           "tolerance": {
+             "rel": 1e-09
+           }
+         },
+         {
+           "variable": "cold_snowfall",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         },
+         {
+           "variable": "thin_pack",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}
