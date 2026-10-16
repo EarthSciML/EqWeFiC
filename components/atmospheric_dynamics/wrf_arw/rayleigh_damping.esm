@@ -2,7 +2,7 @@
  "esm": "1.1.0",
  "metadata": {
   "name": "WRFRayleighDamping",
-  "description": "WRF-ARW's upper-level Rayleigh damping layer (damp_opt = 2), SUBROUTINE rk_rayleigh_damp of dyn_em/module_big_step_utilities_em.F:5836-6110, written as instantaneous decoupled tendencies of a single column on the EarthSciDiscretizations column_nonuniform_1d grid. Within the depth zdamp below the model top z_top the horizontal wind and the (moist, use_theta_m = 1) potential temperature relax toward the base-state sounding and w relaxes to zero, with the strength dampcoef sin^2(pi/2 (1 - (z_top - z)/zdamp)) rising from 0 at the bottom of the layer to dampcoef at the top (Klemp and Lilly 1978; Skamarock et al. 2021, section 4.3). Below the layer the strength is exactly 0: WRF applies the damper only to layers with z >= z_top - zdamp, and 1 - min(1, (z_top - z)/zdamp) = max(0, 1 - (z_top - z)/zdamp) vanishes there, so the max form is identical everywhere. The reference state is interpolated to the layer's CURRENT height (WRF recomputes z from the geopotential each step, so the model levels move against the fixed base profile): linearly in height between the base levels z_base, and linearly EXTRAPOLATED above the top base level (WRF's `if (k2+1 .gt. ktf)` branch), which the closed function interp.linear does not do (it clamps), so that branch is written out. Heights: layer centres zc from the interface heights ze (WRF phb + ph over g), z_top = ze[NLEV+1]. Decoupling: WRF adds (c1 mu + c2) dampcoef dcoef (u - u00) to the mass-coupled tendency ru_tendf; dividing by the same coupling mass gives the decoupled rate written here, exactly, for any hybrid coordinate. Note (FORTRAN_BUGS N64): with use_theta_m = 1 the damped field t is the MOIST potential temperature but t_base is the DRY base-state theta (set in module_initialize_scm_xy.F before the dry-to-moist conversion), so the sponge relaxes theta_m toward a dry reference; theta_base here is WRF's t_base + t0 unchanged. Consumer-supplied column fields are rewrite-target ops input_<name>.",
+  "description": "WRF-ARW's upper-level Rayleigh damping layer (damp_opt = 2), SUBROUTINE rk_rayleigh_damp of dyn_em/module_big_step_utilities_em.F:5836-6110, written as instantaneous decoupled tendencies of a single column on the EarthSciDiscretizations column_nonuniform_1d grid. Within the depth zdamp below the model top z_top the horizontal wind and the (moist, use_theta_m = 1) potential temperature relax toward the base-state sounding and w relaxes to zero, with the strength dampcoef sin^2(pi/2 (1 - (z_top - z)/zdamp)) rising from 0 at the bottom of the layer to dampcoef at the top (Klemp and Lilly 1978; Skamarock et al. 2021, section 4.3). Below the layer the strength is exactly 0: WRF applies the damper only to layers with z >= z_top - zdamp, and 1 - min(1, (z_top - z)/zdamp) = max(0, 1 - (z_top - z)/zdamp) vanishes there, so the max form is identical everywhere. The reference state is interpolated to the layer's CURRENT height (WRF recomputes z from the geopotential each step, so the model levels move against the fixed base profile): linearly in height between the base levels z_base, and linearly EXTRAPOLATED above the top base level (WRF's `if (k2+1 .gt. ktf)` branch), which interp.linear does not do (it clamps), so that branch is written out; below it the interpolation is lib/table_interp.esm's interp.linear for a run-time table -- the bracket zc_bracket once, then interp_linear_bracketed for each profile -- because the base profile is not a literal const (esm-spec section 9.2). Heights: layer centres zc from the interface heights ze (WRF phb + ph over g), z_top = ze[NLEV+1]. Decoupling: WRF adds (c1 mu + c2) dampcoef dcoef (u - u00) to the mass-coupled tendency ru_tendf; dividing by the same coupling mass gives the decoupled rate written here, exactly, for any hybrid coordinate. Note (FORTRAN_BUGS N64): with use_theta_m = 1 the damped field t is the MOIST potential temperature but t_base is the DRY base-state theta (set in module_initialize_scm_xy.F before the dry-to-moist conversion), so the sponge relaxes theta_m toward a dry reference; theta_base here is WRF's t_base + t0 unchanged. Consumer-supplied column fields are rewrite-target ops input_<name>.",
   "license": "MIT",
   "tags": ["wrf", "dynamics", "rayleigh-damping", "sponge", "column"],
   "references": [
@@ -17,7 +17,8 @@
  "models": {
   "WRFRayleighDamping": {
    "expression_template_imports": [
-    {"ref": "${ESD_ROOT}/grids/column_nonuniform_1d/grid.esm", "bindings": {"NLEV": "NLEV"}}
+    {"ref": "${ESD_ROOT}/grids/column_nonuniform_1d/grid.esm", "bindings": {"NLEV": "NLEV"}},
+    {"ref": "../../../lib/table_interp.esm"}
    ],
    "subsystems": {"wrf": {"ref": "../../../lib/wrf_constants.esm"}},
    "expression_templates": {
@@ -27,8 +28,8 @@
      "body": {"op": "^", "args": [{"op": "sin", "args": [{"op": "*", "args": [0.5, "wrf.piconst", {"op": "max", "args": [0.0, {"op": "-", "args": [1.0, {"op": "/", "args": [{"op": "-", "args": ["z_top", "z"]}, "depth"]}]}]}]}]}, 2]}
     },
     "base_at_height": {
-     "params": ["fb", "zb", "z"],
-     "description": "Base-state profile fb (on the base heights zb, both shape [lev]) at height z: linear interpolation, and linear extrapolation from the top two base levels when z >= zb[NLEV] (rk_rayleigh_damp's k2+1 > ktf branch).",
+     "params": ["fb", "zb", "z", "i_lo"],
+     "description": "Base-state profile fb (on the base heights zb, both shape [lev]) at height z, whose bracket on zb is i_lo (lib/table_interp.esm bracket_index): linear interpolation, and linear extrapolation from the top two base levels when z >= zb[NLEV] (rk_rayleigh_damp's k2+1 > ktf branch).",
      "body": {"op": "ifelse", "args": [
       {"op": ">=", "args": ["z", {"op": "index", "args": ["zb", "NLEV"]}]},
       {"op": "+", "args": [{"op": "index", "args": ["fb", "NLEV"]},
@@ -36,7 +37,7 @@
         {"op": "/", "args": [{"op": "-", "args": [{"op": "index", "args": ["fb", "NLEV"]}, {"op": "index", "args": ["fb", {"op": "-", "args": ["NLEV", 1]}]}]},
                              {"op": "-", "args": [{"op": "index", "args": ["zb", "NLEV"]}, {"op": "index", "args": ["zb", {"op": "-", "args": ["NLEV", 1]}]}]}]},
         {"op": "-", "args": ["z", {"op": "index", "args": ["zb", "NLEV"]}]}]}]},
-      {"op": "fn", "name": "interp.linear", "args": ["fb", "zb", "z"]}]}
+      {"op": "apply_expression_template", "args": [], "name": "interp_linear_bracketed", "bindings": {"table": "fb", "axis": "zb", "x": "z", "i_lo": "i_lo", "n": "NLEV"}}]}
     }
    },
    "variables": {
@@ -60,6 +61,7 @@
     "z_top": {"type": "unknown", "units": "m", "description": "Current model-top height ze[NLEV+1]."},
     "sponge_c": {"type": "unknown", "units": "1", "shape": ["lev"], "description": "Damping profile on the layers (WRF dcoef at the u, v and theta points)."},
     "sponge_w": {"type": "unknown", "units": "1", "shape": ["lev_nodes"], "description": "Damping profile on the interfaces (WRF dcoef at the w points)."},
+    "zc_bracket": {"type": "unknown", "units": "1", "shape": ["lev"], "description": "Lower bracketing index of each current layer height on the base heights (the number of base heights at or below it, held to [1, NLEV-1]); shared by the u, v and theta lookups."},
     "u_ref": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Base-state zonal wind at the current layer heights (WRF u00)."},
     "v_ref": {"type": "unknown", "units": "m/s", "shape": ["lev"], "description": "Base-state meridional wind at the current layer heights (WRF v00)."},
     "theta_ref": {"type": "unknown", "units": "K", "shape": ["lev"], "description": "Base-state potential temperature at the current layer heights (WRF t00 + t0)."},
@@ -84,12 +86,14 @@
       "expr": {"op": "apply_expression_template", "args": [], "name": "sponge_strength", "bindings": {"z": {"op": "index", "args": ["zc", "k"]}, "z_top": "z_top", "depth": "zdamp"}}}},
     {"lhs": "sponge_w", "rhs": {"op": "faq", "output_idx": ["kn"], "args": [], "ranges": {"kn": {"from": "lev_nodes"}},
       "expr": {"op": "apply_expression_template", "args": [], "name": "sponge_strength", "bindings": {"z": {"op": "index", "args": ["ze", "kn"]}, "z_top": "z_top", "depth": "zdamp"}}}},
+    {"lhs": "zc_bracket", "rhs": {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": "lev"}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "bracket_index", "bindings": {"axis": "z_base", "x": {"op": "index", "args": ["zc", "k"]}, "n": "NLEV"}}}},
     {"lhs": "u_ref", "rhs": {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": "lev"}},
-      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "u_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}}}}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "u_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}, "i_lo": {"op": "index", "args": ["zc_bracket", "k"]}}}}},
     {"lhs": "v_ref", "rhs": {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": "lev"}},
-      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "v_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}}}}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "v_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}, "i_lo": {"op": "index", "args": ["zc_bracket", "k"]}}}}},
     {"lhs": "theta_ref", "rhs": {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": "lev"}},
-      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "theta_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}}}}},
+      "expr": {"op": "apply_expression_template", "args": [], "name": "base_at_height", "bindings": {"fb": "theta_base", "zb": "z_base", "z": {"op": "index", "args": ["zc", "k"]}, "i_lo": {"op": "index", "args": ["zc_bracket", "k"]}}}}},
     {"lhs": "du_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["dampcoef"]}, "sponge_c", {"op": "-", "args": ["u", "u_ref"]}]}},
     {"lhs": "dv_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["dampcoef"]}, "sponge_c", {"op": "-", "args": ["v", "v_ref"]}]}},
     {"lhs": "dtheta_m_dt", "rhs": {"op": "*", "args": [{"op": "-", "args": ["dampcoef"]}, "sponge_c", {"op": "-", "args": ["theta_m", "theta_ref"]}]}},

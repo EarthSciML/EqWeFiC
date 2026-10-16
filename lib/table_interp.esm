@@ -1,0 +1,541 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "table_interp",
+    "description": "Linear and bilinear interpolation into a table that is NOT a literal constant -- a column profile, a coupled wind field, any shaped observed or parameter -- with exactly the semantics of the closed functions interp.linear and interp.bilinear (esm-spec section 9.2). WHY THIS EXISTS: section 9.2 requires the table and every axis of interp.linear / interp.bilinear / interp.searchsorted to be a literal `const` array (load-time errors interp_table_not_const / interp_axis_not_const), and the native compiler enforces it. Uses with a literal table keep calling the closed functions; these templates are for the run-time tables. HOW: a lookup is three steps, each written out. (1) The bracket: the lower bracketing index is the number of axis levels at or below the query point, a sum of indicators over the axis -- for a strictly increasing axis that count IS the largest index k with axis[k] <= x -- held to [1, n-1] so the gather below is always in range (outside that range the result comes from the clamp, and the held index only keeps the unused blend finite). (2) The gather of the two bracketing table and axis entries at that index. (3) One linear blend, in the order section 9.2 pins for bit-identity with the closed function: w = (x - axis[i]) / (axis[i+1] - axis[i]), then table[i] + w (table[i+1] - table[i]). Clamping matches the closed functions exactly, including their difference: the 1-D form returns the END TABLE VALUE when x <= axis[1] or x >= axis[n], while the 2-D form clamps the QUERY COORDINATE to the axis range and then blends (at the top edge that is i = n-1 with w = 1). A NaN query falls through every comparison, counts zero levels, takes i = 1 and propagates NaN through w, as the closed functions do. TWO FORMS. interp_linear_table / interp_bilinear_table do all three steps in place, for a single lookup. When several tables share an axis and query points (u, v and theta on one set of base heights), compute the bracket ONCE as an observed with bracket_index and pass it to interp_linear_bracketed / interp_bilinear_bracketed: a template is pure substitution, so the in-place form repeats the bracket sum at every place the index is used (six per 1-D lookup), and the Rust interpreter re-evaluates each copy cell by cell, which made an integrating coupling (couplings/eqweather_scm_dynamics.esm) several times slower under the interpreter than the shared bracket does. Verified bit-identical to interp.linear and interp.bilinear (difference exactly 0) at 12 query points covering both clamps, every knot and interior points, under both the native compiler and the interpreter. The index symbol of the bracket sum is named `k_bracket` so it cannot capture an index symbol of the expression a caller binds as the query point.",
+    "license": "MIT",
+    "tags": [
+      "interpolation",
+      "expression-templates"
+    ],
+    "references": [
+      {
+        "citation": "esm-spec section 9.2, interp.linear and interp.bilinear: semantics, clamping and pinned evaluation order. EarthSciAST pkg/earthsci-ast-rs/src/registered_functions.rs interp_linear_at and bilinear_at, the reference arithmetic these templates reproduce."
+      }
+    ]
+  },
+  "expression_templates": {
+    "bracket_index": {
+      "params": [
+        "axis",
+        "x",
+        "n"
+      ],
+      "description": "Lower bracketing index of x on the strictly increasing axis (n entries): the number of axis levels at or below x, held to [1, n-1]. Clamping x to the axis range first does not change it, so the same index serves interp_linear_bracketed and interp_bilinear_bracketed. Compute it once per query point as an observed when several tables share an axis and query (u, v and theta on one set of base heights), and hand it to the bracketed forms.",
+      "body": {
+        "op": "min",
+        "args": [
+          {
+            "op": "max",
+            "args": [
+              {
+                "op": "faq",
+                "output_idx": [],
+                "reduce": "+",
+                "args": [
+                  "axis"
+                ],
+                "ranges": {
+                  "k_bracket": [
+                    1,
+                    "n"
+                  ]
+                },
+                "expr": {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "<=",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "axis",
+                            "k_bracket"
+                          ]
+                        },
+                        "x"
+                      ]
+                    },
+                    1,
+                    0
+                  ]
+                }
+              },
+              1
+            ]
+          },
+          {
+            "op": "-",
+            "args": [
+              "n",
+              1
+            ]
+          }
+        ]
+      }
+    },
+    "bracket_weight": {
+      "params": [
+        "axis",
+        "x",
+        "i_lo"
+      ],
+      "description": "Fractional position of x between axis[i_lo] and axis[i_lo+1]: (x - axis[i_lo]) / (axis[i_lo+1] - axis[i_lo]).",
+      "body": {
+        "op": "/",
+        "args": [
+          {
+            "op": "-",
+            "args": [
+              "x",
+              {
+                "op": "index",
+                "args": [
+                  "axis",
+                  "i_lo"
+                ]
+              }
+            ]
+          },
+          {
+            "op": "-",
+            "args": [
+              {
+                "op": "index",
+                "args": [
+                  "axis",
+                  {
+                    "op": "+",
+                    "args": [
+                      "i_lo",
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "axis",
+                  "i_lo"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lerp": {
+      "params": [
+        "lo",
+        "hi",
+        "frac"
+      ],
+      "description": "Linear blend lo + frac (hi - lo), the order section 9.2 pins (exact at frac = 0).",
+      "body": {
+        "op": "+",
+        "args": [
+          "lo",
+          {
+            "op": "*",
+            "args": [
+              "frac",
+              {
+                "op": "-",
+                "args": [
+                  "hi",
+                  "lo"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "clamp_to_axis": {
+      "params": [
+        "axis",
+        "x",
+        "n"
+      ],
+      "description": "x held to the axis range [axis[1], axis[n]]: interp.bilinear's per-axis clamp.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          {
+            "op": "<=",
+            "args": [
+              "x",
+              {
+                "op": "index",
+                "args": [
+                  "axis",
+                  1
+                ]
+              }
+            ]
+          },
+          {
+            "op": "index",
+            "args": [
+              "axis",
+              1
+            ]
+          },
+          {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">=",
+                "args": [
+                  "x",
+                  {
+                    "op": "index",
+                    "args": [
+                      "axis",
+                      "n"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "axis",
+                  "n"
+                ]
+              },
+              "x"
+            ]
+          }
+        ]
+      }
+    },
+    "interp_linear_bracketed": {
+      "params": [
+        "table",
+        "axis",
+        "x",
+        "i_lo",
+        "n"
+      ],
+      "description": "interp.linear(table, axis, x) for a run-time table and axis of n entries, given i_lo = bracket_index(axis, x, n): table[1] for x <= axis[1], table[n] for x >= axis[n], otherwise lerp(table[i_lo], table[i_lo+1], bracket_weight(axis, x, i_lo)).",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          {
+            "op": "<=",
+            "args": [
+              "x",
+              {
+                "op": "index",
+                "args": [
+                  "axis",
+                  1
+                ]
+              }
+            ]
+          },
+          {
+            "op": "index",
+            "args": [
+              "table",
+              1
+            ]
+          },
+          {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">=",
+                "args": [
+                  "x",
+                  {
+                    "op": "index",
+                    "args": [
+                      "axis",
+                      "n"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "table",
+                  "n"
+                ]
+              },
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "lerp",
+                "bindings": {
+                  "lo": {
+                    "op": "index",
+                    "args": [
+                      "table",
+                      "i_lo"
+                    ]
+                  },
+                  "hi": {
+                    "op": "index",
+                    "args": [
+                      "table",
+                      {
+                        "op": "+",
+                        "args": [
+                          "i_lo",
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  "frac": {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "bracket_weight",
+                    "bindings": {
+                      "axis": "axis",
+                      "x": "x",
+                      "i_lo": "i_lo"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "interp_linear_table": {
+      "params": [
+        "table",
+        "axis",
+        "x",
+        "n"
+      ],
+      "description": "interp_linear_bracketed with its bracket computed in place: the single-lookup form.",
+      "body": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "interp_linear_bracketed",
+        "bindings": {
+          "table": "table",
+          "axis": "axis",
+          "x": "x",
+          "i_lo": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "bracket_index",
+            "bindings": {
+              "axis": "axis",
+              "x": "x",
+              "n": "n"
+            }
+          },
+          "n": "n"
+        }
+      }
+    },
+    "interp_bilinear_bracketed": {
+      "params": [
+        "table",
+        "axis_x",
+        "axis_y",
+        "x",
+        "y",
+        "i_lo",
+        "j_lo",
+        "nx",
+        "ny"
+      ],
+      "description": "interp.bilinear(table, axis_x, axis_y, x, y) for a run-time table[i, j] at (axis_x[i], axis_y[j]) with nx x ny entries, given i_lo = bracket_index(axis_x, x, nx) and j_lo = bracket_index(axis_y, y, ny): clamp each query coordinate to its axis, take its weight in the bracketing cell, and blend along x at rows j_lo and j_lo+1, then along y.",
+      "body": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "bilinear_at_bracket",
+        "bindings": {
+          "table": "table",
+          "i_lo": "i_lo",
+          "j_lo": "j_lo",
+          "wx": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "bracket_weight",
+            "bindings": {
+              "axis": "axis_x",
+              "x": {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "clamp_to_axis",
+                "bindings": {
+                  "axis": "axis_x",
+                  "x": "x",
+                  "n": "nx"
+                }
+              },
+              "i_lo": "i_lo"
+            }
+          },
+          "wy": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "bracket_weight",
+            "bindings": {
+              "axis": "axis_y",
+              "x": {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "clamp_to_axis",
+                "bindings": {
+                  "axis": "axis_y",
+                  "x": "y",
+                  "n": "ny"
+                }
+              },
+              "i_lo": "j_lo"
+            }
+          }
+        }
+      }
+    },
+    "interp_bilinear_table": {
+      "params": [
+        "table",
+        "axis_x",
+        "axis_y",
+        "x",
+        "y",
+        "nx",
+        "ny"
+      ],
+      "description": "interp_bilinear_bracketed with both brackets computed in place: the single-lookup form.",
+      "body": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "interp_bilinear_bracketed",
+        "bindings": {
+          "table": "table",
+          "axis_x": "axis_x",
+          "axis_y": "axis_y",
+          "x": "x",
+          "y": "y",
+          "i_lo": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "bracket_index",
+            "bindings": {
+              "axis": "axis_x",
+              "x": "x",
+              "n": "nx"
+            }
+          },
+          "j_lo": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "bracket_index",
+            "bindings": {
+              "axis": "axis_y",
+              "x": "y",
+              "n": "ny"
+            }
+          },
+          "nx": "nx",
+          "ny": "ny"
+        }
+      }
+    },
+    "bilinear_at_bracket": {
+      "params": [
+        "table",
+        "i_lo",
+        "j_lo",
+        "wx",
+        "wy"
+      ],
+      "description": "The bilinear blend in the cell [i_lo, i_lo+1] x [j_lo, j_lo+1] with weights wx, wy, in section 9.2's pinned order: row_j = lerp(table[i_lo, j_lo], table[i_lo+1, j_lo], wx), row_jp1 = lerp(table[i_lo, j_lo+1], table[i_lo+1, j_lo+1], wx), result = lerp(row_j, row_jp1, wy).",
+      "body": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "lerp",
+        "bindings": {
+          "lo": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "lerp",
+            "bindings": {
+              "lo": {
+                "op": "index",
+                "args": [
+                  "table",
+                  "i_lo",
+                  "j_lo"
+                ]
+              },
+              "hi": {
+                "op": "index",
+                "args": [
+                  "table",
+                  {
+                    "op": "+",
+                    "args": [
+                      "i_lo",
+                      1
+                    ]
+                  },
+                  "j_lo"
+                ]
+              },
+              "frac": "wx"
+            }
+          },
+          "hi": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "lerp",
+            "bindings": {
+              "lo": {
+                "op": "index",
+                "args": [
+                  "table",
+                  "i_lo",
+                  {
+                    "op": "+",
+                    "args": [
+                      "j_lo",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "hi": {
+                "op": "index",
+                "args": [
+                  "table",
+                  {
+                    "op": "+",
+                    "args": [
+                      "i_lo",
+                      1
+                    ]
+                  },
+                  {
+                    "op": "+",
+                    "args": [
+                      "j_lo",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "frac": "wx"
+            }
+          },
+          "frac": "wy"
+        }
+      }
+    }
+  }
+}
