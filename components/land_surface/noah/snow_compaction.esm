@@ -1,5 +1,5 @@
 {
- "esm": "1.1.0",
+ "esm": "1.2.0",
  "metadata": {
   "name": "NoahSnowCompaction",
   "description": "Snow-pack compaction in WRF's unified Noah land-surface model, SUBROUTINE SNOWPACK of phys/module_sf_noahlsm.F (WRF 4.8, sf_surface_physics = 2): the densification of an existing pack under its own weight, and the melt water it retains once its surface reaches freezing. THE PHYSICS. Anderson's compaction equation (NOAA Technical Report NWS 19, eq. 3.29) makes the density at a point in the pack grow exponentially in the water equivalent lying above it, at a rate that rises with temperature and falls with the density already reached: d(rho)/dt = rho c1 exp(ctemp tavgc - c2 rho) w. Koren's 1995 approximate solution integrates that over the DEPTH of the pack rather than over time, so the pack-mean density after a step of dtsec is sndens (exp(x) - 1)/x with x = bfac esdcx, and bfac carries the whole of the step length. WRF evaluates (exp(x) - 1)/x through its Taylor series to four terms, because the closed form is 0/0 at x = 0 -- its own comment says so at length. Once the snow surface reaches freezing a second process runs: 13 % of the pack's pore space per day fills with melt water, which relaxes the density towards that of water. The depth is not integrated at all; it is the quotient esd/sndens at the end. HOW IT JOINS AN ODE DOCUMENT. SNOWPACK is an in-place sub-step, not a rate -- Koren's solution is a closed form in the step length and there is no dt-free rate inside it -- so this component takes dtsec as a PARAMETER OF THE SCHEME and exposes `dsndens_dt` = increment/dtsec as the observed a consumer integrating the pack adds, which is the same shape WSM6's operator-split stages use. A mounting document must prescribe dtsec and couple it in; it is not the integrator's step, and the result differs from the dtsec -> 0 limit by xarg/3 + O(xarg^2), measured at 2.2e-6 relative at WRF's own 60 s step. WHY THE INCREMENT IS NEVER FORMED AS A DIFFERENCE. The compaction moves the density by a factor 1 + O(dtsec): 9.4e-5 of it at WRF's 60 s step on the wettest reference column, 4.5e-9 on the thinnest pack, and 7.5e-17 at a 1e-6 s step. Writing the increment as sndens_out - sndens_in therefore returns round-off at any step small enough to be a dt -> 0 reference, and writing it as sndens (pexp - 1) is no better because pexp is stored as 1 + O(1e-13). Both the component and its reference form it instead as sndens_in pexp_m1 + dw (1 - dsx), an exact rearrangement in which nothing cancels, and the reference is taken from a publisher that emits the series sum BEFORE WRF adds one to it (FORTRAN_BUGS N99, the same move N97 and N98 forced for the frozen-soil sink and the melt rate one routine over). REFERENCE STEP. Because nothing is differenced there is no cancellation floor pushing the reference step down, and the usual 'shrink dt until the increment is the derivative' recipe is actively WRONG here: the compaction increment is proportional to dtsec, so a SMALLER step puts LESS of an assertion's budget on the physics. The primary regime is therefore WRF's own 60 s step, where a rel 1e-9 assertion on sndens_out tests the compaction to between 1e-5 and 2e-1 of itself, and a second regime at 1e-6 s pins the tendency in the dt -> 0 limit, where the naive form would be 100 % noise. NOT TRANSCRIBED: the whole UA_PHYS branch (the snomlt-limited retention fraction), which is off in every reference run; SNOW_NEW, which sets the density of freshly fallen snow and is a separate routine; and the caller's own esd > 0 guard, which belongs to SNOPAC and is reported here as the indicator `pack_present`. MEASURED AGREEMENT: every one of the 1659 assertions passes at rel 3e-15, a few ulps of binary64, over all 134 tests of both regimes; the published bound is the 1e-9 the project sets for a double-precision kernel reference, and the six orders between them are headroom, not accuracy that was needed.",
@@ -228,7 +228,7 @@
      "rhs": {
       "op": "*",
       "args": [
-       100.0,
+       {"op": "const", "args": [], "value": 100.0, "units": "cm/m"},
        "esd"
       ]
      }
@@ -249,7 +249,7 @@
       "op": "/",
       "args": [
        "dtsec",
-       3600.0
+       {"op": "const", "args": [], "value": 3600.0, "units": "s/h"}
       ]
      }
     },
