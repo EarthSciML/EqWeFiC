@@ -1,0 +1,2953 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "MosaicCoagulationEntryState",
+    "description": "How MOSAIC turns one size bin of its column state into what coagulation integrates: SUBROUTINE mosaic_coag_1clm of chem/module_mosaic_coag.F (WRF v4.8.0), the per-bin block before the call to coagsolv (:155-293). Bins are independent here, so a consumer maps this over the eight sections; the outputs are the inputs of coagulation_assembly.esm (number concentration, one composition quantity per column, dry diameter) and of coagulation_kernel.esm (wet diameter and density).\n\nTHE STATE. MOSAIC carries, per bin, the number mixing ratio n (particles per mol of air), the ten component mixing ratios r_l (mol per mol of air), aerosol water and the hysteresis water (mol per mol of air), and three diagnostics kept alongside: the dry mass M = sum_l r_l mw_l, the dry volume V = sum_l r_l mw_l / rho_l (per mol of air) and the dry density rho = M/V.\n\nWHAT HAPPENS, in order. (1) The diagnostics are trusted unless they are implausible: if rho is outside [0.1, 20] g/cm3 or M differs from V rho by more than 1e-4 relative, M and V are recomputed from the composition (each r_l clipped at zero) and rho = M/V. (2) A bin whose dry mass is at most 1.01e-30 g/mol is treated as empty: default density 2 g/cm3, the number put back on the section's centre volume, water and hysteresis water dropped, the section's centre diameter used for both sizes. (3) Otherwise V is re-derived as M/rho and the number is CONFORMED into the section: a mean dry volume per particle below the section's lower bound (n > V/(f v_lo)) raises it to f v_lo and one above the upper bound (n < V f/v_hi) lowers it to v_hi/f, with the safety factor f = 1.00001 keeping it strictly inside. (4) The dry diameter is the sphere of the mean dry volume per particle, held at or above the section's lower diameter; the wet diameter is the sphere of the dry volume plus the water's volume, capped at 30 times the upper diameter; the wet density is (M + water mass)/(V + water volume). (5) coagsolv's composition columns are the ten r_l clipped at zero, then the hysteresis water, the water and the dry volume V, and its number is n times the molar air density.\n\nBRANCH COVERAGE, stated because it bounds what the tests can say: over the 16 dumped chem170 steps none of the branches in (1)-(3) fires (7426 bin-level cells checked against the recorded entry state, every one on the plain path). They are written as the Fortran has them and are not exercised by the dumped tests.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-11-12T00:00:00Z",
+    "tags": [
+      "mosaic",
+      "aerosol",
+      "coagulation",
+      "sectional",
+      "wrf-chem",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "Zaveri, R. A., Easter, R. C., Fast, J. D. and Peters, L. K. (2008). Model for Simulating Aerosol Interactions and Chemistry (MOSAIC). J. Geophys. Res. 113, D13204."
+      }
+    ]
+  },
+  "metaparameters": {
+    "NCOMP": {
+      "type": "integer",
+      "default": 10,
+      "description": "Number of MOSAIC aerosol components carried by each bin (ncomp_aer = 10 for chem_opt = 170: so4, no3, cl, co3, nh4, na, ca, oin, oc, bc)."
+    }
+  },
+  "index_sets": {
+    "comp": {
+      "kind": "interval",
+      "size": "NCOMP"
+    }
+  },
+  "models": {
+    "MosaicCoagulationEntryState": {
+      "subsystems": {
+        "par": {
+          "ref": "./mosaic_coagulation_parameters.esm"
+        }
+      },
+      "variables": {
+        "r": {
+          "type": "parameter",
+          "units": "mol/mol",
+          "shape": [
+            "comp"
+          ],
+          "default": 1e-12,
+          "description": "Component mixing ratios of the bin (rsub at massptr_aer), mol per mol of air."
+        },
+        "mw": {
+          "type": "parameter",
+          "units": "g/mol",
+          "shape": [
+            "comp"
+          ],
+          "default": 100.0,
+          "description": "Component molecular weights (mw_aer)."
+        },
+        "dens": {
+          "type": "parameter",
+          "units": "g/cm^3",
+          "shape": [
+            "comp"
+          ],
+          "default": 1.8,
+          "description": "Component densities (dens_aer)."
+        },
+        "n_in": {
+          "type": "parameter",
+          "units": "1/mol",
+          "default": 1000000000000.0,
+          "description": "Number mixing ratio of the bin (rsub at numptr_aer), particles per mol of air."
+        },
+        "water_in": {
+          "type": "parameter",
+          "units": "mol/mol",
+          "default": 0.0,
+          "description": "Aerosol water mixing ratio (rsub at waterptr_aer)."
+        },
+        "hysw_in": {
+          "type": "parameter",
+          "units": "mol/mol",
+          "default": 0.0,
+          "description": "Hysteresis-water mixing ratio (rsub at hyswptr_aer)."
+        },
+        "mass_in": {
+          "type": "parameter",
+          "units": "g/mol",
+          "default": 1e-10,
+          "description": "Carried dry mass (aqmassdry_sub), g per mol of air."
+        },
+        "vol_in": {
+          "type": "parameter",
+          "units": "cm^3/mol",
+          "default": 5e-11,
+          "description": "Carried dry volume (aqvoldry_sub), cm3 per mol of air."
+        },
+        "rho_in": {
+          "type": "parameter",
+          "units": "g/cm^3",
+          "default": 2.0,
+          "description": "Carried dry density (adrydens_sub)."
+        },
+        "cair": {
+          "type": "parameter",
+          "units": "mol/cm^3",
+          "default": 4e-05,
+          "description": "Molar air density (cairclm)."
+        },
+        "v_lo": {
+          "type": "parameter",
+          "units": "cm^3",
+          "default": 1e-16,
+          "description": "Section's lower bound of dry volume per particle (volumlo_sect)."
+        },
+        "v_hi": {
+          "type": "parameter",
+          "units": "cm^3",
+          "default": 1e-15,
+          "description": "Section's upper bound (volumhi_sect)."
+        },
+        "v_cen": {
+          "type": "parameter",
+          "units": "cm^3",
+          "default": 4e-16,
+          "description": "Section's centre volume (volumcen_sect)."
+        },
+        "d_lo": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 5e-06,
+          "description": "Section's lower diameter bound (dlo_sect)."
+        },
+        "d_hi": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 1e-05,
+          "description": "Section's upper diameter bound (dhi_sect)."
+        },
+        "d_cen": {
+          "type": "parameter",
+          "units": "cm",
+          "default": 7e-06,
+          "description": "Section's centre diameter (dcen_sect)."
+        },
+        "mass_comp": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "Dry mass from the composition, sum of max(0, r_l) mw_l."
+        },
+        "vol_comp": {
+          "type": "unknown",
+          "units": "cm^3/mol",
+          "description": "Dry volume from the composition, sum of max(0, r_l) mw_l / rho_l."
+        },
+        "implausible": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when the carried diagnostics are implausible and are recomputed from the composition, else 0."
+        },
+        "mass_dry": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "Dry mass after step (1)."
+        },
+        "empty": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when the bin's dry mass is negligible (step 2), else 0."
+        },
+        "rho_dry": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "Dry density after steps (1)-(2)."
+        },
+        "vol_dry": {
+          "type": "unknown",
+          "units": "cm^3/mol",
+          "description": "Dry volume, mass_dry/rho_dry (coagsolv's dry-volume column, clipped at zero)."
+        },
+        "n_dry": {
+          "type": "unknown",
+          "units": "1/mol",
+          "description": "Number mixing ratio after the empty-bin reset and the conforming of step (3)."
+        },
+        "water": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "Aerosol water as coagulation sees it: clipped at zero, dropped for an empty bin."
+        },
+        "hysw": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "description": "Hysteresis water likewise."
+        },
+        "q_comp": {
+          "type": "unknown",
+          "units": "mol/mol",
+          "shape": [
+            "comp"
+          ],
+          "description": "coagsolv's composition columns 1..NCOMP: the component mixing ratios clipped at zero."
+        },
+        "num_conc": {
+          "type": "unknown",
+          "units": "cm^-3",
+          "description": "Number concentration coagsolv integrates, particles per cm3 of air."
+        },
+        "dp_dry": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Dry diameter (coagsolv dpdry_inp)."
+        },
+        "mass_wet": {
+          "type": "unknown",
+          "units": "g/mol",
+          "description": "Dry mass plus water mass."
+        },
+        "vol_wet": {
+          "type": "unknown",
+          "units": "cm^3/mol",
+          "description": "Dry volume plus water volume."
+        },
+        "dp_wet": {
+          "type": "unknown",
+          "units": "cm",
+          "description": "Wet (ambient) diameter (coagsolv dpwet_inp)."
+        },
+        "dens_wet": {
+          "type": "unknown",
+          "units": "g/cm^3",
+          "description": "Wet density (coagsolv denswet_inp)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "mass_comp",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [],
+            "reduce": "+",
+            "args": [],
+            "ranges": {
+              "l": {
+                "from": "comp"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "max",
+                  "args": [
+                    0.0,
+                    {
+                      "op": "index",
+                      "args": [
+                        "r",
+                        "l"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "mw",
+                    "l"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "vol_comp",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [],
+            "reduce": "+",
+            "args": [],
+            "ranges": {
+              "l": {
+                "from": "comp"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "max",
+                      "args": [
+                        0.0,
+                        {
+                          "op": "index",
+                          "args": [
+                            "r",
+                            "l"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "mw",
+                        "l"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "dens",
+                    "l"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "implausible",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "<",
+                    "args": [
+                      "rho_in",
+                      "par.dens_min"
+                    ]
+                  },
+                  {
+                    "op": ">",
+                    "args": [
+                      "rho_in",
+                      "par.dens_max"
+                    ]
+                  },
+                  {
+                    "op": ">",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "abs",
+                            "args": [
+                              {
+                                "op": "-",
+                                "args": [
+                                  "mass_in",
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      "vol_in",
+                                      "rho_in"
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "max",
+                            "args": [
+                              {
+                                "op": "abs",
+                                "args": [
+                                  "mass_in"
+                                ]
+                              },
+                              {
+                                "op": "abs",
+                                "args": [
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      "vol_in",
+                                      "rho_in"
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "*",
+                                "args": [
+                                  0.1,
+                                  "par.smallmassbb"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      "par.mass_vol_reltol"
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "mass_dry",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "implausible",
+                  0.5
+                ]
+              },
+              "mass_comp",
+              "mass_in"
+            ]
+          }
+        },
+        {
+          "lhs": "empty",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "mass_dry",
+                  {
+                    "op": "*",
+                    "args": [
+                      1.01,
+                      "par.smallmassbb"
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "rho_dry",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "empty",
+                  0.5
+                ]
+              },
+              "par.dens_default",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "implausible",
+                      0.5
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      "mass_comp",
+                      "vol_comp"
+                    ]
+                  },
+                  "rho_in"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "vol_dry",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "mass_dry",
+              "rho_dry"
+            ]
+          }
+        },
+        {
+          "lhs": "n_dry",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "empty",
+                  0.5
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  "mass_dry",
+                  {
+                    "op": "*",
+                    "args": [
+                      "v_cen",
+                      "par.dens_default"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "n_in",
+                      {
+                        "op": "/",
+                        "args": [
+                          "vol_dry",
+                          {
+                            "op": "*",
+                            "args": [
+                              "par.factsafe",
+                              "v_lo"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      "vol_dry",
+                      {
+                        "op": "*",
+                        "args": [
+                          "par.factsafe",
+                          "v_lo"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": "<",
+                        "args": [
+                          "n_in",
+                          {
+                            "op": "/",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "vol_dry",
+                                  "par.factsafe"
+                                ]
+                              },
+                              "v_hi"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              "vol_dry",
+                              "par.factsafe"
+                            ]
+                          },
+                          "v_hi"
+                        ]
+                      },
+                      "n_in"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "water",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "empty",
+                  0.5
+                ]
+              },
+              0.0,
+              {
+                "op": "max",
+                "args": [
+                  0.0,
+                  "water_in"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "hysw",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "empty",
+                  0.5
+                ]
+              },
+              0.0,
+              {
+                "op": "max",
+                "args": [
+                  0.0,
+                  "hysw_in"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "q_comp",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "l"
+            ],
+            "args": [],
+            "ranges": {
+              "l": {
+                "from": "comp"
+              }
+            },
+            "expr": {
+              "op": "max",
+              "args": [
+                0.0,
+                {
+                  "op": "index",
+                  "args": [
+                    "r",
+                    "l"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "num_conc",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "n_dry",
+              "cair"
+            ]
+          }
+        },
+        {
+          "lhs": "dp_dry",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "empty",
+                  0.5
+                ]
+              },
+              "d_cen",
+              {
+                "op": "max",
+                "args": [
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          "vol_dry",
+                          {
+                            "op": "*",
+                            "args": [
+                              "n_dry",
+                              "par.piover6"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "/",
+                        "args": [
+                          1.0,
+                          3.0
+                        ]
+                      }
+                    ]
+                  },
+                  "d_lo"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "mass_wet",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "mass_dry",
+              {
+                "op": "*",
+                "args": [
+                  "water",
+                  "par.mw_water"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "vol_wet",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "vol_dry",
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "water",
+                      "par.mw_water"
+                    ]
+                  },
+                  "par.dens_water"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "dp_wet",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "empty",
+                  0.5
+                ]
+              },
+              "d_cen",
+              {
+                "op": "min",
+                "args": [
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          "vol_wet",
+                          {
+                            "op": "*",
+                            "args": [
+                              "n_dry",
+                              "par.piover6"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "/",
+                        "args": [
+                          1.0,
+                          3.0
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "par.dpwet_cap",
+                      "d_hi"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "dens_wet",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "empty",
+                  0.5
+                ]
+              },
+              "rho_dry",
+              {
+                "op": "/",
+                "args": [
+                  "mass_wet",
+                  "vol_wet"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "entry_s918_lev1_bin1",
+          "description": "Surface layer, smallest section, a step with no nucleation anywhere in the column: model step 918, level 1, section 1 of 8. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 f311091e; bit-identical to dumps/chem170_wrf on every shared field). Inputs are the bin's rows of the state entering coagulation (rsub_newnuc) and the carried dry diagnostics, which were dumped before nucleation and are admitted only because nucleation left every row of this bin unchanged; expected values are what the model recorded at coagsolv's entry (coag_distrib, coag_dpdry, coag_dpwet, coag_denswet), GNU gfortran 13.3 REAL*4. Plain path: neither the implausible-diagnostics recompute nor the empty-bin reset fires (pinned exactly), and the number is inside the section. Tolerance rel 2e-06: measured 4.7e-7 worst over the 7426 admissible cells of the 16 dumped steps, the real32 rounding of the reference; components the bin does not carry are pinned at exactly 0.",
+          "parameter_overrides": {
+            "r": [
+              1.3968820024301554e-11,
+              1.557805259383353e-18,
+              9.337994372225908e-19,
+              0.0,
+              5.865676867833347e-12,
+              2.7247195081816227e-22,
+              7.227045028890907e-26,
+              2.9337505597577376e-17,
+              7.1418856885299e-14,
+              3.5709404183625892e-12
+            ],
+            "mw": [
+              96.06600189208984,
+              62.00699996948242,
+              35.45000076293945,
+              60.00699996948242,
+              18.04199981689453,
+              22.989999771118164,
+              40.08000183105469,
+              1.0,
+              250.0,
+              1.0
+            ],
+            "dens": [
+              1.7999999523162842,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              2.5999999046325684,
+              1.0,
+              1.7000000476837158
+            ],
+            "n_in": 8723061.0,
+            "water_in": 7.507386379224101e-11,
+            "hysw_in": 9.623674773751034e-11,
+            "mass_in": 1.4900867206790736e-09,
+            "vol_in": 8.456878530793688e-10,
+            "rho_in": 1.7619819641113281,
+            "cair": 3.918359288945794e-05,
+            "v_lo": 3.1208925632862246e-17,
+            "v_hi": 2.4967140506289797e-16,
+            "v_cen": 8.827217540445742e-17,
+            "d_lo": 3.906250185536919e-06,
+            "d_hi": 7.812500371073838e-06,
+            "d_cen": 5.524272182810819e-06
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "implausible",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "empty",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "num_conc",
+              "time": 0.0,
+              "expected": 341.8008728027344,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_dry",
+              "time": 0.0,
+              "expected": 5.699639132217271e-06,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_wet",
+              "time": 0.0,
+              "expected": 7.83671930548735e-06,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dens_wet",
+              "time": 0.0,
+              "expected": 1.293146014213562,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "hysw",
+              "time": 0.0,
+              "expected": 9.623674773751034e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 7.507386379224101e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "vol_dry",
+              "time": 0.0,
+              "expected": 8.456878530793688e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 1
+              },
+              "time": 0.0,
+              "expected": 1.3968820024301554e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 2
+              },
+              "time": 0.0,
+              "expected": 1.557805259383353e-18,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 3
+              },
+              "time": 0.0,
+              "expected": 9.337994372225908e-19,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 5
+              },
+              "time": 0.0,
+              "expected": 5.865676867833347e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 6
+              },
+              "time": 0.0,
+              "expected": 2.7247195081816227e-22,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 7
+              },
+              "time": 0.0,
+              "expected": 7.227045028890907e-26,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 8
+              },
+              "time": 0.0,
+              "expected": 2.9337505597577376e-17,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 9
+              },
+              "time": 0.0,
+              "expected": 7.1418856885299e-14,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 10
+              },
+              "time": 0.0,
+              "expected": 3.5709404183625892e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "entry_s918_lev30_bin4",
+          "description": "Mid-column, section 4 (the accumulation-mode peak): model step 918, level 30, section 4 of 8. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 f311091e; bit-identical to dumps/chem170_wrf on every shared field). Inputs are the bin's rows of the state entering coagulation (rsub_newnuc) and the carried dry diagnostics, which were dumped before nucleation and are admitted only because nucleation left every row of this bin unchanged; expected values are what the model recorded at coagsolv's entry (coag_distrib, coag_dpdry, coag_dpwet, coag_denswet), GNU gfortran 13.3 REAL*4. Plain path: neither the implausible-diagnostics recompute nor the empty-bin reset fires (pinned exactly), and the number is inside the section. Tolerance rel 2e-06: measured 4.7e-7 worst over the 7426 admissible cells of the 16 dumped steps, the real32 rounding of the reference; components the bin does not carry are pinned at exactly 0.",
+          "parameter_overrides": {
+            "r": [
+              6.127773982678164e-11,
+              3.442971613698201e-16,
+              5.73296118550046e-17,
+              0.0,
+              5.941743624893192e-11,
+              8.043302894382431e-15,
+              7.270637605772937e-26,
+              4.7504129102593495e-11,
+              1.1442678402029394e-11,
+              5.721377815959272e-10
+            ],
+            "mw": [
+              96.06600189208984,
+              62.00699996948242,
+              35.45000076293945,
+              60.00699996948242,
+              18.04199981689453,
+              22.989999771118164,
+              40.08000183105469,
+              1.0,
+              250.0,
+              1.0
+            ],
+            "dens": [
+              1.7999999523162842,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              2.5999999046325684,
+              1.0,
+              1.7000000476837158
+            ],
+            "n_in": 154800.953125,
+            "water_in": 2.0936949396421767e-10,
+            "hysw_in": 2.706636026417186e-10,
+            "mass_in": 1.0495827318379725e-08,
+            "vol_in": 7.141039759517298e-09,
+            "rho_in": 1.469789743423462,
+            "cair": 2.9572436687885784e-05,
+            "v_lo": 1.597896992402547e-14,
+            "v_hi": 1.2783175939220376e-13,
+            "v_cen": 4.51953538070822e-14,
+            "d_lo": 3.125000148429535e-05,
+            "d_hi": 6.25000029685907e-05,
+            "d_cen": 4.419417746248655e-05
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "implausible",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "empty",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "num_conc",
+              "time": 0.0,
+              "expected": 4.577841281890869,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_dry",
+              "time": 0.0,
+              "expected": 4.449688276508823e-05,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_wet",
+              "time": 0.0,
+              "expected": 5.125359894009307e-05,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dens_wet",
+              "time": 0.0,
+              "expected": 1.3074108362197876,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "hysw",
+              "time": 0.0,
+              "expected": 2.706636026417186e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 2.0936949396421767e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "vol_dry",
+              "time": 0.0,
+              "expected": 7.141039759517298e-09,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 1
+              },
+              "time": 0.0,
+              "expected": 6.127773982678164e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 2
+              },
+              "time": 0.0,
+              "expected": 3.442971613698201e-16,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 3
+              },
+              "time": 0.0,
+              "expected": 5.73296118550046e-17,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 5
+              },
+              "time": 0.0,
+              "expected": 5.941743624893192e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 6
+              },
+              "time": 0.0,
+              "expected": 8.043302894382431e-15,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 7
+              },
+              "time": 0.0,
+              "expected": 7.270637605772937e-26,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 8
+              },
+              "time": 0.0,
+              "expected": 4.7504129102593495e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 9
+              },
+              "time": 0.0,
+              "expected": 1.1442678402029394e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 10
+              },
+              "time": 0.0,
+              "expected": 5.721377815959272e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "entry_s1080_lev10_bin8",
+          "description": "Inside the boundary layer, the largest section: model step 1080, level 10, section 8 of 8. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 f311091e; bit-identical to dumps/chem170_wrf on every shared field). Inputs are the bin's rows of the state entering coagulation (rsub_newnuc) and the carried dry diagnostics, which were dumped before nucleation and are admitted only because nucleation left every row of this bin unchanged; expected values are what the model recorded at coagsolv's entry (coag_distrib, coag_dpdry, coag_dpwet, coag_denswet), GNU gfortran 13.3 REAL*4. Plain path: neither the implausible-diagnostics recompute nor the empty-bin reset fires (pinned exactly), and the number is inside the section. Tolerance rel 2e-06: measured 4.7e-7 worst over the 7426 admissible cells of the 16 dumped steps, the real32 rounding of the reference; components the bin does not carry are pinned at exactly 0.",
+          "parameter_overrides": {
+            "r": [
+              2.5556642847986144e-13,
+              7.742031842006281e-13,
+              2.4131389594894692e-11,
+              0.0,
+              0.0,
+              2.5416726015525803e-11,
+              7.227051808164311e-26,
+              3.604471165985501e-09,
+              3.419394081034463e-14,
+              1.7096817668191266e-12
+            ],
+            "mw": [
+              96.06600189208984,
+              62.00699996948242,
+              35.45000076293945,
+              60.00699996948242,
+              18.04199981689453,
+              22.989999771118164,
+              40.08000183105469,
+              1.0,
+              250.0,
+              1.0
+            ],
+            "dens": [
+              1.7999999523162842,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              2.5999999046325684,
+              1.0,
+              1.7000000476837158
+            ],
+            "n_in": 11.242635726928711,
+            "water_in": 0.0,
+            "hysw_in": 0.0,
+            "mass_in": 5.128513613783525e-09,
+            "vol_in": 2.0912998000000016e-09,
+            "rho_in": 2.4523091316223145,
+            "cair": 3.6850844480795786e-05,
+            "v_lo": 6.544986080880832e-11,
+            "v_hi": 5.235988864704666e-10,
+            "v_cen": 1.851201691938087e-10,
+            "d_lo": 0.0005000000237487257,
+            "d_hi": 0.0010000000474974513,
+            "d_cen": 0.0007071068393997848
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "implausible",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "empty",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "num_conc",
+              "time": 0.0,
+              "expected": 0.0004143006226513535,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_dry",
+              "time": 0.0,
+              "expected": 0.0007082442753016949,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_wet",
+              "time": 0.0,
+              "expected": 0.0007082442753016949,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dens_wet",
+              "time": 0.0,
+              "expected": 2.4523091316223145,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "hysw",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "vol_dry",
+              "time": 0.0,
+              "expected": 2.0912998000000016e-09,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 1
+              },
+              "time": 0.0,
+              "expected": 2.5556642847986144e-13,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 2
+              },
+              "time": 0.0,
+              "expected": 7.742031842006281e-13,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 3
+              },
+              "time": 0.0,
+              "expected": 2.4131389594894692e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 6
+              },
+              "time": 0.0,
+              "expected": 2.5416726015525803e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 7
+              },
+              "time": 0.0,
+              "expected": 7.227051808164311e-26,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 8
+              },
+              "time": 0.0,
+              "expected": 3.604471165985501e-09,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 9
+              },
+              "time": 0.0,
+              "expected": 3.419394081034463e-14,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 10
+              },
+              "time": 0.0,
+              "expected": 1.7096817668191266e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "entry_s2400_lev1_bin2",
+          "description": "Surface layer late on day 2, section 2: model step 2400, level 1, section 2 of 8. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 f311091e; bit-identical to dumps/chem170_wrf on every shared field). Inputs are the bin's rows of the state entering coagulation (rsub_newnuc) and the carried dry diagnostics, which were dumped before nucleation and are admitted only because nucleation left every row of this bin unchanged; expected values are what the model recorded at coagsolv's entry (coag_distrib, coag_dpdry, coag_dpwet, coag_denswet), GNU gfortran 13.3 REAL*4. Plain path: neither the implausible-diagnostics recompute nor the empty-bin reset fires (pinned exactly), and the number is inside the section. Tolerance rel 2e-06: measured 4.7e-7 worst over the 7426 admissible cells of the 16 dumped steps, the real32 rounding of the reference; components the bin does not carry are pinned at exactly 0.",
+          "parameter_overrides": {
+            "r": [
+              1.1613076819627643e-11,
+              1.2307710290068114e-18,
+              5.841777994493699e-19,
+              0.0,
+              6.96182347881269e-12,
+              2.93165165099193e-19,
+              1.173129103739041e-25,
+              1.1905099742668974e-14,
+              7.389827682072192e-13,
+              3.694888145444608e-11
+            ],
+            "mw": [
+              96.06600189208984,
+              62.00699996948242,
+              35.45000076293945,
+              60.00699996948242,
+              18.04199981689453,
+              22.989999771118164,
+              40.08000183105469,
+              1.0,
+              250.0,
+              1.0
+            ],
+            "dens": [
+              1.7999999523162842,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              2.5999999046325684,
+              1.0,
+              1.7000000476837158
+            ],
+            "n_in": 978595.875,
+            "water_in": 5.3003008232410664e-11,
+            "hysw_in": 7.063010593055807e-11,
+            "mass_in": 1.4781391666218724e-09,
+            "vol_in": 9.117316901452455e-10,
+            "rho_in": 1.6212435960769653,
+            "cair": 3.914731496479362e-05,
+            "v_lo": 2.4967140506289797e-16,
+            "v_hi": 1.9973712405031837e-15,
+            "v_cen": 7.061774032356594e-16,
+            "d_lo": 7.812500371073838e-06,
+            "d_hi": 1.5625000742147677e-05,
+            "d_cen": 1.1048544365621638e-05
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "implausible",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "empty",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "num_conc",
+              "time": 0.0,
+              "expected": 38.30940246582031,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_dry",
+              "time": 0.0,
+              "expected": 1.2117737242078874e-05,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_wet",
+              "time": 0.0,
+              "expected": 1.538693868496921e-05,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dens_wet",
+              "time": 0.0,
+              "expected": 1.3034378290176392,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "hysw",
+              "time": 0.0,
+              "expected": 7.063010593055807e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 5.3003008232410664e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "vol_dry",
+              "time": 0.0,
+              "expected": 9.117316901452455e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 1
+              },
+              "time": 0.0,
+              "expected": 1.1613076819627643e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 2
+              },
+              "time": 0.0,
+              "expected": 1.2307710290068114e-18,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 3
+              },
+              "time": 0.0,
+              "expected": 5.841777994493699e-19,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 5
+              },
+              "time": 0.0,
+              "expected": 6.96182347881269e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 6
+              },
+              "time": 0.0,
+              "expected": 2.93165165099193e-19,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 7
+              },
+              "time": 0.0,
+              "expected": 1.173129103739041e-25,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 8
+              },
+              "time": 0.0,
+              "expected": 1.1905099742668974e-14,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 9
+              },
+              "time": 0.0,
+              "expected": 7.389827682072192e-13,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 10
+              },
+              "time": 0.0,
+              "expected": 3.694888145444608e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "entry_s2521_lev59_bin1",
+          "description": "Top model layer at the last dumped step, smallest section: model step 2521, level 59, section 1 of 8. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 f311091e; bit-identical to dumps/chem170_wrf on every shared field). Inputs are the bin's rows of the state entering coagulation (rsub_newnuc) and the carried dry diagnostics, which were dumped before nucleation and are admitted only because nucleation left every row of this bin unchanged; expected values are what the model recorded at coagsolv's entry (coag_distrib, coag_dpdry, coag_dpwet, coag_denswet), GNU gfortran 13.3 REAL*4. Plain path: neither the implausible-diagnostics recompute nor the empty-bin reset fires (pinned exactly), and the number is inside the section. Tolerance rel 2e-06: measured 4.7e-7 worst over the 7426 admissible cells of the 16 dumped steps, the real32 rounding of the reference; components the bin does not carry are pinned at exactly 0.",
+          "parameter_overrides": {
+            "r": [
+              4.77098777151852e-11,
+              7.593236120084036e-17,
+              9.88802853413335e-18,
+              0.0,
+              9.879446219440702e-12,
+              4.184221638868816e-21,
+              7.227045028890907e-26,
+              4.505247014855048e-16,
+              1.0967453074189892e-12,
+              5.483716258858351e-11
+            ],
+            "mw": [
+              96.06600189208984,
+              62.00699996948242,
+              35.45000076293945,
+              60.00699996948242,
+              18.04199981689453,
+              22.989999771118164,
+              40.08000183105469,
+              1.0,
+              250.0,
+              1.0
+            ],
+            "dens": [
+              1.7999999523162842,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              2.5999999046325684,
+              1.0,
+              1.7000000476837158
+            ],
+            "n_in": 77294728.0,
+            "water_in": 1.5464914071561253e-10,
+            "hysw_in": 0.0,
+            "mass_in": 5.172547723475418e-09,
+            "vol_in": 3.035308226984057e-09,
+            "rho_in": 1.704126000404358,
+            "cair": 3.9507676774519496e-06,
+            "v_lo": 3.1208925632862246e-17,
+            "v_hi": 2.4967140506289797e-16,
+            "v_cen": 8.827217540445742e-17,
+            "d_lo": 3.906250185536919e-06,
+            "d_hi": 7.812500371073838e-06,
+            "d_cen": 5.524272182810819e-06
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "implausible",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "empty",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "num_conc",
+              "time": 0.0,
+              "expected": 305.3735046386719,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_dry",
+              "time": 0.0,
+              "expected": 4.217139121465152e-06,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_wet",
+              "time": 0.0,
+              "expected": 5.239556230662856e-06,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dens_wet",
+              "time": 0.0,
+              "expected": 1.3671306371688843,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "hysw",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 1.5464914071561253e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "vol_dry",
+              "time": 0.0,
+              "expected": 3.035308226984057e-09,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 1
+              },
+              "time": 0.0,
+              "expected": 4.77098777151852e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 2
+              },
+              "time": 0.0,
+              "expected": 7.593236120084036e-17,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 3
+              },
+              "time": 0.0,
+              "expected": 9.88802853413335e-18,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 5
+              },
+              "time": 0.0,
+              "expected": 9.879446219440702e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 6
+              },
+              "time": 0.0,
+              "expected": 4.184221638868816e-21,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 7
+              },
+              "time": 0.0,
+              "expected": 7.227045028890907e-26,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 8
+              },
+              "time": 0.0,
+              "expected": 4.505247014855048e-16,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 9
+              },
+              "time": 0.0,
+              "expected": 1.0967453074189892e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 10
+              },
+              "time": 0.0,
+              "expected": 5.483716258858351e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "entry_s1_lev1_bin8",
+          "description": "First step, surface layer, largest section (nucleation active in the column but not in this section): model step 1, level 1, section 8 of 8. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 f311091e; bit-identical to dumps/chem170_wrf on every shared field). Inputs are the bin's rows of the state entering coagulation (rsub_newnuc) and the carried dry diagnostics, which were dumped before nucleation and are admitted only because nucleation left every row of this bin unchanged; expected values are what the model recorded at coagsolv's entry (coag_distrib, coag_dpdry, coag_dpwet, coag_denswet), GNU gfortran 13.3 REAL*4. Plain path: neither the implausible-diagnostics recompute nor the empty-bin reset fires (pinned exactly), and the number is inside the section. Tolerance rel 2e-06: measured 4.7e-7 worst over the 7426 admissible cells of the 16 dumped steps, the real32 rounding of the reference; components the bin does not carry are pinned at exactly 0.",
+          "parameter_overrides": {
+            "r": [
+              1.8801149873071132e-13,
+              9.22811373451867e-16,
+              2.6405957281872006e-11,
+              0.0,
+              0.0,
+              2.6782904019584386e-11,
+              7.224960710467894e-26,
+              3.798215963968232e-09,
+              3.6024585685400304e-14,
+              1.8012291961785887e-12
+            ],
+            "mw": [
+              96.06600189208984,
+              62.00699996948242,
+              35.45000076293945,
+              60.00699996948242,
+              18.04199981689453,
+              22.989999771118164,
+              40.08000183105469,
+              1.0,
+              250.0,
+              1.0
+            ],
+            "dens": [
+              1.7999999523162842,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              2.5999999046325684,
+              1.0,
+              1.7000000476837158
+            ],
+            "n_in": 11.846917152404785,
+            "water_in": 0.0,
+            "hysw_in": 0.0,
+            "mass_in": 5.380548007138941e-09,
+            "vol_in": 2.1870765198883646e-09,
+            "rho_in": 2.4601552486419678,
+            "cair": 3.913638647645712e-05,
+            "v_lo": 6.544986080880832e-11,
+            "v_hi": 5.235988864704666e-10,
+            "v_cen": 1.851201691938087e-10,
+            "d_lo": 0.0005000000237487257,
+            "d_hi": 0.0010000000474974513,
+            "d_cen": 0.0007071068393997848
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "implausible",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "empty",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "num_conc",
+              "time": 0.0,
+              "expected": 0.0004636455269064754,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_dry",
+              "time": 0.0,
+              "expected": 0.0007064583478495479,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_wet",
+              "time": 0.0,
+              "expected": 0.0007064583478495479,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dens_wet",
+              "time": 0.0,
+              "expected": 2.4601552486419678,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "hysw",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "vol_dry",
+              "time": 0.0,
+              "expected": 2.1870765198883646e-09,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 1
+              },
+              "time": 0.0,
+              "expected": 1.8801149873071132e-13,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 2
+              },
+              "time": 0.0,
+              "expected": 9.22811373451867e-16,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 3
+              },
+              "time": 0.0,
+              "expected": 2.6405957281872006e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 6
+              },
+              "time": 0.0,
+              "expected": 2.6782904019584386e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 7
+              },
+              "time": 0.0,
+              "expected": 7.224960710467894e-26,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 8
+              },
+              "time": 0.0,
+              "expected": 3.798215963968232e-09,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 9
+              },
+              "time": 0.0,
+              "expected": 3.6024585685400304e-14,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 10
+              },
+              "time": 0.0,
+              "expected": 1.8012291961785887e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "entry_s689_lev20_bin5",
+          "description": "Step 689, level 20, section 5: model step 689, level 20, section 5 of 8. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 f311091e; bit-identical to dumps/chem170_wrf on every shared field). Inputs are the bin's rows of the state entering coagulation (rsub_newnuc) and the carried dry diagnostics, which were dumped before nucleation and are admitted only because nucleation left every row of this bin unchanged; expected values are what the model recorded at coagsolv's entry (coag_distrib, coag_dpdry, coag_dpwet, coag_denswet), GNU gfortran 13.3 REAL*4. Plain path: neither the implausible-diagnostics recompute nor the empty-bin reset fires (pinned exactly), and the number is inside the section. Tolerance rel 2e-06: measured 4.7e-7 worst over the 7426 admissible cells of the 16 dumped steps, the real32 rounding of the reference; components the bin does not carry are pinned at exactly 0.",
+          "parameter_overrides": {
+            "r": [
+              5.4609074207068176e-11,
+              1.720496366487589e-16,
+              7.844177571642003e-17,
+              0.0,
+              5.0605242218892954e-11,
+              2.2869569736225226e-13,
+              7.232196044082968e-26,
+              5.235766820099741e-10,
+              9.894071673066662e-12,
+              4.947141585276427e-10
+            ],
+            "mw": [
+              96.06600189208984,
+              62.00699996948242,
+              35.45000076293945,
+              60.00699996948242,
+              18.04199981689453,
+              22.989999771118164,
+              40.08000183105469,
+              1.0,
+              250.0,
+              1.0
+            ],
+            "dens": [
+              1.7999999523162842,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              2.5999999046325684,
+              1.0,
+              1.7000000476837158
+            ],
+            "n_in": 17250.70703125,
+            "water_in": 2.166735124653485e-10,
+            "hysw_in": 2.5086543953278806e-10,
+            "mass_in": 9.708832848787097e-09,
+            "vol_in": 6.4452216896881964e-09,
+            "rho_in": 1.5063613653182983,
+            "cair": 3.3856562367873266e-05,
+            "v_lo": 1.2783175939220376e-13,
+            "v_hi": 1.02265407513763e-12,
+            "v_cen": 3.615628304566576e-13,
+            "d_lo": 6.25000029685907e-05,
+            "d_hi": 0.0001250000059371814,
+            "d_cen": 8.83883549249731e-05
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "implausible",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "empty",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "num_conc",
+              "time": 0.0,
+              "expected": 0.584049642086029,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_dry",
+              "time": 0.0,
+              "expected": 8.936016820371151e-05,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_wet",
+              "time": 0.0,
+              "expected": 0.00010463930811965838,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dens_wet",
+              "time": 0.0,
+              "expected": 1.3153610229492188,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "hysw",
+              "time": 0.0,
+              "expected": 2.5086543953278806e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 2.166735124653485e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "vol_dry",
+              "time": 0.0,
+              "expected": 6.4452216896881964e-09,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 1
+              },
+              "time": 0.0,
+              "expected": 5.4609074207068176e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 2
+              },
+              "time": 0.0,
+              "expected": 1.720496366487589e-16,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 3
+              },
+              "time": 0.0,
+              "expected": 7.844177571642003e-17,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 5
+              },
+              "time": 0.0,
+              "expected": 5.0605242218892954e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 6
+              },
+              "time": 0.0,
+              "expected": 2.2869569736225226e-13,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 7
+              },
+              "time": 0.0,
+              "expected": 7.232196044082968e-26,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 8
+              },
+              "time": 0.0,
+              "expected": 5.235766820099741e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 9
+              },
+              "time": 0.0,
+              "expected": 9.894071673066662e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 10
+              },
+              "time": 0.0,
+              "expected": 4.947141585276427e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "entry_s2134_lev45_bin3",
+          "description": "Step 2134, level 45 (free troposphere), section 3: model step 2134, level 45, section 3 of 8. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 f311091e; bit-identical to dumps/chem170_wrf on every shared field). Inputs are the bin's rows of the state entering coagulation (rsub_newnuc) and the carried dry diagnostics, which were dumped before nucleation and are admitted only because nucleation left every row of this bin unchanged; expected values are what the model recorded at coagsolv's entry (coag_distrib, coag_dpdry, coag_dpwet, coag_denswet), GNU gfortran 13.3 REAL*4. Plain path: neither the implausible-diagnostics recompute nor the empty-bin reset fires (pinned exactly), and the number is inside the section. Tolerance rel 2e-06: measured 4.7e-7 worst over the 7426 admissible cells of the 16 dumped steps, the real32 rounding of the reference; components the bin does not carry are pinned at exactly 0.",
+          "parameter_overrides": {
+            "r": [
+              3.6718270784996676e-11,
+              1.8530704958507043e-15,
+              5.354391191730379e-16,
+              0.0,
+              3.5382287377760946e-11,
+              1.322142330047608e-16,
+              7.564210959055772e-26,
+              2.0379002305115357e-12,
+              6.675765842900638e-12,
+              3.338005982733705e-10
+            ],
+            "mw": [
+              96.06600189208984,
+              62.00699996948242,
+              35.45000076293945,
+              60.00699996948242,
+              18.04199981689453,
+              22.989999771118164,
+              40.08000183105469,
+              1.0,
+              250.0,
+              1.0
+            ],
+            "dens": [
+              1.7999999523162842,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              1.7999999523162842,
+              2.200000047683716,
+              2.5999999046325684,
+              2.5999999046325684,
+              1.0,
+              1.7000000476837158
+            ],
+            "n_in": 727604.3125,
+            "water_in": 1.482451522649697e-10,
+            "hysw_in": 1.632116247707316e-10,
+            "mass_in": 6.204808222776137e-09,
+            "vol_in": 4.2163397218075716e-09,
+            "rho_in": 1.4716100692749023,
+            "cair": 1.9900866391253658e-05,
+            "v_lo": 1.9973712405031837e-15,
+            "v_hi": 1.597896992402547e-14,
+            "v_cen": 5.649419225885275e-15,
+            "d_lo": 1.5625000742147677e-05,
+            "d_hi": 3.125000148429535e-05,
+            "d_cen": 2.2097088731243275e-05
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "implausible",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "empty",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "num_conc",
+              "time": 0.0,
+              "expected": 14.47995662689209,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_dry",
+              "time": 0.0,
+              "expected": 2.2285057639237493e-05,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dp_wet",
+              "time": 0.0,
+              "expected": 2.6245079425279982e-05,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "dens_wet",
+              "time": 0.0,
+              "expected": 1.2887225151062012,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "hysw",
+              "time": 0.0,
+              "expected": 1.632116247707316e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 1.482451522649697e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "vol_dry",
+              "time": 0.0,
+              "expected": 4.2163397218075716e-09,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 1
+              },
+              "time": 0.0,
+              "expected": 3.6718270784996676e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 2
+              },
+              "time": 0.0,
+              "expected": 1.8530704958507043e-15,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 3
+              },
+              "time": 0.0,
+              "expected": 5.354391191730379e-16,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 5
+              },
+              "time": 0.0,
+              "expected": 3.5382287377760946e-11,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 6
+              },
+              "time": 0.0,
+              "expected": 1.322142330047608e-16,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 7
+              },
+              "time": 0.0,
+              "expected": 7.564210959055772e-26,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 8
+              },
+              "time": 0.0,
+              "expected": 2.0379002305115357e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 9
+              },
+              "time": 0.0,
+              "expected": 6.675765842900638e-12,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "q_comp",
+              "coords": {
+                "comp": 10
+              },
+              "time": 0.0,
+              "expected": 3.338005982733705e-10,
+              "tolerance": {
+                "rel": 2e-06,
+                "abs": 0.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
