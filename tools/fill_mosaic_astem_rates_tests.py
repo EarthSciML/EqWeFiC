@@ -117,10 +117,21 @@ def semi_expected(c, b, fx):
     return out
 
 
+GAX = {'h2so4': 1, 'hno3': 2, 'hcl': 3, 'nh3': 4, 'msa': 5, 'so4': 1, 'no3': 2, 'cl': 3, 'nh4': 4}
+
+
 def a(var, val, tol, b=None):
-    d = {'variable': f'{MODEL}.{var}', 'time': 0.0, 'expected': float(val), 'tolerance': tol}
+    """One assertion on the (single-cell, NLEV = 1) assembly; the per-ion rates and the gas
+    tendencies live on the gas axis (daer[lev, bin, gas], dgas/balance[lev, gas])."""
+    coords = {'lev': 1}
     if b is not None:
-        d['coords'] = {'bin': b}
+        coords['bin'] = b
+    for p in ('daer_', 'dgas_', 'balance_'):
+        if var.startswith(p):
+            coords['gas'] = GAX[var[len(p):]]
+            var = p[:-1]
+    d = {'variable': f'{MODEL}.{var}', 'time': 0.0, 'expected': float(val), 'tolerance': tol}
+    d['coords'] = coords
     return d
 
 
@@ -170,7 +181,8 @@ def build_test(tid, desc, c, sb, bins):
             arr['gam'].append([1.0] * NEL)
             arr['gam_ratio'].append(1.0)
             arr['activity'].append([0.0] * NEL)
-    over.update(arr)
+    over.update({k: [v] for k, v in arr.items()})   # the single cell, lev = 1
+    over['gas'] = [[over.pop(f'gas_{name}') for name in GASES]]
 
     asr, sums = [], {n: [0.0, 0.0] for n in GASES}
     for b in range(1, NBIN + 1):
@@ -203,7 +215,7 @@ def build_test(tid, desc, c, sb, bins):
         asr.append(a(f'balance_{gname}', 0.0, {'rel': 0.0, 'abs': max(fl, 1e-300) * 1e-3}))
     over = {f'{MODEL}.{k}': v for k, v in over.items()}
     return {'id': tid, 'description': desc, 'parameter_overrides': over,
-            'time_span': {'start': 0, 'end': 1}, 'assertions': asr}
+            'time_span': {'start': 0, 'end': 0}, 'assertions': asr}
 
 
 def main():
@@ -291,7 +303,7 @@ def main():
     print('hand excluded:', dict(hreasons))
 
     doc = json.loads(DOC.read_text())
-    doc['models'][MODEL]['tests'] = tests
+    doc['models']['Tests']['tests'] = tests
     DOC.write_text(json.dumps(doc, indent=2) + '\n')
     print(f'{DOC.name}: {len(tests)} tests, {sum(len(t["assertions"]) for t in tests)} assertions')
 
