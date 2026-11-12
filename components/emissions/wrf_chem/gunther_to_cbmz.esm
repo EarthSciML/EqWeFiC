@@ -1,0 +1,3726 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "GuntherToCBMZ",
+    "description": "How WRF-Chem adds the Gunther biogenic emissions (GuntherBiogenicEmissions, WRF's `e_bio`) to the CBM-Z species of chem_opt = 170: the GUNTHER1 branch of `add_biogenics` in chem/module_emissions_anthropogenics.F (WRF v4.8.0), which emissions_driver calls for every CBM-Z chem_opt since 2013, when it replaced `cbmz_addemiss_bio`. Every emission goes into the surface layer only, as a mixing-ratio flux over the layer depth (`mixing_layer_tendency`, add_biogenics' `conv_rho = dtstep/(dz8w(kts)*60.)`); the increment over a step is exactly dt times the tendency.\n\nTHE MAPPING IS WRONG FOR CBM-Z, AND IS REPRODUCED HERE AS WRF DOES IT (FORTRAN_BUGS.md B25). add_biogenics reads each species' emission as `e_bio(i,j,p_<species>-1)`: the species' position in the run's `chem` array, minus one. That is the species' own RADM2 emission class only for RADM2 chemistry, whose `chem` order is the RADM2 class order of module_data_radm2; e_bio is always filled in that RADM2 order by biosplit. For chem_opt 170 the CBM-Z order is different, so every species reads some other class: ISO (p = 32) reads class 31, HONO, which biosplit never fills, so the scheme's dominant emission, isoprene, is lost entirely; OLI (23) reads ETH (22), XYL (25) reads OL2 (24) and ETH (19) reads PAN (18), all never filled, so the monoterpenes are lost as well; OLT (22) reads HC8 (21), KET (28) reads TOL (27, empty), ORA2 (14) reads ORA1 (13), CO (20) reads HC3 (19) and OL2 (21) reads HC5 (20) -- the 'RADM only' guard `p_ol2 >= param_first_scalar` is true for CBM-Z, which carries ethene as OL2. Only ALD, HCHO and NO land in their own class, because the first nine species of the two orders coincide (and NO's index, 5, is lno + 1). Two more additions are made because their guards also pass for CBM-Z: KET also gets its own class `lket` (the 'CRIMECH only' block), and the 'CBMZ only' PAR block lumps e_bio(p_ald-1), e_bio(p_ket-1), e_bio(p_olt-1) and e_bio(p_ora2-1) -- i.e. ALD, TOL, HC8 and ORA1 -- at 0.4, 0.9, 1.8 and 1. The component writes each read as `e_bio[p - 1]` with the CBM-Z pointers of CBMZEmissionParameters, so the defect is visible in the equations rather than hidden in a table; the intended reads are each species' own class (`liso`, `loli`, ...).\n\nWhat the tests pin. Steps of the chem170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh) and synthetic replays over every land-use class, asserting every tendency against the real64 replay of add_biogenics compiled unchanged (kernels/emissions_driver), at 1e-9 relative.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-11-12T00:00:00Z",
+    "tags": [
+      "wrf-chem",
+      "emissions",
+      "biogenic",
+      "gunther",
+      "cbmz",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "WRF-Chem v4.8.0, chem/module_emissions_anthropogenics.F (subroutine add_biogenics, GUNTHER1 branch), called from chem/emissions_driver.F for the CBM-Z chem_opt values."
+      }
+    ]
+  },
+  "index_sets": {
+    "radm2": {
+      "kind": "interval",
+      "size": 41
+    }
+  },
+  "models": {
+    "GuntherToCBMZ": {
+      "expression_template_imports": [
+        {
+          "ref": "./wrf_emission_templates.esm"
+        }
+      ],
+      "subsystems": {
+        "par": {
+          "ref": "./wrf_emission_parameters.esm"
+        },
+        "cz": {
+          "ref": "./cbmz_emission_parameters.esm"
+        }
+      },
+      "variables": {
+        "e_bio": {
+          "type": "parameter",
+          "units": "ppmv*m/min",
+          "shape": [
+            "radm2"
+          ],
+          "default": 0.0,
+          "description": "Gunther emission of each RADM2 class, GuntherBiogenicEmissions.e_bio."
+        },
+        "dz": {
+          "type": "parameter",
+          "units": "m",
+          "default": 1.0,
+          "description": "Depth of the surface layer, `dz8w(i,kts,j)`."
+        },
+        "d_iso": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "ISO tendency, from e_bio[p_iso - 1] (B25)."
+        },
+        "d_oli": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "OLI tendency, from e_bio[p_oli - 1]."
+        },
+        "d_xyl": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "XYL tendency, from e_bio[p_xyl - 1]."
+        },
+        "d_olt": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "OLT tendency, from e_bio[p_olt - 1]."
+        },
+        "d_ald": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "ALD tendency, from e_bio[p_ald - 1]."
+        },
+        "d_hcho": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "HCHO tendency, from e_bio[p_hcho - 1]."
+        },
+        "d_eth": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "ETH tendency, from e_bio[p_eth - 1]."
+        },
+        "d_ora2": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "ORA2 tendency, from e_bio[p_ora2 - 1]."
+        },
+        "d_co": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "CO tendency, from e_bio[p_co - 1]."
+        },
+        "d_no": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "NO tendency, from e_bio[p_no - 1]."
+        },
+        "d_ol2": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "OL2 tendency, from e_bio[p_ol2 - 1]."
+        },
+        "d_ket": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "KET tendency, from e_bio[p_ket - 1] plus e_bio[lket]."
+        },
+        "d_par": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "PAR tendency, 0.4 e_bio[p_ald-1] + 0.9 e_bio[p_ket-1] + 1.8 e_bio[p_olt-1] + e_bio[p_ora2-1]."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "d_iso",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_iso",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_oli",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_oli",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_xyl",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_xyl",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_olt",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_olt",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_ald",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_ald",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_hcho",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_hcho",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_eth",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_eth",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_ora2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_ora2",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_co",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_co",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_no",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_no",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_ol2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "index",
+                "args": [
+                  "e_bio",
+                  {
+                    "op": "-",
+                    "args": [
+                      "cz.p_ol2",
+                      1
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_ket",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "e_bio",
+                      {
+                        "op": "-",
+                        "args": [
+                          "cz.p_ket",
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "e_bio",
+                      "cz.l_ket"
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_par",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mixing_layer_tendency",
+            "bindings": {
+              "e": {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "e_bio",
+                          {
+                            "op": "-",
+                            "args": [
+                              "cz.p_ald",
+                              1
+                            ]
+                          }
+                        ]
+                      },
+                      "cz.par_ald"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "e_bio",
+                          {
+                            "op": "-",
+                            "args": [
+                              "cz.p_ket",
+                              1
+                            ]
+                          }
+                        ]
+                      },
+                      "cz.par_ket"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "e_bio",
+                          {
+                            "op": "-",
+                            "args": [
+                              "cz.p_olt",
+                              1
+                            ]
+                          }
+                        ]
+                      },
+                      "cz.par_olt"
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "e_bio",
+                      {
+                        "op": "-",
+                        "args": [
+                          "cz.p_ora2",
+                          1
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "dz": "dz",
+              "spm": "par.s_per_min"
+            }
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "chem170_emis_default_step1",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1. Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.00804179736257314,
+              0.0,
+              0.0,
+              0.0,
+              8.633082041160624e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.1510776054880833e-05,
+              1.9424434592611405e-05,
+              0.0,
+              0.0,
+              0.0,
+              3.59711751715026e-06,
+              0.0001033571766594508,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.158270510290156e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              9.591981120204213e-05,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 5.111132814203455e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 2.271614584090462e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 2.1160304146333762e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 3.0288194454541e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 5.679036460226437e-10,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 1.0108684899201003e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step361",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 361. Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.00943684824254185,
+              0.0,
+              0.0,
+              0.0,
+              1.1694605547434146e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.5592807396578864e-05,
+              2.6312862481726834e-05,
+              0.0,
+              0.0,
+              0.0,
+              4.872752311430895e-06,
+              0.00014001041641511437,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.9236513868585366e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00012993556077007135,
+              0.0,
+              0.0
+            ],
+            "dz": 63.96623992919922
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 6.855924445679206e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.0470775314097678e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 2.458809587939659e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 4.0627700418821e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 7.617693828524419e-10,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 1.3559495014766239e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step721",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 721. Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.008387749498018269,
+              0.0,
+              0.0,
+              0.0,
+              9.347376669611389e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.2463168892815185e-05,
+              2.1031597506625627e-05,
+              0.0,
+              0.0,
+              0.0,
+              3.894740279004745e-06,
+              0.00011190887068340302,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.336844167402847e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00010385614327637732,
+              0.0,
+              0.0
+            ],
+            "dz": 63.53477478027344
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 5.517082988372995e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 2.4520368837229376e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 2.20030409252943e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 3.269382511628174e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 6.130092209307344e-10,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 1.0911564132567072e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step1081",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1081. Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.007420877741675153,
+              0.0,
+              0.0,
+              0.0,
+              7.408153083970049e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              9.8775374452934e-06,
+              1.6668344438932614e-05,
+              0.0,
+              0.0,
+              0.0,
+              3.0867304516541873e-06,
+              8.869205497753031e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.8520382709925123e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              8.2309960890248e-05,
+              0.0,
+              0.0
+            ],
+            "dz": 63.0654296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 4.405040004095383e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 1.957795557370907e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.961158376426649e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 2.61039407650418e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 4.894488893463407e-10,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 8.7121902303533e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step1801",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1801. Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.009226887257354911,
+              0.0,
+              0.0,
+              0.0,
+              1.1204526901175085e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.493936920156678e-05,
+              2.5210185527643942e-05,
+              0.0,
+              0.0,
+              0.0,
+              4.668552875489619e-06,
+              0.00013414308595573508,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.8011317252937713e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0001244904310934163,
+              0.0,
+              0.0
+            ],
+            "dz": 63.88584518432617
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 6.576883464275369e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 2.92305931745331e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 2.4071287441772284e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 3.897412423275899e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 7.307648293633275e-10,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 1.3007613962797334e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu01_urban",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu01_urban). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu05_cropgrass",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu05_cropgrass). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.003723356919217895,
+              0.0,
+              0.0,
+              0.0,
+              2.3865592255022347e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              3.1820789673363134e-05,
+              5.369758257380029e-05,
+              0.0,
+              0.0,
+              0.0,
+              9.94399677292598e-06,
+              0.0001289260798994142,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              5.966398063755587e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              4.150417978096411e-05,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 1.4129393317875163e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 6.27973036350011e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 9.797233292980827e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 8.372973817999996e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 1.5699325908750557e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 2.7944800117581797e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu06_cropwood",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu06_cropwood). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.002746550737085808,
+              0.0,
+              0.0,
+              0.0,
+              0.0001300578115964091,
+              0.00019008449387167484,
+              0.0,
+              0.0,
+              0.0,
+              0.00023010228205518535,
+              0.0003501556466057168,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              3.001334113763287e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0004891445257850346,
+              0.0,
+              1.7834612615484734e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.008182680477040544,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.422198702487596e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 5.001675026712688e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 6.054659242862658e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 7.226972569659109e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 7.897381621125345e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 7.423538723857227e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu07_grass",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu07_grass). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.0006672263241927233,
+              0.0,
+              0.0,
+              0.0,
+              5.0636141112368116e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.5318070556184058e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.9691832654809825e-05,
+              0.0001986061979185105,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              4.219678426030676e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.125247580274847e-06,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 1.3323839167113061e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.7556662171155315e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 6.6619195835564745e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 1.110319930592757e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 5.3295356668524075e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu08_shrub",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu08_shrub). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              5.1895380770545143e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.3655181688675393e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu11_decid",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu11_decid). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              6.58720547098516e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0004916173116655646,
+              0.0007185176093573637,
+              0.0,
+              0.0,
+              0.0,
+              0.0008697844744852298,
+              0.001323585069868828,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00011345014884589953,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0017960031255758557,
+              0.0,
+              6.516111113200384e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.038475183489919976,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 1.2935879094468665e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 1.8906284830377268e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 2.2886555320983034e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.7332850475585467e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 2.985202867954296e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 2.806090695877042e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu11_decid_night",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu11_decid_night). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              2.7269416135962253e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.00013304828169088725,
+              0.00019445518093283524,
+              0.0,
+              0.0,
+              0.0,
+              0.00023539311376080056,
+              0.00035820691224469647,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              3.0703449620973984e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0004860592255381881,
+              0.0,
+              1.7634801833585058e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              8.817400916792529e-06,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.500886654803053e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 5.116680495481395e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 6.193876389266925e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 7.1753752713960235e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 8.078969203391819e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 7.594231051188544e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu12_decneedle",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu12_decneedle). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              3.737499781658647e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.00026853347788257916,
+              7.672385082359404e-05,
+              0.0,
+              0.0,
+              0.0,
+              5.754288811769552e-05,
+              9.590481352949255e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00013426673894128958,
+              0.00013426673894128958,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00013426673894128958,
+              0.0031018356832967302,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              5.754288811769552e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.002629609698375595,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 7.065895606762735e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 2.0188273162179628e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 1.5141204871634495e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 3.5329478033826094e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 9.834447271058096e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 3.532947803381345e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 1.5141204871634383e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 4.3404787298679155e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu14_evneedle",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu14_evneedle). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              2.2566872201497174e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0001271765930206598,
+              3.633616943447422e-05,
+              0.0,
+              0.0,
+              0.0,
+              2.7252127075855663e-05,
+              4.542021179309278e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              6.35882965103299e-05,
+              6.35882965103299e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              6.35882965103299e-05,
+              0.0014690194214223148,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.7252127075855663e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0008413373013914277,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.346385474889162e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 9.561101356826016e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 7.170826017619738e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 1.6731927374400805e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 5.937999403434705e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 1.673192737444598e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 7.1708260176196254e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 2.0556367917170965e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu15_mixed",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu15_mixed). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              9.021311507529685e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0010906167206568668,
+              0.0003116047773305334,
+              0.0,
+              0.0,
+              0.0,
+              0.00023370358299790002,
+              0.0003895059716631667,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0005453083603284334,
+              0.0005453083603284334,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0005453083603284334,
+              0.00963378103246899,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00023370358299790002,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.07721828384595365,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 2.8697293000171103e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 8.19922657147744e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 6.149419928608101e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 1.4348646500082312e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 2.373769030622272e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 1.4348646500085565e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 6.14941992860809e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 1.7628337128676106e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu15_mixed_winter",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu15_mixed_winter). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              9.92417417571444e-06,
+              0.0,
+              0.0,
+              0.0,
+              2.0729343017981336e-05,
+              5.922669433708953e-06,
+              0.0,
+              0.0,
+              0.0,
+              4.442002075281714e-06,
+              7.403336792136191e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0364671508990668e-05,
+              1.0364671508990668e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0364671508990668e-05,
+              0.00018310919665883512,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              4.442002075281714e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00035815297060037463,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 5.45449211460625e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 1.5584263184582833e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 1.1688197388441644e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 2.727246057228812e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 2.611338417163814e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 2.7272460573028993e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 1.1688197388441644e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 3.350616584691634e-09,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu02_crop_winter",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu02_crop_winter). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.0019304622025345664,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 5.079606648477176e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu16_water",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu16_water). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu24_ice",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu24_ice). Inputs are the replay's e_bio and the surface layer's depth; expected values are the real64 replay of add_biogenics (GUNTHER1 branch, compiled unchanged, kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The zero tendencies of ISO, OLI, XYL and ETH are FORTRAN_BUGS.md B25.",
+          "parameter_overrides": {
+            "e_bio": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "dz": 63.34027862548828
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_iso",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

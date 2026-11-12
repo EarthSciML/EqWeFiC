@@ -1,0 +1,2797 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "GuntherBiogenicEmissions",
+    "description": "WRF-Chem's simple biogenic emission scheme, `bio_emiss_opt = 1` (GUNTHER1): `bio_emissions`, `biogen` and `biosplit` of chem/module_bioemi_simple.F (WRF v4.8.0), after Schoenemeyer, Richter and Simpson et al. (1995) as adapted for MM5 by W. Seidl and for WRF by G. Grell. It needs no input file -- only the surface layer's temperature and pressure, the downward shortwave at the ground and the land-use category -- which is why it is the biogenic scheme the reference configuration can switch on: BEIS3.1.4 is fatal for anything but RADM2/RACM, and MEGAN needs a prepared wrfbiochemi file. It returns the emission of each RADM2 emission class, as WRF's `e_bio` array; turning that into tendencies of a particular mechanism's species is a separate step (GuntherToCBMZ for chem_opt 170).\n\nThe scheme. Each USGS category has standardised emission factors for isoprene, monoterpenes, other VOCs (ug C m-2 h-1) and soil nitrogen (ng N m-2 s-1), with a winter table outside April-September (GuntherParameters), and belongs to one of six land-use classes. The factors are scaled by correction factors for the actual temperature T and light. In the forest classes isoprene follows the Guenther et al. (1993) light and temperature response, C_L C_T with C_L = alpha c_L1 PAR / sqrt(1 + alpha^2 PAR^2), PAR = 2 uE/J times the global radiation, and C_T = exp(C_T1 (T - T_s)/(R T_s T)) / (1 + exp(C_T2 (T - T_M)/(R T_s T))), while monoterpenes and other VOCs follow exp(beta (T - T_s)). In the crop, grassland and other-natural classes every VOC follows exp(0.1 (T - 30 degC)), with no light dependence at all, so a cropland emits isoprene at night. Soil nitrogen follows exp(0.071 T_soil) with a class-specific linear soil temperature. Urban/barren, water and ice emit nothing. Each emission is then converted from a mass flux of carbon (or nitrogen) to a mixing-ratio flux at the surface layer's T/p (ppmv m min-1, the unit biogen writes) and the monoterpene and other-VOC emissions are split over the RADM2 classes by the class's speciation (biosplit); isoprene goes to ISO and nitrogen to NO.\n\nWhat the scheme does that its comments do not say. (1) The vegetation-fraction correction never applies and the winter table is the one selected by `julday`, because `vegflag` is always false (GuntherParameters). (2) The 'other natural' class 6 (shrubland, savanna, wetland, tundra) has a correction factor but no speciation, so its monoterpene and other-VOC emissions are computed and dropped. Both are reproduced. `bio_emissions` also computes a relative humidity, a rain flag, a wet flag and a high-NH3 flag and never uses them; they are omitted.\n\nWhat the tests pin. Steps of the chem170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, USGS category 2, dryland cropland), and synthetic cases replayed through the same kernel for every land-use class and both seasons, each asserting the emission of every RADM2 class against the real64 replay through chem/module_bioemi_simple.F compiled unchanged (kernels/emissions_driver), at 1e-9 relative.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-11-12T00:00:00Z",
+    "tags": [
+      "wrf-chem",
+      "emissions",
+      "biogenic",
+      "gunther",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "WRF-Chem v4.8.0, chem/module_bioemi_simple.F (subroutines bio_emissions, bioemiin, biogen, biosplit), called from chem/emissions_driver.F for bio_emiss_opt = 1."
+      },
+      {
+        "citation": "Simpson, D., Guenther, A., Hewitt, C. N. and Steinbrecher, R. (1995). Biogenic emissions in Europe 1. Estimates and uncertainties. J. Geophys. Res., 100(D11), 22875-22890."
+      },
+      {
+        "citation": "Guenther, A. B., Zimmerman, P. R., Harley, P. C., Monson, R. K. and Fall, R. (1993). Isoprene and monoterpene emission rate variability: model evaluations and sensitivity analyses. J. Geophys. Res., 98(D7), 12609-12617."
+      }
+    ]
+  },
+  "index_sets": {
+    "usgs": {
+      "kind": "interval",
+      "size": 25
+    },
+    "lucls": {
+      "kind": "interval",
+      "size": 6
+    },
+    "radm2": {
+      "kind": "interval",
+      "size": 41
+    }
+  },
+  "models": {
+    "GuntherBiogenicEmissions": {
+      "subsystems": {
+        "gp": {
+          "ref": "./gunther_parameters.esm"
+        },
+        "wrf": {
+          "ref": "../../../lib/wrf_constants.esm"
+        }
+      },
+      "variables": {
+        "lu": {
+          "type": "parameter",
+          "units": "1",
+          "default": 2,
+          "description": "USGS land-use category of the column, `ivgtyp`."
+        },
+        "T": {
+          "type": "parameter",
+          "units": "K",
+          "default": 300.0,
+          "description": "Temperature of the surface layer, `t_phy(i,kts,j)`."
+        },
+        "p": {
+          "type": "parameter",
+          "units": "Pa",
+          "default": 100000.0,
+          "description": "Pressure of the surface layer, `p_phy(i,kts,j)`."
+        },
+        "gsw": {
+          "type": "parameter",
+          "units": "W/m^2",
+          "default": 0.0,
+          "description": "Net shortwave at the ground as WRF passes it, `gsw`, which biogen treats as the global radiation."
+        },
+        "julday": {
+          "type": "parameter",
+          "units": "1",
+          "default": 171,
+          "description": "Day of the year, chem_driver's `ijulian`."
+        },
+        "winter": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 outside day 90-270, when bioemiin uses its winter table."
+        },
+        "cls": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Simplified land-use class of the category, ixxxlu(lu)."
+        },
+        "forest": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for the deciduous and coniferous/mixed forest classes (4, 5)."
+        },
+        "crop": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for the agricultural class (2)."
+        },
+        "grass": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for the grassland and other-natural classes (3, 6)."
+        },
+        "barren": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for the urban/barren class (1), water and ice, which emit nothing."
+        },
+        "aefiso": {
+          "type": "unknown",
+          "units": "ug/(m^2*h)",
+          "description": "Isoprene emission factor in force."
+        },
+        "aefmter": {
+          "type": "unknown",
+          "units": "ug/(m^2*h)",
+          "description": "Monoterpene emission factor in force."
+        },
+        "aefovoc": {
+          "type": "unknown",
+          "units": "ug/(m^2*h)",
+          "description": "Other-VOC emission factor in force."
+        },
+        "par": {
+          "type": "unknown",
+          "units": "umol/(m^2*s)",
+          "description": "Photosynthetically active photon flux, `par = 2.0*rad`."
+        },
+        "c_l": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Isoprene light-correction factor `cl` (forest)."
+        },
+        "c_t": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Isoprene temperature-correction factor `ct` (forest)."
+        },
+        "ecf_crop": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Crop and grassland VOC correction factor, exp(0.1 (T - 30 degC))."
+        },
+        "ecf_iso": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Isoprene correction factor."
+        },
+        "ecf_mter": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Monoterpene (and other-VOC) correction factor."
+        },
+        "tsoil": {
+          "type": "unknown",
+          "units": "K",
+          "description": "Soil temperature in degC the nitrogen emission is computed at (a temperature difference from 0 degC, hence K)."
+        },
+        "ecf_n": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Soil-nitrogen correction factor."
+        },
+        "rat": {
+          "type": "unknown",
+          "units": "K/hPa",
+          "description": "T/p, `rat = ta/pa`, which carries the ideal-gas volume of the conversion."
+        },
+        "eiso": {
+          "type": "unknown",
+          "units": "ppmv*m/min",
+          "description": "Isoprene emission."
+        },
+        "emter": {
+          "type": "unknown",
+          "units": "ppmv*m/min",
+          "description": "Monoterpene emission."
+        },
+        "eovoc": {
+          "type": "unknown",
+          "units": "ppmv*m/min",
+          "description": "Other-VOC emission."
+        },
+        "e_n": {
+          "type": "unknown",
+          "units": "ppmv*m/min",
+          "description": "Soil nitrogen emission, as NO."
+        },
+        "row": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Row of the speciation tables, max(cls, 1) (water and ice, class 0, emit nothing to speciate)."
+        },
+        "e_bio": {
+          "type": "unknown",
+          "units": "ppmv*m/min",
+          "shape": [
+            "radm2"
+          ],
+          "description": "Emission of each RADM2 class (module_data_radm2 order), WRF's `e_bio(i,j,:)`."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "winter",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "<",
+                    "args": [
+                      "julday",
+                      "gp.julday_spring"
+                    ]
+                  },
+                  {
+                    "op": ">",
+                    "args": [
+                      "julday",
+                      "gp.julday_autumn"
+                    ]
+                  }
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "cls",
+          "rhs": {
+            "op": "index",
+            "args": [
+              "gp.ixxxlu",
+              "lu"
+            ]
+          }
+        },
+        {
+          "lhs": "forest",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "cls",
+                      4
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "cls",
+                      5
+                    ]
+                  }
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "crop",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "==",
+                "args": [
+                  "cls",
+                  2
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "grass",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "cls",
+                      3
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "cls",
+                      6
+                    ]
+                  }
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "barren",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "cls",
+                      1
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "lu",
+                      "gp.iswater"
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "lu",
+                      "gp.isice"
+                    ]
+                  }
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "aefiso",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "winter",
+                  0
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "gp.aefiso_winter",
+                  "lu"
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "gp.aefiso_summer",
+                  "lu"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "aefmter",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "winter",
+                  0
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "gp.aefmter_winter",
+                  "lu"
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "gp.aefmter_summer",
+                  "lu"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "aefovoc",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "winter",
+                  0
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "gp.aefovoc_winter",
+                  "lu"
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "gp.aefovoc_summer",
+                  "lu"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "par",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "gp.par_per_rad",
+              "gsw"
+            ]
+          }
+        },
+        {
+          "lhs": "c_l",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "gp.alpha",
+                  "gp.cl1",
+                  "par"
+                ]
+              },
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      1,
+                      {
+                        "op": "*",
+                        "args": [
+                          "gp.alpha",
+                          "gp.alpha",
+                          "par",
+                          "par"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "c_t",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "exp",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "gp.ct1",
+                          {
+                            "op": "-",
+                            "args": [
+                              "T",
+                              "gp.ts"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          "gp.r_gas",
+                          "gp.ts",
+                          "T"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  1,
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              "gp.ct2",
+                              {
+                                "op": "-",
+                                "args": [
+                                  "T",
+                                  "gp.tm"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              "gp.r_gas",
+                              "gp.ts",
+                              "T"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "ecf_crop",
+          "rhs": {
+            "op": "exp",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "gp.beta_crop",
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "T",
+                          "gp.dt_crop"
+                        ]
+                      },
+                      "wrf.svpt0"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "ecf_iso",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "barren",
+                  0
+                ]
+              },
+              0,
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "forest",
+                      0
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "c_l",
+                      "c_t"
+                    ]
+                  },
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          {
+                            "op": "+",
+                            "args": [
+                              "crop",
+                              "grass"
+                            ]
+                          },
+                          0
+                        ]
+                      },
+                      "ecf_crop",
+                      0
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "ecf_mter",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "barren",
+                  0
+                ]
+              },
+              0,
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "forest",
+                      0
+                    ]
+                  },
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "gp.beta",
+                          {
+                            "op": "-",
+                            "args": [
+                              "T",
+                              "gp.ts"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          {
+                            "op": "+",
+                            "args": [
+                              "crop",
+                              "grass"
+                            ]
+                          },
+                          0
+                        ]
+                      },
+                      "ecf_crop",
+                      0
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "tsoil",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "forest",
+                  0
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "gp.tsoil_slope_forest",
+                      {
+                        "op": "-",
+                        "args": [
+                          "T",
+                          "wrf.svpt0"
+                        ]
+                      }
+                    ]
+                  },
+                  "gp.tsoil_offset_forest"
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "crop",
+                      0
+                    ]
+                  },
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "gp.tsoil_slope_crop",
+                          {
+                            "op": "-",
+                            "args": [
+                              "T",
+                              "wrf.svpt0"
+                            ]
+                          }
+                        ]
+                      },
+                      "gp.tsoil_offset_crop"
+                    ]
+                  },
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "gp.tsoil_slope_grass",
+                          {
+                            "op": "-",
+                            "args": [
+                              "T",
+                              "wrf.svpt0"
+                            ]
+                          }
+                        ]
+                      },
+                      "gp.tsoil_offset_grass"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "ecf_n",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "barren",
+                  0
+                ]
+              },
+              0,
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          "forest",
+                          "crop",
+                          "grass"
+                        ]
+                      },
+                      0
+                    ]
+                  },
+                  {
+                    "op": "exp",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "gp.beta_n",
+                          "tsoil"
+                        ]
+                      }
+                    ]
+                  },
+                  0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "rat",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "T",
+              {
+                "op": "*",
+                "args": [
+                  "gp.hpa_per_pa",
+                  "p"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "eiso",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "rat",
+                  "gp.k_iso"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "aefiso",
+                  "ecf_iso"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "emter",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "rat",
+                  "gp.k_mter"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "aefmter",
+                  "ecf_mter"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "eovoc",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "rat",
+                  "gp.k_ovoc"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "aefovoc",
+                  "ecf_mter"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "e_n",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "rat",
+                  "gp.k_n"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "gp.aef_n",
+                      "lu"
+                    ]
+                  },
+                  "ecf_n"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "row",
+          "rhs": {
+            "op": "max",
+            "args": [
+              "cls",
+              1
+            ]
+          }
+        },
+        {
+          "lhs": "e_bio",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "s"
+            ],
+            "args": [],
+            "ranges": {
+              "s": {
+                "from": "radm2"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        "s",
+                        "gp.l_iso"
+                      ]
+                    },
+                    "eiso",
+                    0
+                  ]
+                },
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        "s",
+                        "gp.l_no"
+                      ]
+                    },
+                    "e_n",
+                    0
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "gp.split_mter",
+                        "row",
+                        "s"
+                      ]
+                    },
+                    "emter"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "gp.split_ovoc",
+                        "row",
+                        "s"
+                      ]
+                    },
+                    "eovoc"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "chem170_emis_default_step1",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1; USGS category 2, day 170, gsw 69.5174 W/m2, T 306.165 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 2,
+            "julday": 170,
+            "gsw": 69.51744842529297,
+            "T": 306.1650695800781,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 8.04179736257314e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00804179736257314,
+                        0.0,
+                        0.0,
+                        0.0,
+                        8.633082041160624e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.1510776054880833e-05,
+                        1.9424434592611405e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        3.59711751715026e-06,
+                        0.0001033571766594508,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.158270510290156e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        9.591981120204213e-05,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step361",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 361; USGS category 2, day 170, gsw 436.085 W/m2, T 309.102 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 2,
+            "julday": 170,
+            "gsw": 436.0851135253906,
+            "T": 309.10198974609375,
+            "p": 99629.3125
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 9.436848242541852e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00943684824254185,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.1694605547434146e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.5592807396578864e-05,
+                        2.6312862481726834e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        4.872752311430895e-06,
+                        0.00014001041641511437,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.9236513868585366e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00012993556077007135,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step721",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 721; USGS category 2, day 171, gsw 67.5693 W/m2, T 306.93 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 2,
+            "julday": 171,
+            "gsw": 67.56929016113281,
+            "T": 306.9296875,
+            "p": 99604.3203125
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 8.38774949801827e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.008387749498018269,
+                        0.0,
+                        0.0,
+                        0.0,
+                        9.347376669611389e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.2463168892815185e-05,
+                        2.1031597506625627e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        3.894740279004745e-06,
+                        0.00011190887068340302,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.336844167402847e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00010385614327637732,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step1081",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1081; USGS category 2, day 171, gsw 0 W/m2, T 304.678 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 2,
+            "julday": 171,
+            "gsw": 0.0,
+            "T": 304.678466796875,
+            "p": 99607.390625
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 7.420877741675154e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.007420877741675153,
+                        0.0,
+                        0.0,
+                        0.0,
+                        7.408153083970049e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        9.8775374452934e-06,
+                        1.6668344438932614e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        3.0867304516541873e-06,
+                        8.869205497753031e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.8520382709925123e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        8.2309960890248e-05,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step1801",
+          "description": "Reference: the chem_opt = 170 emissions capture (MODE=default; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1801; USGS category 2, day 171, gsw 316.542 W/m2, T 308.686 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 2,
+            "julday": 171,
+            "gsw": 316.5421447753906,
+            "T": 308.6864929199219,
+            "p": 99620.84375
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 9.226887257354912e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.009226887257354911,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.1204526901175085e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.493936920156678e-05,
+                        2.5210185527643942e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        4.668552875489619e-06,
+                        0.00013414308595573508,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.8011317252937713e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0001244904310934163,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu01_urban",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu01_urban); USGS category 1, day 170, gsw 600 W/m2, T 303 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 1,
+            "julday": 170,
+            "gsw": 600.0,
+            "T": 303.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu05_cropgrass",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu05_cropgrass); USGS category 5, day 170, gsw 600 W/m2, T 303 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 5,
+            "julday": 170,
+            "gsw": 600.0,
+            "T": 303.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.7233569192178955e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.003723356919217895,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.3865592255022347e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        3.1820789673363134e-05,
+                        5.369758257380029e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        9.94399677292598e-06,
+                        0.0001289260798994142,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        5.966398063755587e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        4.150417978096411e-05,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu06_cropwood",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu06_cropwood); USGS category 6, day 170, gsw 600 W/m2, T 298 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 6,
+            "julday": 170,
+            "gsw": 600.0,
+            "T": 298.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 8.182680477040545e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.002746550737085808,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0001300578115964091,
+                        0.00019008449387167484,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00023010228205518535,
+                        0.0003501556466057168,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        3.001334113763287e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0004891445257850346,
+                        0.0,
+                        1.7834612615484734e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.008182680477040544,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu07_grass",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu07_grass); USGS category 7, day 170, gsw 450 W/m2, T 301 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 7,
+            "julday": 170,
+            "gsw": 450.0,
+            "T": 301.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 6.672263241927233e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0006672263241927233,
+                        0.0,
+                        0.0,
+                        0.0,
+                        5.0636141112368116e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.5318070556184058e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.9691832654809825e-05,
+                        0.0001986061979185105,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        4.219678426030676e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.125247580274847e-06,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu08_shrub",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu08_shrub); USGS category 8, day 170, gsw 450 W/m2, T 301 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 8,
+            "julday": 170,
+            "gsw": 450.0,
+            "T": 301.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 5.189538077054515e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        5.1895380770545143e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu11_decid",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu11_decid); USGS category 11, day 170, gsw 700 W/m2, T 305 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 11,
+            "julday": 170,
+            "gsw": 700.0,
+            "T": 305.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.847518348991998e-11,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        6.58720547098516e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0004916173116655646,
+                        0.0007185176093573637,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0008697844744852298,
+                        0.001323585069868828,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00011345014884589953,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0017960031255758557,
+                        0.0,
+                        6.516111113200384e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.038475183489919976,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu11_decid_night",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu11_decid_night); USGS category 11, day 170, gsw 0 W/m2, T 291 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 11,
+            "julday": 170,
+            "gsw": 0.0,
+            "T": 291.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 4.860592255381881e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.7269416135962253e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00013304828169088725,
+                        0.00019445518093283524,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00023539311376080056,
+                        0.00035820691224469647,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        3.0703449620973984e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0004860592255381881,
+                        0.0,
+                        1.7634801833585058e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        8.817400916792529e-06,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu12_decneedle",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu12_decneedle); USGS category 12, day 170, gsw 700 W/m2, T 296 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 12,
+            "julday": 170,
+            "gsw": 700.0,
+            "T": 296.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.1018356832967306e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        3.737499781658647e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00026853347788257916,
+                        7.672385082359404e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        5.754288811769552e-05,
+                        9.590481352949255e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00013426673894128958,
+                        0.00013426673894128958,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00013426673894128958,
+                        0.0031018356832967302,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        5.754288811769552e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.002629609698375595,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu14_evneedle",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu14_evneedle); USGS category 14, day 170, gsw 300 W/m2, T 288 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 14,
+            "julday": 170,
+            "gsw": 300.0,
+            "T": 288.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.4690194214223148e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.2566872201497174e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0001271765930206598,
+                        3.633616943447422e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.7252127075855663e-05,
+                        4.542021179309278e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        6.35882965103299e-05,
+                        6.35882965103299e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        6.35882965103299e-05,
+                        0.0014690194214223148,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.7252127075855663e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0008413373013914277,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu15_mixed",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu15_mixed); USGS category 15, day 170, gsw 650 W/m2, T 310 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 15,
+            "julday": 170,
+            "gsw": 650.0,
+            "T": 310.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 7.721828384595366e-11,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        9.021311507529685e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0010906167206568668,
+                        0.0003116047773305334,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00023370358299790002,
+                        0.0003895059716631667,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0005453083603284334,
+                        0.0005453083603284334,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0005453083603284334,
+                        0.00963378103246899,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00023370358299790002,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.07721828384595365,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu15_mixed_winter",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu15_mixed_winter); USGS category 15, day 20, gsw 250 W/m2, T 275 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 15,
+            "julday": 20,
+            "gsw": 250.0,
+            "T": 275.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.5815297060037465e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        9.92417417571444e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        2.0729343017981336e-05,
+                        5.922669433708953e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        4.442002075281714e-06,
+                        7.403336792136191e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0364671508990668e-05,
+                        1.0364671508990668e-05,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0364671508990668e-05,
+                        0.00018310919665883512,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        4.442002075281714e-06,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.00035815297060037463,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu02_crop_winter",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu02_crop_winter); USGS category 2, day 300, gsw 250 W/m2, T 280 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 2,
+            "julday": 300,
+            "gsw": 250.0,
+            "T": 280.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.9304622025345665e-12,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0019304622025345664,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu16_water",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu16_water); USGS category 16, day 170, gsw 600 W/m2, T 300 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 16,
+            "julday": 170,
+            "gsw": 600.0,
+            "T": 300.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "synthetic_lu24_ice",
+          "description": "Reference: a synthetic case: the step-1 dump of the chem_opt = 170 emissions capture (MODE=default) with its biogenic inputs rewritten (data/eqwefic/chem170_scm/emis_synth.py, case lu24_ice); USGS category 24, day 170, gsw 600 W/m2, T 300 K. Expected e_bio from the real64 replay of bio_emissions (chem/module_bioemi_simple.F compiled unchanged, kernels/emissions_driver), at 1e-9 of its maximum.",
+          "parameter_overrides": {
+            "lu": 24,
+            "julday": 170,
+            "gsw": 600.0,
+            "T": 300.0,
+            "p": 99657.9296875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "e_bio",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "radm2"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

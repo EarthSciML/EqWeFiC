@@ -1,0 +1,2312 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "CBMZAnthroEmissions",
+    "description": "WRF-Chem's anthropogenic gas emissions for the CBM-Z mechanism, `cbmz_addemiss_anthro` in chem/module_cbmz_addemiss.F (WRF v4.8.0), which emissions_driver calls for chem_opt = 170 (CBMZ_MOSAIC_KPP) whenever an emission input is read (`emiss_inpt_opt > 0`). It is the gas half of the `emiss_opt = 4` (ecbmz_mosaic) package; the aerosol half is MosaicAnthroEmissions.\n\nThe scheme. Each emitted species is a molar flux E (mol km-2 hr-1, the `emis_ant` input field) into one emission layer (WRF puts the field for level k into layer k for k = 1..kemit; the reference configuration has kemit = 1, the surface layer), and its tendency is the flux over the layer's molar air column, `gas_layer_tendency` (WRF's `conv = 4.828e-4/rho_phy*dtstep/(dz8w*60.)`). This component is one emission layer; a consumer with kemit > 1 maps it over the layers. Fifteen CBM-Z species take their own field one for one: CSL, SO2, NO, ALD, HCHO, ORA2, NH3, ETH, CO, OL2, OLT, OLI, TOL, XYL, KET. The rest depend on which VARIETY of input was prepared, `emiss_inpt_opt`: a RADM2-variety input (1 or 102) is converted to CBM-Z paraffin carbon, PAR = 0.4 ALD + 2.9 HC3 + 4.8 HC5 + 7.9 HC8 + 0.9 KET + 2.8 OLI + 1.8 OLT + 1.0 ORA2, and nothing else; a CBM-Z-variety input (101, PNNL_CM) carries PAR in the E_HC5 field and also adds NO2, CH3OH and C2H5OH.\n\nWhat the scheme does that its comments do not say (FORTRAN_BUGS.md N116). (1) E_ISO is NEVER added for CBM-Z. The registry still describes the field as \"Anth+Bio for CBMZ\" -- it was added by `cbmz_addemiss_bio`, which was commented out in 2013 and replaced by `add_biogenics`, which does not read emis_ant -- so an inventory's anthropogenic isoprene is read in and discarded. (2) With a RADM2-variety input the emiss_opt = 4 package still reads E_NO2, E_CH3OH and E_C2H5OH, and they are discarded too: only the CBM-Z variety adds them. Both are reproduced here: no tendency is computed for isoprene, and the three are gated on the input variety. WRF also applies the same increment again for a DMS field under EMISS_INPT_PNNL_MAM, which chem_opt 170 does not carry and this component omits.\n\nThe increment WRF applies over a step is exactly dt times the tendency, since `conv` is proportional to dtstep: there is no operator-splitting error, so the observeds are the instantaneous rates a consumer adds.\n\nWhat the tests pin. Steps of the chem170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh: the reference column with emiss_opt = 4, bio_emiss_opt = 1 and synthetic hourly emission files), once per input variety, each asserting every tendency against the real64 replay of the dumped inputs through chem/module_cbmz_addemiss.F compiled unchanged (kernels/emissions_driver), at 1e-9 relative.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-11-12T00:00:00Z",
+    "tags": [
+      "wrf-chem",
+      "emissions",
+      "anthropogenic",
+      "cbmz",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "WRF-Chem v4.8.0, chem/module_cbmz_addemiss.F (subroutine cbmz_addemiss_anthro), called from chem/emissions_driver.F for the CBM-Z chem_opt values."
+      },
+      {
+        "citation": "Zaveri, R. A. and Peters, L. K. (1999). A new lumped structure photochemical mechanism for large-scale applications. J. Geophys. Res., 104(D23), 30387-30415."
+      }
+    ]
+  },
+  "models": {
+    "CBMZAnthroEmissions": {
+      "expression_template_imports": [
+        {
+          "ref": "./wrf_emission_templates.esm"
+        }
+      ],
+      "subsystems": {
+        "par": {
+          "ref": "./wrf_emission_parameters.esm"
+        },
+        "cz": {
+          "ref": "./cbmz_emission_parameters.esm"
+        }
+      },
+      "variables": {
+        "emiss_inpt_opt": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1,
+          "description": "WRF namelist emiss_inpt_opt: 1 or 102 for a RADM2-variety input, 101 for the CBM-Z variety."
+        },
+        "rho": {
+          "type": "parameter",
+          "units": "kg/m^3",
+          "default": 1.0,
+          "description": "Air density of the emission layer, `rho_phy`."
+        },
+        "dz": {
+          "type": "parameter",
+          "units": "m",
+          "default": 1.0,
+          "description": "Depth of the emission layer, `dz8w`."
+        },
+        "E_so2": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_SO2."
+        },
+        "E_no": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_NO."
+        },
+        "E_no2": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_NO2 (added only for a CBM-Z-variety input)."
+        },
+        "E_co": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_CO."
+        },
+        "E_eth": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_ETH (ethane)."
+        },
+        "E_hc3": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_HC3, RADM2 alkanes of OH reactivity 2.7e-13 to 3.4e-12 (into PAR only)."
+        },
+        "E_hc5": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_HC5: RADM2 HC5 in a RADM2-variety input, PAR itself in a CBM-Z-variety input."
+        },
+        "E_hc8": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_HC8, RADM2 higher alkanes (into PAR only)."
+        },
+        "E_xyl": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_XYL."
+        },
+        "E_ol2": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_OL2 (ethene)."
+        },
+        "E_olt": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_OLT (terminal olefins)."
+        },
+        "E_oli": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_OLI (internal olefins)."
+        },
+        "E_tol": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_TOL."
+        },
+        "E_csl": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_CSL (cresol)."
+        },
+        "E_hcho": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_HCHO."
+        },
+        "E_ald": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_ALD (higher aldehydes)."
+        },
+        "E_ket": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_KET."
+        },
+        "E_ora2": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_ORA2 (acetic and higher acids)."
+        },
+        "E_nh3": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_NH3."
+        },
+        "E_ch3oh": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_CH3OH (added only for a CBM-Z-variety input)."
+        },
+        "E_c2h5oh": {
+          "type": "parameter",
+          "units": "mol/(km^2*hr)",
+          "default": 0.0,
+          "description": "E_C2H5OH (added only for a CBM-Z-variety input)."
+        },
+        "radm2_variety": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when the input is of the RADM2 variety (emiss_inpt_opt 1 or 102), else 0."
+        },
+        "E_par": {
+          "type": "unknown",
+          "units": "mol/(km^2*hr)",
+          "description": "The PAR flux: the RADM2 lumping for a RADM2-variety input, E_HC5 for a CBM-Z-variety one."
+        },
+        "d_csl": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "CSL tendency of the layer."
+        },
+        "d_so2": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "SO2 tendency."
+        },
+        "d_no": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "NO tendency."
+        },
+        "d_ald": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "ALD tendency."
+        },
+        "d_hcho": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "HCHO tendency."
+        },
+        "d_ora2": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "ORA2 tendency."
+        },
+        "d_nh3": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "NH3 tendency."
+        },
+        "d_eth": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "ETH tendency."
+        },
+        "d_co": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "CO tendency."
+        },
+        "d_ol2": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "OL2 tendency."
+        },
+        "d_olt": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "OLT tendency."
+        },
+        "d_oli": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "OLI tendency."
+        },
+        "d_tol": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "TOL tendency."
+        },
+        "d_xyl": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "XYL tendency."
+        },
+        "d_ket": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "KET tendency."
+        },
+        "d_par": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "PAR tendency."
+        },
+        "d_no2": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "NO2 tendency (zero for a RADM2-variety input)."
+        },
+        "d_ch3oh": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "CH3OH tendency (zero for a RADM2-variety input)."
+        },
+        "d_c2h5oh": {
+          "type": "unknown",
+          "units": "ppmv/s",
+          "description": "C2H5OH tendency (zero for a RADM2-variety input)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "radm2_variety",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "emiss_inpt_opt",
+                      "cz.emiss_inpt_default"
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "emiss_inpt_opt",
+                      "cz.emiss_inpt_pnnl_rs"
+                    ]
+                  }
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "E_par",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "radm2_variety",
+                  0
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "cz.par_ald",
+                      "E_ald"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "cz.par_hc3",
+                      "E_hc3"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "cz.par_hc5",
+                      "E_hc5"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "cz.par_hc8",
+                      "E_hc8"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "cz.par_ket",
+                      "E_ket"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "cz.par_oli",
+                      "E_oli"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "cz.par_olt",
+                      "E_olt"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "cz.par_ora2",
+                      "E_ora2"
+                    ]
+                  }
+                ]
+              },
+              "E_hc5"
+            ]
+          }
+        },
+        {
+          "lhs": "d_csl",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_csl",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_so2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_so2",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_no",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_no",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_ald",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_ald",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_hcho",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_hcho",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_ora2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_ora2",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_nh3",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_nh3",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_eth",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_eth",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_co",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_co",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_ol2",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_ol2",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_olt",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_olt",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_oli",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_oli",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_tol",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_tol",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_xyl",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_xyl",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_ket",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_ket",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_par",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "gas_layer_tendency",
+            "bindings": {
+              "E": "E_par",
+              "rho": "rho",
+              "dz": "dz",
+              "mw": "par.mw_air_emis",
+              "spm": "par.s_per_min"
+            }
+          }
+        },
+        {
+          "lhs": "d_no2",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "radm2_variety",
+                  0
+                ]
+              },
+              0.0,
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "gas_layer_tendency",
+                "bindings": {
+                  "E": "E_no2",
+                  "rho": "rho",
+                  "dz": "dz",
+                  "mw": "par.mw_air_emis",
+                  "spm": "par.s_per_min"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "d_ch3oh",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "radm2_variety",
+                  0
+                ]
+              },
+              0.0,
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "gas_layer_tendency",
+                "bindings": {
+                  "E": "E_ch3oh",
+                  "rho": "rho",
+                  "dz": "dz",
+                  "mw": "par.mw_air_emis",
+                  "spm": "par.s_per_min"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "d_c2h5oh",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "radm2_variety",
+                  0
+                ]
+              },
+              0.0,
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "gas_layer_tendency",
+                "bindings": {
+                  "E": "E_c2h5oh",
+                  "rho": "rho",
+                  "dz": "dz",
+                  "mw": "par.mw_air_emis",
+                  "spm": "par.s_per_min"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "chem170_emis_default_step1",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=default: emiss_opt = 4, emiss_inpt_opt = 1, synthetic hourly wrfchemi files from make_wrfchemi.py; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1 (dt = 60 s), surface layer of column (its, jts). Inputs are the dumped emission fields of layer 1 and the layer's density and depth; expected values are the real64 replay of cbmz_addemiss_anthro compiled unchanged (kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The in-model real32 increments differ from the replay by at most 7.2e-07 relative. Isoprene carries no tendency although E_ISO is non-zero (FORTRAN_BUGS.md N116).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 1,
+            "rho": 1.13362455368042,
+            "dz": 63.34027862548828,
+            "E_so2": 48.143394470214844,
+            "E_no": 159.96031188964844,
+            "E_no2": 17.083139419555664,
+            "E_co": 1566.9898681640625,
+            "E_eth": 8.23096752166748,
+            "E_hc3": 45.03736877441406,
+            "E_hc5": 24.071697235107422,
+            "E_hc8": 7.609762191772461,
+            "E_xyl": 9.473377227783203,
+            "E_ol2": 15.064223289489746,
+            "E_olt": 7.143858432769775,
+            "E_oli": 4.503736972808838,
+            "E_tol": 12.890005111694336,
+            "E_csl": 1.7083139419555664,
+            "E_hcho": 4.969640731811523,
+            "E_ald": 3.416627883911133,
+            "E_ket": 2.9507241249084473,
+            "E_ora2": 1.4753620624542236,
+            "E_nh3": 32.61326599121094,
+            "E_ch3oh": 8.075666427612305,
+            "E_c2h5oh": 3.5719292163848877
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_csl",
+              "time": 0.0,
+              "expected": 1.914407922879095e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_so2",
+              "time": 0.0,
+              "expected": 5.395149775723727e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.7925820360466223e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.8288158457581906e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 5.569186879053239e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 1.6533523213212008e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_nh3",
+              "time": 0.0,
+              "expected": 3.654778742428686e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 9.223965835227377e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0001756034265721971,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 1.6881597526743745e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 8.005706005048113e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 5.047075675937444e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_tol",
+              "time": 0.0,
+              "expected": 1.444507786638524e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 1.061626202062705e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 3.3067046426424026e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 3.7792153760445525e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ch3oh",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_c2h5oh",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "radm2_variety",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step61",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=default: emiss_opt = 4, emiss_inpt_opt = 1, synthetic hourly wrfchemi files from make_wrfchemi.py; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 61 (dt = 60 s), surface layer of column (its, jts). Inputs are the dumped emission fields of layer 1 and the layer's density and depth; expected values are the real64 replay of cbmz_addemiss_anthro compiled unchanged (kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The in-model real32 increments differ from the replay by at most 2.8e-06 relative. Isoprene carries no tendency although E_ISO is non-zero (FORTRAN_BUGS.md N116).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 1,
+            "rho": 1.1390637159347534,
+            "dz": 63.066646575927734,
+            "E_so2": 50.00185012817383,
+            "E_no": 166.1351776123047,
+            "E_no2": 17.742591857910156,
+            "E_co": 1627.4796142578125,
+            "E_eth": 8.54870319366455,
+            "E_hc3": 46.77592468261719,
+            "E_hc5": 25.000925064086914,
+            "E_hc8": 7.903518199920654,
+            "E_xyl": 9.83907413482666,
+            "E_ol2": 15.645740509033203,
+            "E_olt": 7.4196295738220215,
+            "E_oli": 4.6775922775268555,
+            "E_tol": 13.387592315673828,
+            "E_csl": 1.7742592096328735,
+            "E_hcho": 5.1614813804626465,
+            "E_ald": 3.548518419265747,
+            "E_ket": 3.064629554748535,
+            "E_ora2": 1.5323147773742676,
+            "E_nh3": 33.872222900390625,
+            "E_ch3oh": 8.387407302856445,
+            "E_c2h5oh": 3.7098147869110107
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_csl",
+              "time": 0.0,
+              "expected": 1.9874001684932287e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_so2",
+              "time": 0.0,
+              "expected": 5.600854983881861e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.860929215904515e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.9748003369864394e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 5.781527811445687e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 1.7163910606773252e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_nh3",
+              "time": 0.0,
+              "expected": 3.794127776482311e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 9.575655053808598e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.00018229880065069685,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 1.7525256261900883e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 8.310946329100565e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 5.239509328754212e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_tol",
+              "time": 0.0,
+              "expected": 1.4995837744246005e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 1.1021037674319269e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 3.4327821213546504e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 3.923308587540202e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ch3oh",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_c2h5oh",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "radm2_variety",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step1081",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=default: emiss_opt = 4, emiss_inpt_opt = 1, synthetic hourly wrfchemi files from make_wrfchemi.py; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1081 (dt = 60 s), surface layer of column (its, jts). Inputs are the dumped emission fields of layer 1 and the layer's density and depth; expected values are the real64 replay of cbmz_addemiss_anthro compiled unchanged (kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The in-model real32 increments differ from the replay by at most 1.4e-05 relative. Isoprene carries no tendency although E_ISO is non-zero (FORTRAN_BUGS.md N116).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 1,
+            "rho": 1.1391063928604126,
+            "dz": 63.0654296875,
+            "E_so2": 25.110000610351562,
+            "E_no": 83.43000030517578,
+            "E_no2": 8.90999984741211,
+            "E_co": 817.2899780273438,
+            "E_eth": 4.293000221252441,
+            "E_hc3": 23.489999771118164,
+            "E_hc5": 12.555000305175781,
+            "E_hc8": 3.9690001010894775,
+            "E_xyl": 4.940999984741211,
+            "E_ol2": 7.85699987411499,
+            "E_olt": 3.7260000705718994,
+            "E_oli": 2.3489999771118164,
+            "E_tol": 6.7230000495910645,
+            "E_csl": 0.890999972820282,
+            "E_hcho": 2.5920000076293945,
+            "E_ald": 1.781999945640564,
+            "E_ket": 1.5390000343322754,
+            "E_ora2": 0.7695000171661377,
+            "E_nh3": 17.010000228881836,
+            "E_ch3oh": 4.211999893188477,
+            "E_c2h5oh": 1.8630000352859497
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_csl",
+              "time": 0.0,
+              "expected": 9.980172631702968e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_so2",
+              "time": 0.0,
+              "expected": 2.812594259461616e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 9.345071056210176e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 1.996034526340612e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 2.903323044515319e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 8.619240455314299e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_nh3",
+              "time": 0.0,
+              "expected": 1.9053057679923116e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 4.808629026151577e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 9.15454020167387e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 8.800697811777904e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 4.1735269432545493e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 2.631136475710191e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_tol",
+              "time": 0.0,
+              "expected": 7.530494180093498e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 5.53445952022551e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 1.7238480910628597e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 1.970176885358147e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ch3oh",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_c2h5oh",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "radm2_variety",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step2879",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=default: emiss_opt = 4, emiss_inpt_opt = 1, synthetic hourly wrfchemi files from make_wrfchemi.py; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 2879 (dt = 60 s), surface layer of column (its, jts). Inputs are the dumped emission fields of layer 1 and the layer's density and depth; expected values are the real64 replay of cbmz_addemiss_anthro compiled unchanged (kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The in-model real32 increments differ from the replay by at most 1.6e-05 relative. Isoprene carries no tendency although E_ISO is non-zero (FORTRAN_BUGS.md N116).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 1,
+            "rho": 1.1477584838867188,
+            "dz": 62.58938980102539,
+            "E_so2": 45.370155334472656,
+            "E_no": 150.74600219726562,
+            "E_no2": 16.09908676147461,
+            "E_co": 1476.725341796875,
+            "E_eth": 7.756833076477051,
+            "E_hc3": 42.44304656982422,
+            "E_hc5": 22.685077667236328,
+            "E_hc8": 7.171411514282227,
+            "E_xyl": 8.927675247192383,
+            "E_ol2": 14.196468353271484,
+            "E_olt": 6.7323455810546875,
+            "E_oli": 4.244304656982422,
+            "E_tol": 12.147493362426758,
+            "E_csl": 1.6099086999893188,
+            "E_hcho": 4.683371067047119,
+            "E_ald": 3.2198173999786377,
+            "E_ket": 2.7807514667510986,
+            "E_ora2": 1.3903757333755493,
+            "E_nh3": 30.734621047973633,
+            "E_ch3oh": 7.610477447509766,
+            "E_c2h5oh": 3.3661727905273438
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_csl",
+              "time": 0.0,
+              "expected": 1.803291888689019e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_so2",
+              "time": 0.0,
+              "expected": 5.082004532540087e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.6885370146544944e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.606583777378038e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 5.24594037971399e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 1.557388491808758e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_nh3",
+              "time": 0.0,
+              "expected": 3.4426481972617e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 8.688588470152856e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0001654110466451586,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 1.590175655902393e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 7.541038928634708e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 4.754133051838398e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_tol",
+              "time": 0.0,
+              "expected": 1.3606657475987925e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 1.000007289743739e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 3.114776983617444e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 3.55986212395909e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no2",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_ch3oh",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "d_c2h5oh",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "radm2_variety",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_pnnlcm_step1",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=pnnlcm: emiss_opt = 4, emiss_inpt_opt = 101, synthetic hourly wrfchemi files from make_wrfchemi.py; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1 (dt = 60 s), surface layer of column (its, jts). Inputs are the dumped emission fields of layer 1 and the layer's density and depth; expected values are the real64 replay of cbmz_addemiss_anthro compiled unchanged (kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The in-model real32 increments differ from the replay by at most 1.1e-06 relative. Isoprene carries no tendency although E_ISO is non-zero (FORTRAN_BUGS.md N116).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 101,
+            "rho": 1.13362455368042,
+            "dz": 63.34027862548828,
+            "E_so2": 48.143394470214844,
+            "E_no": 159.96031188964844,
+            "E_no2": 17.083139419555664,
+            "E_co": 1566.9898681640625,
+            "E_eth": 8.23096752166748,
+            "E_hc3": 45.03736877441406,
+            "E_hc5": 24.071697235107422,
+            "E_hc8": 7.609762191772461,
+            "E_xyl": 9.473377227783203,
+            "E_ol2": 15.064223289489746,
+            "E_olt": 7.143858432769775,
+            "E_oli": 4.503736972808838,
+            "E_tol": 12.890005111694336,
+            "E_csl": 1.7083139419555664,
+            "E_hcho": 4.969640731811523,
+            "E_ald": 3.416627883911133,
+            "E_ket": 2.9507241249084473,
+            "E_ora2": 1.4753620624542236,
+            "E_nh3": 32.61326599121094,
+            "E_ch3oh": 8.075666427612305,
+            "E_c2h5oh": 3.5719292163848877
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_csl",
+              "time": 0.0,
+              "expected": 1.914407922879095e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_so2",
+              "time": 0.0,
+              "expected": 5.395149775723727e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.7925820360466223e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.8288158457581906e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 5.569186879053239e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 1.6533523213212008e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_nh3",
+              "time": 0.0,
+              "expected": 3.654778742428686e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 9.223965835227377e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0001756034265721971,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 1.6881597526743745e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 8.005706005048113e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 5.047075675937444e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_tol",
+              "time": 0.0,
+              "expected": 1.444507786638524e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 1.061626202062705e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 3.3067046426424026e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 2.697574887861867e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no2",
+              "time": 0.0,
+              "expected": 1.914407922879095e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ch3oh",
+              "time": 0.0,
+              "expected": 9.049928945643314e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_c2h5oh",
+              "time": 0.0,
+              "expected": 4.0028530025240564e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "radm2_variety",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_pnnlcm_step61",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=pnnlcm: emiss_opt = 4, emiss_inpt_opt = 101, synthetic hourly wrfchemi files from make_wrfchemi.py; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 61 (dt = 60 s), surface layer of column (its, jts). Inputs are the dumped emission fields of layer 1 and the layer's density and depth; expected values are the real64 replay of cbmz_addemiss_anthro compiled unchanged (kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The in-model real32 increments differ from the replay by at most 5.9e-06 relative. Isoprene carries no tendency although E_ISO is non-zero (FORTRAN_BUGS.md N116).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 101,
+            "rho": 1.1390633583068848,
+            "dz": 63.06692123413086,
+            "E_so2": 50.00185012817383,
+            "E_no": 166.1351776123047,
+            "E_no2": 17.742591857910156,
+            "E_co": 1627.4796142578125,
+            "E_eth": 8.54870319366455,
+            "E_hc3": 46.77592468261719,
+            "E_hc5": 25.000925064086914,
+            "E_hc8": 7.903518199920654,
+            "E_xyl": 9.83907413482666,
+            "E_ol2": 15.645740509033203,
+            "E_olt": 7.4196295738220215,
+            "E_oli": 4.6775922775268555,
+            "E_tol": 13.387592315673828,
+            "E_csl": 1.7742592096328735,
+            "E_hcho": 5.1614813804626465,
+            "E_ald": 3.548518419265747,
+            "E_ket": 3.064629554748535,
+            "E_ora2": 1.5323147773742676,
+            "E_nh3": 33.872222900390625,
+            "E_ch3oh": 8.387407302856445,
+            "E_c2h5oh": 3.7098147869110107
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_csl",
+              "time": 0.0,
+              "expected": 1.9873921372845826e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_so2",
+              "time": 0.0,
+              "expected": 5.600832350475832e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.860921695772914e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.974784274569165e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 5.781504447929451e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 1.7163841246334725e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_nh3",
+              "time": 0.0,
+              "expected": 3.7941124441741737e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 9.57561635798637e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0001822980639698176,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 1.752518544124194e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 8.310912744045545e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 5.239488155568611e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_tol",
+              "time": 0.0,
+              "expected": 1.499577714512581e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 1.10209931376153e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 3.432768249266945e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 2.8004161752379017e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no2",
+              "time": 0.0,
+              "expected": 1.9873921105786664e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ch3oh",
+              "time": 0.0,
+              "expected": 9.394944794650021e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_c2h5oh",
+              "time": 0.0,
+              "expected": 4.155456372022772e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "radm2_variety",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_pnnlcm_step1081",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=pnnlcm: emiss_opt = 4, emiss_inpt_opt = 101, synthetic hourly wrfchemi files from make_wrfchemi.py; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1081 (dt = 60 s), surface layer of column (its, jts). Inputs are the dumped emission fields of layer 1 and the layer's density and depth; expected values are the real64 replay of cbmz_addemiss_anthro compiled unchanged (kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The in-model real32 increments differ from the replay by at most 2.7e-05 relative. Isoprene carries no tendency although E_ISO is non-zero (FORTRAN_BUGS.md N116).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 101,
+            "rho": 1.139448881149292,
+            "dz": 63.045536041259766,
+            "E_so2": 25.110000610351562,
+            "E_no": 83.43000030517578,
+            "E_no2": 8.90999984741211,
+            "E_co": 817.2899780273438,
+            "E_eth": 4.293000221252441,
+            "E_hc3": 23.489999771118164,
+            "E_hc5": 12.555000305175781,
+            "E_hc8": 3.9690001010894775,
+            "E_xyl": 4.940999984741211,
+            "E_ol2": 7.85699987411499,
+            "E_olt": 3.7260000705718994,
+            "E_oli": 2.3489999771118164,
+            "E_tol": 6.7230000495910645,
+            "E_csl": 0.890999972820282,
+            "E_hcho": 2.5920000076293945,
+            "E_ald": 1.781999945640564,
+            "E_ket": 1.5390000343322754,
+            "E_ora2": 0.7695000171661377,
+            "E_nh3": 17.010000228881836,
+            "E_ch3oh": 4.211999893188477,
+            "E_c2h5oh": 1.8630000352859497
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_csl",
+              "time": 0.0,
+              "expected": 9.980321092885463e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_so2",
+              "time": 0.0,
+              "expected": 2.8126360985243857e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 9.345210069867591e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 1.9960642185770563e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 2.9033662332244387e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 8.619368671796688e-08,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_nh3",
+              "time": 0.0,
+              "expected": 1.9053341105829415e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 4.808700557454448e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 9.154676381068113e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 8.800828727549761e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 4.1735890270248213e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 2.631175615477284e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_tol",
+              "time": 0.0,
+              "expected": 7.530606200808251e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 5.534541848701722e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 1.723873734359374e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 1.4063180492621928e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no2",
+              "time": 0.0,
+              "expected": 9.980321226414393e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ch3oh",
+              "time": 0.0,
+              "expected": 4.717969995460258e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_c2h5oh",
+              "time": 0.0,
+              "expected": 2.0867945135124106e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "radm2_variety",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_pnnlcm_step2879",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=pnnlcm: emiss_opt = 4, emiss_inpt_opt = 101, synthetic hourly wrfchemi files from make_wrfchemi.py; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 2879 (dt = 60 s), surface layer of column (its, jts). Inputs are the dumped emission fields of layer 1 and the layer's density and depth; expected values are the real64 replay of cbmz_addemiss_anthro compiled unchanged (kernels/emissions_driver), its increment over the step divided by dt, at 1e-9 relative. The in-model real32 increments differ from the replay by at most 1.7e-05 relative. Isoprene carries no tendency although E_ISO is non-zero (FORTRAN_BUGS.md N116).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 101,
+            "rho": 1.147081732749939,
+            "dz": 62.625370025634766,
+            "E_so2": 45.370155334472656,
+            "E_no": 150.74600219726562,
+            "E_no2": 16.09908676147461,
+            "E_co": 1476.725341796875,
+            "E_eth": 7.756833076477051,
+            "E_hc3": 42.44304656982422,
+            "E_hc5": 22.685077667236328,
+            "E_hc8": 7.171411514282227,
+            "E_xyl": 8.927675247192383,
+            "E_ol2": 14.196468353271484,
+            "E_olt": 6.7323455810546875,
+            "E_oli": 4.244304656982422,
+            "E_tol": 12.147493362426758,
+            "E_csl": 1.6099086999893188,
+            "E_hcho": 4.683371067047119,
+            "E_ald": 3.2198173999786377,
+            "E_ket": 2.7807514667510986,
+            "E_ora2": 1.3903757333755493,
+            "E_nh3": 30.734621047973633,
+            "E_ch3oh": 7.610477447509766,
+            "E_c2h5oh": 3.3661727905273438
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_csl",
+              "time": 0.0,
+              "expected": 1.803319129752952e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_so2",
+              "time": 0.0,
+              "expected": 5.082081302812981e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no",
+              "time": 0.0,
+              "expected": 1.6885625221971467e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ald",
+              "time": 0.0,
+              "expected": 3.606638259505904e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_hcho",
+              "time": 0.0,
+              "expected": 5.246019626450766e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ora2",
+              "time": 0.0,
+              "expected": 1.5574120181828217e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_nh3",
+              "time": 0.0,
+              "expected": 3.442700202929918e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_eth",
+              "time": 0.0,
+              "expected": 8.688719722555899e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_co",
+              "time": 0.0,
+              "expected": 0.0001654135453936593,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ol2",
+              "time": 0.0,
+              "expected": 1.59019967756908e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_olt",
+              "time": 0.0,
+              "expected": 7.541152845813061e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_oli",
+              "time": 0.0,
+              "expected": 4.7542048691871234e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_tol",
+              "time": 0.0,
+              "expected": 1.3606863022205123e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_xyl",
+              "time": 0.0,
+              "expected": 1.000022396151458e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ket",
+              "time": 0.0,
+              "expected": 3.1148240363655713e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_par",
+              "time": 0.0,
+              "expected": 2.5410406514064903e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_no2",
+              "time": 0.0,
+              "expected": 1.803319103046754e-06,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_ch3oh",
+              "time": 0.0,
+              "expected": 8.524781292093726e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "d_c2h5oh",
+              "time": 0.0,
+              "expected": 3.7705764229065304e-07,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            },
+            {
+              "variable": "radm2_variety",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

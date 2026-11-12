@@ -1,0 +1,3515 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "MosaicAnthroEmissions",
+    "description": "WRF-Chem's anthropogenic aerosol emissions into MOSAIC's 8 size sections, the anthropogenic part of `mosaic_addemiss` in chem/module_mosaic_addemiss.F (WRF v4.8.0), which emissions_driver calls for chem_opt = 170 (CBMZ_MOSAIC_KPP) whenever an emission input is read. It is the aerosol half of the `emiss_opt = 4` (ecbmz_mosaic) package; the gas half is CBMZAnthroEmissions. Sea-salt, dust and fire emissions, which the same routine also adds under their own switches (seas_opt, dust_opt, biomass_burn_opt), are not part of this component and are off in the reference configuration.\n\nThe scheme. The input carries surface mass fluxes (ug m-2 s-1, WRF's \"ug/m3 m/s\") of sulfate, nitrate, organic carbon, black carbon and unspeciated PM (MOSAIC's other-inorganic, OIN), split into size modes in one of two ways depending on the input variety `emiss_inpt_opt`. A RADM2-variety input (1 or 102) gives MADE/SORGAM Aitken (`i`) and accumulation (`j`) modes, plus a coarse PM10 field, and each mode is apportioned to the sections by the SORGAM fractions; a CBM-Z-variety input (101, PNNL_CM) gives fine (`j`) and coarse (`c`) fields apportioned by the MOSAIC fractions (MosaicEmissionParameters). Any other variety leaves every fraction zero, as WRF's `CASE DEFAULT: return` does (the TNO variety, 121, has fractions of its own that this component does not carry). The section mass flux of component x is therefore fr_f*x_j + fr_c*x_c + fr_i*x_i + fr_j*x_j, with the fractions of the unused variety zero, and OIN adds the SORGAM coarse fraction of PM10. Each section also gains particles: the emitted volume, the sum of each component's mass over its density, divided by the section's centre volume `volumcen` (MOSAIC's `volumcen_sect`, (pi/6) dcen^3, supplied by the consumer with the rest of the section geometry). Under emiss_opt = 4 the PM10 term is always zero, because that package has no E_PM_10 field and WRF reads the empty dummy slot in its place (FORTRAN_BUGS.md N116), so neither variety emits coarse OIN. Every flux becomes a tendency of the emission layer through `aerosol_layer_tendency`, mosaic_addemiss's `fact = (dtstep/dz8w)*alt`, and the increment WRF applies over a step is exactly dt times it.\n\nNH4, Na, Cl, Ca, CO3 and MSA are emitted only for the MOZART-MOSAIC mechanisms; for chem_opt 170 they are zero and carry no tendency here. The emission layer is one layer; a consumer with kemit > 1 maps the component over them.\n\nWhat the tests pin. Steps of the chem170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh), once per input variety, asserting every section's tendency of every component and of the number against the real64 replay of the dumped inputs through chem/module_mosaic_addemiss.F (kernels/emissions_driver), at 1e-9 relative.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "created": "2026-11-12T00:00:00Z",
+    "tags": [
+      "wrf-chem",
+      "emissions",
+      "anthropogenic",
+      "mosaic",
+      "aerosol",
+      "chem_opt-170"
+    ],
+    "references": [
+      {
+        "citation": "WRF-Chem v4.8.0, chem/module_mosaic_addemiss.F (subroutine mosaic_addemiss), called from chem/emissions_driver.F for the MOSAIC chem_opt values."
+      },
+      {
+        "citation": "Zaveri, R. A., Easter, R. C., Fast, J. D. and Peters, L. K. (2008). Model for Simulating Aerosol Interactions and Chemistry (MOSAIC). J. Geophys. Res., 113, D13204."
+      }
+    ]
+  },
+  "index_sets": {
+    "bin": {
+      "kind": "interval",
+      "size": 8
+    }
+  },
+  "models": {
+    "MosaicAnthroEmissions": {
+      "expression_template_imports": [
+        {
+          "ref": "./wrf_emission_templates.esm"
+        }
+      ],
+      "subsystems": {
+        "par": {
+          "ref": "./wrf_emission_parameters.esm"
+        },
+        "cz": {
+          "ref": "./cbmz_emission_parameters.esm"
+        },
+        "mp": {
+          "ref": "./mosaic_emission_parameters.esm"
+        }
+      },
+      "variables": {
+        "emiss_inpt_opt": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1,
+          "description": "WRF namelist emiss_inpt_opt: 1 or 102 for a RADM2-variety input, 101 for the CBM-Z variety."
+        },
+        "alt": {
+          "type": "parameter",
+          "units": "m^3/kg",
+          "default": 1.0,
+          "description": "Specific volume of the emission layer, `alt` (chem_driver's `rri`)."
+        },
+        "dz": {
+          "type": "parameter",
+          "units": "m",
+          "default": 1.0,
+          "description": "Depth of the emission layer, `dz8w`."
+        },
+        "volumcen": {
+          "type": "parameter",
+          "units": "cm^3",
+          "shape": [
+            "bin"
+          ],
+          "default": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "description": "Single-particle volume at the centre of each section, `volumcen_sect` = (pi/6) dcen^3."
+        },
+        "E_so4i": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_SO4I, Aitken-mode sulfate (RADM2 variety)."
+        },
+        "E_so4j": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_SO4J, accumulation-mode (RADM2 variety) or fine (CBM-Z variety) sulfate."
+        },
+        "E_so4c": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_SO4C, coarse sulfate (CBM-Z variety)."
+        },
+        "E_no3i": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_NO3I."
+        },
+        "E_no3j": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_NO3J."
+        },
+        "E_no3c": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_NO3C."
+        },
+        "E_orgi": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_ORGI, organic carbon."
+        },
+        "E_orgj": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_ORGJ."
+        },
+        "E_orgc": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_ORGC."
+        },
+        "E_eci": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_ECI, elemental (black) carbon."
+        },
+        "E_ecj": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_ECJ."
+        },
+        "E_ecc": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_ECC."
+        },
+        "E_pm25i": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_PM25I, unspeciated fine PM (into OIN)."
+        },
+        "E_pm25j": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_PM25J."
+        },
+        "E_pm_10": {
+          "type": "parameter",
+          "units": "ug/(m^2*s)",
+          "default": 0.0,
+          "description": "E_PM_10, unspeciated coarse PM (into OIN). The emiss_opt = 4 package does NOT carry this field, so under it WRF reads the dummy slot p_e_pm_10 = 1 of emis_ant, which holds 0: coarse OIN is never emitted (FORTRAN_BUGS.md N116). Kept as an input because other emission packages carry it."
+        },
+        "radm2_variety": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for a RADM2-variety input (emiss_inpt_opt 1 or 102), else 0."
+        },
+        "cbmz_variety": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for a CBM-Z-variety input (emiss_inpt_opt 101), else 0."
+        },
+        "fr_i": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "bin"
+          ],
+          "description": "Aitken-mode fraction in use (SORGAM's for a RADM2-variety input, else 0)."
+        },
+        "fr_j": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "bin"
+          ],
+          "description": "Accumulation-mode fraction in use."
+        },
+        "fr_sc": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "bin"
+          ],
+          "description": "SORGAM coarse-mode fraction in use (PM10 into OIN only)."
+        },
+        "fr_f": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "bin"
+          ],
+          "description": "MOSAIC fine fraction in use (CBM-Z-variety input, else 0)."
+        },
+        "fr_c": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "bin"
+          ],
+          "description": "MOSAIC coarse fraction in use."
+        },
+        "F_so4": {
+          "type": "unknown",
+          "units": "ug/(m^2*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "Sulfate mass flux into each section, `aem_so4`."
+        },
+        "F_no3": {
+          "type": "unknown",
+          "units": "ug/(m^2*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "Nitrate mass flux, `aem_no3`."
+        },
+        "F_oc": {
+          "type": "unknown",
+          "units": "ug/(m^2*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "Organic-carbon mass flux, `aem_oc`."
+        },
+        "F_bc": {
+          "type": "unknown",
+          "units": "ug/(m^2*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "Black-carbon mass flux, `aem_bc`."
+        },
+        "F_oin": {
+          "type": "unknown",
+          "units": "ug/(m^2*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "Other-inorganic mass flux, `aem_oin`."
+        },
+        "F_num": {
+          "type": "unknown",
+          "units": "1/(m^2*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "Particle number flux, `aem_num`: emitted volume over the section's centre volume."
+        },
+        "d_so4": {
+          "type": "unknown",
+          "units": "ug/(kg*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "so4_aNN tendency of the emission layer."
+        },
+        "d_no3": {
+          "type": "unknown",
+          "units": "ug/(kg*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "no3_aNN tendency."
+        },
+        "d_oc": {
+          "type": "unknown",
+          "units": "ug/(kg*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "oc_aNN tendency."
+        },
+        "d_bc": {
+          "type": "unknown",
+          "units": "ug/(kg*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "bc_aNN tendency."
+        },
+        "d_oin": {
+          "type": "unknown",
+          "units": "ug/(kg*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "oin_aNN tendency."
+        },
+        "d_num": {
+          "type": "unknown",
+          "units": "1/(kg*s)",
+          "shape": [
+            "bin"
+          ],
+          "description": "num_aNN tendency."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "radm2_variety",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "emiss_inpt_opt",
+                      "cz.emiss_inpt_default"
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "emiss_inpt_opt",
+                      "cz.emiss_inpt_pnnl_rs"
+                    ]
+                  }
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "cbmz_variety",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "==",
+                "args": [
+                  "emiss_inpt_opt",
+                  "cz.emiss_inpt_pnnl_cm"
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+        {
+          "lhs": "fr_i",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "radm2_variety",
+                {
+                  "op": "index",
+                  "args": [
+                    "mp.fr_sorgam_i",
+                    "n"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "fr_j",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "radm2_variety",
+                {
+                  "op": "index",
+                  "args": [
+                    "mp.fr_sorgam_j",
+                    "n"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "fr_sc",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "radm2_variety",
+                {
+                  "op": "index",
+                  "args": [
+                    "mp.fr_sorgam_c",
+                    "n"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "fr_f",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "cbmz_variety",
+                {
+                  "op": "index",
+                  "args": [
+                    "mp.fr_mosaic_f",
+                    "n"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "fr_c",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "cbmz_variety",
+                {
+                  "op": "index",
+                  "args": [
+                    "mp.fr_mosaic_c",
+                    "n"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "F_so4",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_f",
+                        "n"
+                      ]
+                    },
+                    "E_so4j"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_c",
+                        "n"
+                      ]
+                    },
+                    "E_so4c"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_i",
+                        "n"
+                      ]
+                    },
+                    "E_so4i"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_j",
+                        "n"
+                      ]
+                    },
+                    "E_so4j"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "F_no3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_f",
+                        "n"
+                      ]
+                    },
+                    "E_no3j"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_c",
+                        "n"
+                      ]
+                    },
+                    "E_no3c"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_i",
+                        "n"
+                      ]
+                    },
+                    "E_no3i"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_j",
+                        "n"
+                      ]
+                    },
+                    "E_no3j"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "F_oc",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_f",
+                        "n"
+                      ]
+                    },
+                    "E_orgj"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_c",
+                        "n"
+                      ]
+                    },
+                    "E_orgc"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_i",
+                        "n"
+                      ]
+                    },
+                    "E_orgi"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_j",
+                        "n"
+                      ]
+                    },
+                    "E_orgj"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "F_bc",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_f",
+                        "n"
+                      ]
+                    },
+                    "E_ecj"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_c",
+                        "n"
+                      ]
+                    },
+                    "E_ecc"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_i",
+                        "n"
+                      ]
+                    },
+                    "E_eci"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_j",
+                        "n"
+                      ]
+                    },
+                    "E_ecj"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "F_oin",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_f",
+                        "n"
+                      ]
+                    },
+                    "E_pm25j"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_c",
+                        "n"
+                      ]
+                    },
+                    "E_pm_10"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_i",
+                        "n"
+                      ]
+                    },
+                    "E_pm25i"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_j",
+                        "n"
+                      ]
+                    },
+                    "E_pm25j"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "fr_sc",
+                        "n"
+                      ]
+                    },
+                    "E_pm_10"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "F_num",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "/",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_so4",
+                                "n"
+                              ]
+                            },
+                            "mp.dens_so4"
+                          ]
+                        },
+                        {
+                          "op": "/",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_no3",
+                                "n"
+                              ]
+                            },
+                            "mp.dens_no3"
+                          ]
+                        },
+                        {
+                          "op": "/",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_oin",
+                                "n"
+                              ]
+                            },
+                            "mp.dens_oin"
+                          ]
+                        },
+                        {
+                          "op": "/",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_oc",
+                                "n"
+                              ]
+                            },
+                            "mp.dens_oc"
+                          ]
+                        },
+                        {
+                          "op": "/",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_bc",
+                                "n"
+                              ]
+                            },
+                            "mp.dens_bc"
+                          ]
+                        }
+                      ]
+                    },
+                    "par.g_per_ug"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "volumcen",
+                    "n"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "d_so4",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "aerosol_layer_tendency",
+              "bindings": {
+                "F": {
+                  "op": "index",
+                  "args": [
+                    "F_so4",
+                    "n"
+                  ]
+                },
+                "alt": "alt",
+                "dz": "dz"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "d_no3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "aerosol_layer_tendency",
+              "bindings": {
+                "F": {
+                  "op": "index",
+                  "args": [
+                    "F_no3",
+                    "n"
+                  ]
+                },
+                "alt": "alt",
+                "dz": "dz"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "d_oc",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "aerosol_layer_tendency",
+              "bindings": {
+                "F": {
+                  "op": "index",
+                  "args": [
+                    "F_oc",
+                    "n"
+                  ]
+                },
+                "alt": "alt",
+                "dz": "dz"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "d_bc",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "aerosol_layer_tendency",
+              "bindings": {
+                "F": {
+                  "op": "index",
+                  "args": [
+                    "F_bc",
+                    "n"
+                  ]
+                },
+                "alt": "alt",
+                "dz": "dz"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "d_oin",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "aerosol_layer_tendency",
+              "bindings": {
+                "F": {
+                  "op": "index",
+                  "args": [
+                    "F_oin",
+                    "n"
+                  ]
+                },
+                "alt": "alt",
+                "dz": "dz"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "d_num",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "n"
+            ],
+            "args": [],
+            "ranges": {
+              "n": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "aerosol_layer_tendency",
+              "bindings": {
+                "F": {
+                  "op": "index",
+                  "args": [
+                    "F_num",
+                    "n"
+                  ]
+                },
+                "alt": "alt",
+                "dz": "dz"
+              }
+            }
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "chem170_emis_default_step1",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=default: emiss_opt = 4, emiss_inpt_opt = 1; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1 (dt = 60 s), surface layer. Inputs are the dumped aerosol emission fields, the layer's specific volume and depth and MOSAIC's run-time section centre volumes; expected values are the real64 replay of mosaic_addemiss (kernels/emissions_driver), each section's increment over the step divided by dt, at 1e-9 of each vector's maximum. The in-model real32 increments differ from the replay by at most 9e-05 relative (cancellation in the large number mixing ratios).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 1,
+            "alt": 0.8821262717247009,
+            "dz": 63.34027862548828,
+            "volumcen": [
+              8.827217540445742e-17,
+              7.061774032356594e-16,
+              5.649419225885275e-15,
+              4.51953538070822e-14,
+              3.615628304566576e-13,
+              2.892502643653261e-12,
+              2.3140021149226087e-11,
+              1.851201691938087e-10
+            ],
+            "E_so4i": 0.003261326579377055,
+            "E_so4j": 0.015064223669469357,
+            "E_so4c": 0.0035719291772693396,
+            "E_no3i": 0.0017083139391615987,
+            "E_no3j": 0.007609762251377106,
+            "E_no3c": 0.0018636152381077409,
+            "E_orgi": 0.015374825336039066,
+            "E_orgj": 0.06382881850004196,
+            "E_orgc": 0.007299159653484821,
+            "E_eci": 0.00792036484926939,
+            "E_ecj": 0.03152615949511528,
+            "E_ecc": 0.0020189164206385612,
+            "E_pm25i": 0.01661723665893078,
+            "E_pm25j": 0.07966955006122589,
+            "E_pm_10": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_so4",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 7.342865728759256e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        4.9284793075187944e-05,
+                        3.242972854647158e-05,
+                        7.342865728759256e-05,
+                        6.965232634137351e-05,
+                        2.6224520459854537e-05,
+                        3.986127109897874e-06,
+                        2.0979616367882334e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_no3",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.709282580083404e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2.5714087331326596e-05,
+                        1.64116829083858e-05,
+                        3.7092825800834036e-05,
+                        3.5185194759648285e-05,
+                        1.3247437786012156e-05,
+                        2.013610543473848e-06,
+                        1.0597950228809725e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.1112552107218017e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0002297397624473409,
+                        0.00013816698344189008,
+                        0.00031112552107218013,
+                        0.0002951247799884681,
+                        0.00011111625752577871,
+                        1.6889671143918358e-05,
+                        8.889300602062256e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_bc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.5367028609993707e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.00011786002212370558,
+                        6.840220205883353e-05,
+                        0.00015367028609993705,
+                        0.00014576724281479745,
+                        5.488224503569182e-05,
+                        8.34210124542515e-06,
+                        4.390579602855352e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oin",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.883391680886081e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0002521728276779979,
+                        0.00017120231290985739,
+                        0.00038833916808860805,
+                        0.0003683674394440511,
+                        0.00013869256003164575,
+                        2.1081269124810047e-05,
+                        1.109540480253209e-06,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_num",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.004958808129487832,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        4958808.129487832,
+                        384301.07299749926,
+                        108379.609472336,
+                        12850.725123148412,
+                        604.7969278590172,
+                        11.491141629321282,
+                        0.07559961598237805,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step61",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=default: emiss_opt = 4, emiss_inpt_opt = 1; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 61 (dt = 60 s), surface layer. Inputs are the dumped aerosol emission fields, the layer's specific volume and depth and MOSAIC's run-time section centre volumes; expected values are the real64 replay of mosaic_addemiss (kernels/emissions_driver), each section's increment over the step divided by dt, at 1e-9 of each vector's maximum. The in-model real32 increments differ from the replay by at most 2.5e-05 relative (cancellation in the large number mixing ratios).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 1,
+            "alt": 0.8779140114784241,
+            "dz": 63.066646575927734,
+            "volumcen": [
+              8.827217540445742e-17,
+              7.061774032356594e-16,
+              5.649419225885275e-15,
+              4.51953538070822e-14,
+              3.615628304566576e-13,
+              2.892502643653261e-12,
+              2.3140021149226087e-11,
+              1.851201691938087e-10
+            ],
+            "E_so4i": 0.0033872220665216446,
+            "E_so4j": 0.015645740553736687,
+            "E_so4c": 0.0037098147440701723,
+            "E_no3i": 0.0017742592608556151,
+            "E_no3j": 0.00790351815521717,
+            "E_no3c": 0.0019355554832145572,
+            "E_orgi": 0.015968332067131996,
+            "E_orgj": 0.06629277765750885,
+            "E_orgc": 0.007580925710499287,
+            "E_eci": 0.008226110599935055,
+            "E_ecj": 0.032743148505687714,
+            "E_ecc": 0.002096851821988821,
+            "E_pm25i": 0.01725870370864868,
+            "E_pm25j": 0.08274500072002411,
+            "E_pm_10": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_so4",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 7.62283308093877e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        5.11639152167546e-05,
+                        3.3666202952877675e-05,
+                        7.62283308093877e-05,
+                        7.230801665347638e-05,
+                        2.7224403860495738e-05,
+                        4.138109386795282e-06,
+                        2.177952308839622e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_no3",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.850709363514334e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2.669451051808417e-05,
+                        1.7037424326430224e-05,
+                        3.8507093635143336e-05,
+                        3.652672881962168e-05,
+                        1.375253344112262e-05,
+                        2.0903850830506383e-06,
+                        1.1002026752898264e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.2298808536377535e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.00023849923548586264,
+                        0.00014343500022590458,
+                        0.0003229880853637753,
+                        0.00030637726954506616,
+                        0.00011535288762991961,
+                        1.7533638919747797e-05,
+                        9.228231010393554e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_bc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.5952939699210117e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.00012235376293705155,
+                        7.101022784613044e-05,
+                        0.00015952939699210116,
+                        0.0001513250280039365,
+                        5.697478464003619e-05,
+                        8.66016726528551e-06,
+                        4.5579827712029e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oin",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 4.031457166278156e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.00026178762566688346,
+                        0.00017772989324804368,
+                        0.00040314571662781556,
+                        0.0003824125083440988,
+                        0.00014398061308136257,
+                        2.1885053188366866e-05,
+                        1.1518449046510337e-06,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_num",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.005147876603569126,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        5147876.603569126,
+                        398953.65423552395,
+                        112511.8935301294,
+                        13340.695947143931,
+                        627.8565487172416,
+                        11.929274425627591,
+                        0.0784820685896572,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step1081",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=default: emiss_opt = 4, emiss_inpt_opt = 1; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1081 (dt = 60 s), surface layer. Inputs are the dumped aerosol emission fields, the layer's specific volume and depth and MOSAIC's run-time section centre volumes; expected values are the real64 replay of mosaic_addemiss (kernels/emissions_driver), each section's increment over the step divided by dt, at 1e-9 of each vector's maximum. The in-model real32 increments differ from the replay by at most 0.00017 relative (cancellation in the large number mixing ratios).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 1,
+            "alt": 0.8778811097145081,
+            "dz": 63.0654296875,
+            "volumcen": [
+              8.827217540445742e-17,
+              7.061774032356594e-16,
+              5.649419225885275e-15,
+              4.51953538070822e-14,
+              3.615628304566576e-13,
+              2.892502643653261e-12,
+              2.3140021149226087e-11,
+              1.851201691938087e-10
+            ],
+            "E_so4i": 0.0017010000301524997,
+            "E_so4j": 0.007857000455260277,
+            "E_so4c": 0.0018629999831318855,
+            "E_no3i": 0.0008909999742172658,
+            "E_no3j": 0.003969000186771154,
+            "E_no3c": 0.0009720000089146197,
+            "E_orgi": 0.00801900029182434,
+            "E_orgj": 0.03329100087285042,
+            "E_orgc": 0.003806999884545803,
+            "E_eci": 0.004131000023335218,
+            "E_ecj": 0.016442999243736267,
+            "E_ecc": 0.0010529999854043126,
+            "E_pm25i": 0.008666999638080597,
+            "E_pm25j": 0.04155300185084343,
+            "E_pm_10": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_so4",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.827975658779089e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2.5693101094790653e-05,
+                        1.6906234731835688e-05,
+                        3.827975658779089e-05,
+                        3.631108339184712e-05,
+                        1.3671341638496481e-05,
+                        2.0780439290514025e-06,
+                        1.0937073310797463e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_no3",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.9337196416320998e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        1.3405242716893474e-05,
+                        8.55572278957902e-06,
+                        1.9337196416320997e-05,
+                        1.8342712029196608e-05,
+                        6.906141577257829e-06,
+                        1.049733519743167e-06,
+                        5.524913261808577e-08,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.6219566452022605e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.00011976771524945436,
+                        7.202908200624377e-05,
+                        0.00016219566452022605,
+                        0.00015385417320204302,
+                        5.792702304293814e-05,
+                        8.804907502526586e-06,
+                        4.634161843434954e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_bc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 8.01112348417954e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        6.144267028629172e-05,
+                        3.565936552415716e-05,
+                        8.011123484179539e-05,
+                        7.599122847850396e-05,
+                        2.8611155300641475e-05,
+                        4.348895605697558e-06,
+                        2.2888924240513537e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oin",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 2.0244860686973548e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.00013146248185330427,
+                        8.925102678892053e-05,
+                        0.00020244860686973546,
+                        0.00019203696423072034,
+                        7.230307388204812e-05,
+                        1.0990067230071121e-05,
+                        5.784245910564479e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_num",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0025851210369430546,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2585121.0369430543,
+                        200343.46706256867,
+                        56500.354227326316,
+                        6699.3277155257765,
+                        315.2921552864214,
+                        5.990550950441927,
+                        0.03941151941080534,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_default_step2879",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=default: emiss_opt = 4, emiss_inpt_opt = 1; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 2879 (dt = 60 s), surface layer. Inputs are the dumped aerosol emission fields, the layer's specific volume and depth and MOSAIC's run-time section centre volumes; expected values are the real64 replay of mosaic_addemiss (kernels/emissions_driver), each section's increment over the step divided by dt, at 1e-9 of each vector's maximum. The in-model real32 increments differ from the replay by at most 0.00041 relative (cancellation in the large number mixing ratios).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 1,
+            "alt": 0.8712634444236755,
+            "dz": 62.58938980102539,
+            "volumcen": [
+              8.827217540445742e-17,
+              7.061774032356594e-16,
+              5.649419225885275e-15,
+              4.51953538070822e-14,
+              3.615628304566576e-13,
+              2.892502643653261e-12,
+              2.3140021149226087e-11,
+              1.851201691938087e-10
+            ],
+            "E_so4i": 0.00307346205227077,
+            "E_so4j": 0.014196467585861683,
+            "E_so4c": 0.003366172779351473,
+            "E_no3i": 0.0016099087661132216,
+            "E_no3j": 0.007171411532908678,
+            "E_no3c": 0.0017562640132382512,
+            "E_orgi": 0.01448917854577303,
+            "E_orgj": 0.06015204265713692,
+            "E_orgc": 0.006878701038658619,
+            "E_eci": 0.0074641224928200245,
+            "E_ecj": 0.029710134491324425,
+            "E_ecc": 0.0019026193767786026,
+            "E_pm25i": 0.01566002145409584,
+            "E_pm25j": 0.07508029043674469,
+            "E_pm_10": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_so4",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 6.916670941176466e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        4.6424206370288454e-05,
+                        3.054744155759348e-05,
+                        6.916670941176465e-05,
+                        6.560956435630594e-05,
+                        2.470239621849002e-05,
+                        3.754764225210224e-06,
+                        1.9761916974791031e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_no3",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.493988448669919e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2.4221591793053646e-05,
+                        1.5459116264822845e-05,
+                        3.493988448669919e-05,
+                        3.314297614164611e-05,
+                        1.2478530173816912e-05,
+                        1.896736586419016e-06,
+                        9.982824139045017e-08,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 2.930671894136576e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.00021640521845994742,
+                        0.00013014750240722961,
+                        0.00029306718941365755,
+                        0.00027799516252951704,
+                        0.0001046668533620195,
+                        1.5909361711026934e-05,
+                        8.37334826896159e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_bc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.4475095487785548e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.00011101919517240156,
+                        6.443200140968478e-05,
+                        0.00014475095487785546,
+                        0.00013730662005556615,
+                        5.1696769599233565e-05,
+                        7.857908979083673e-06,
+                        4.135741567938729e-07,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oin",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.657992102458874e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        0.0002375362126840308,
+                        0.00016126539835228753,
+                        0.00036579921024588736,
+                        0.0003469866794332403,
+                        0.00013064257508781373,
+                        1.9857671413348045e-05,
+                        1.045140600702474e-06,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_num",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.004670989164405728,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        4670989.164405728,
+                        361995.4851831754,
+                        102089.04445228577,
+                        12104.843842199445,
+                        569.6933284168442,
+                        10.82417323991734,
+                        0.07121166605209812,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_pnnlcm_step1",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=pnnlcm: emiss_opt = 4, emiss_inpt_opt = 101; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1 (dt = 60 s), surface layer. Inputs are the dumped aerosol emission fields, the layer's specific volume and depth and MOSAIC's run-time section centre volumes; expected values are the real64 replay of mosaic_addemiss (kernels/emissions_driver), each section's increment over the step divided by dt, at 1e-9 of each vector's maximum. The in-model real32 increments differ from the replay by at most 1.1e-06 relative (cancellation in the large number mixing ratios).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 101,
+            "alt": 0.8821262717247009,
+            "dz": 63.34027862548828,
+            "volumcen": [
+              8.827217540445742e-17,
+              7.061774032356594e-16,
+              5.649419225885275e-15,
+              4.51953538070822e-14,
+              3.615628304566576e-13,
+              2.892502643653261e-12,
+              2.3140021149226087e-11,
+              1.851201691938087e-10
+            ],
+            "E_so4i": 0.003261326579377055,
+            "E_so4j": 0.015064223669469357,
+            "E_so4c": 0.0035719291772693396,
+            "E_no3i": 0.0017083139391615987,
+            "E_no3j": 0.007609762251377106,
+            "E_no3c": 0.0018636152381077409,
+            "E_orgi": 0.015374825336039066,
+            "E_orgj": 0.06382881850004196,
+            "E_orgc": 0.007299159653484821,
+            "E_eci": 0.00792036484926939,
+            "E_ecj": 0.03152615949511528,
+            "E_ecc": 0.0020189164206385612,
+            "E_pm25i": 0.01661723665893078,
+            "E_pm25j": 0.07966955006122589,
+            "E_pm_10": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_so4",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 8.391846547153443e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        1.2587769820730137e-05,
+                        9.440827365547599e-06,
+                        5.140006010131472e-05,
+                        8.391846547153442e-05,
+                        2.097961636788372e-05,
+                        3.146942455182535e-05,
+                        1.4923644021079598e-05,
+                        3.482183604918573e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_no3",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 4.2391800915238897e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        6.358770137285834e-06,
+                        4.7690776029643755e-06,
+                        2.5964978060583824e-05,
+                        4.2391800915238896e-05,
+                        1.0597950228809724e-05,
+                        1.5896925343214588e-05,
+                        7.786249117918129e-06,
+                        1.8167914608475636e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.5557202408249163e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        5.333580361237375e-05,
+                        4.000185270928031e-05,
+                        0.00021778786475052612,
+                        0.0003555720240824916,
+                        8.889300602062297e-05,
+                        0.00013333950903093433,
+                        3.0496142256915863e-05,
+                        7.1157665266137e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_bc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.756231841142138e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2.6343477617132068e-05,
+                        1.975760821284905e-05,
+                        0.00010756920026995595,
+                        0.00017562318411421378,
+                        4.390579602855348e-05,
+                        6.585869404283016e-05,
+                        8.435102846287533e-06,
+                        1.968190664133758e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oin",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 4.4381619210126647e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        6.657242881518995e-05,
+                        4.992932161139247e-05,
+                        0.0002718374176620257,
+                        0.00044381619210126646,
+                        0.00011095404802531663,
+                        0.00016643107203797488,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_num",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.001189079143925058,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        1189079.143925058,
+                        111476.16974297415,
+                        75865.72663063518,
+                        15482.801353190855,
+                        483.83754228721375,
+                        90.7195391788527,
+                        2.0775510294494857,
+                        0.6059523835894339
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_pnnlcm_step61",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=pnnlcm: emiss_opt = 4, emiss_inpt_opt = 101; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 61 (dt = 60 s), surface layer. Inputs are the dumped aerosol emission fields, the layer's specific volume and depth and MOSAIC's run-time section centre volumes; expected values are the real64 replay of mosaic_addemiss (kernels/emissions_driver), each section's increment over the step divided by dt, at 1e-9 of each vector's maximum. The in-model real32 increments differ from the replay by at most 4.7e-06 relative (cancellation in the large number mixing ratios).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 101,
+            "alt": 0.8779142498970032,
+            "dz": 63.06692123413086,
+            "volumcen": [
+              8.827217540445742e-17,
+              7.061774032356594e-16,
+              5.649419225885275e-15,
+              4.51953538070822e-14,
+              3.615628304566576e-13,
+              2.892502643653261e-12,
+              2.3140021149226087e-11,
+              1.851201691938087e-10
+            ],
+            "E_so4i": 0.0033872220665216446,
+            "E_so4j": 0.015645740553736687,
+            "E_so4c": 0.0037098147440701723,
+            "E_no3i": 0.0017742592608556151,
+            "E_no3j": 0.00790351815521717,
+            "E_no3c": 0.0019355554832145572,
+            "E_orgi": 0.015968332067131996,
+            "E_orgj": 0.06629277765750885,
+            "E_orgc": 0.007580925710499287,
+            "E_eci": 0.008226110599935055,
+            "E_ecj": 0.032743148505687714,
+            "E_ecc": 0.002096851821988821,
+            "E_pm25i": 0.01725870370864868,
+            "E_pm25j": 0.08274500072002411,
+            "E_pm_10": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_so4",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 8.711773661076265e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        1.3067660491614466e-05,
+                        9.80074536871082e-06,
+                        5.335961367409214e-05,
+                        8.711773661076265e-05,
+                        2.1779434152690662e-05,
+                        3.2669151229036226e-05,
+                        1.549258707051621e-05,
+                        3.6149369831204685e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_no3",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 4.400792730646098e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        6.6011890959691475e-06,
+                        4.95089182197686e-06,
+                        2.6954855475207352e-05,
+                        4.400792730646098e-05,
+                        1.1001981826615246e-05,
+                        1.6502972739922867e-05,
+                        8.083088758393664e-06,
+                        1.8860540436251885e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.6912773309304425e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        5.5369159963956684e-05,
+                        4.152686997296734e-05,
+                        0.000226090736519489,
+                        0.00036912773309304424,
+                        9.228193327326106e-05,
+                        0.00013842289990989112,
+                        3.165876458730357e-05,
+                        7.387045070370856e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_bc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.823185663553865e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2.7347784953307927e-05,
+                        2.0510838714981003e-05,
+                        0.00011167012189267402,
+                        0.0001823185663553865,
+                        4.5579641588846624e-05,
+                        6.83694623832697e-05,
+                        8.75667969082768e-06,
+                        2.0432252611931346e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oin",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 4.607360804575541e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        6.911041206863339e-05,
+                        5.1832809051474925e-05,
+                        0.00028220084928025265,
+                        0.0004607360804575541,
+                        0.00011518402011438852,
+                        0.00017277603017158322,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_num",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0012344111626187884,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        1234411.1626187882,
+                        115726.04649551114,
+                        78758.0038650006,
+                        16073.062013265366,
+                        502.2831879145427,
+                        94.178097733977,
+                        2.156754741130756,
+                        0.6290534661631378
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_pnnlcm_step1081",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=pnnlcm: emiss_opt = 4, emiss_inpt_opt = 101; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 1081 (dt = 60 s), surface layer. Inputs are the dumped aerosol emission fields, the layer's specific volume and depth and MOSAIC's run-time section centre volumes; expected values are the real64 replay of mosaic_addemiss (kernels/emissions_driver), each section's increment over the step divided by dt, at 1e-9 of each vector's maximum. The in-model real32 increments differ from the replay by at most 9.6e-05 relative (cancellation in the large number mixing ratios).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 101,
+            "alt": 0.8776172995567322,
+            "dz": 63.045536041259766,
+            "volumcen": [
+              8.827217540445742e-17,
+              7.061774032356594e-16,
+              5.649419225885275e-15,
+              4.51953538070822e-14,
+              3.615628304566576e-13,
+              2.892502643653261e-12,
+              2.3140021149226087e-11,
+              1.851201691938087e-10
+            ],
+            "E_so4i": 0.0017010000301524997,
+            "E_so4j": 0.007857000455260277,
+            "E_so4c": 0.0018629999831318855,
+            "E_no3i": 0.0008909999742172658,
+            "E_no3j": 0.003969000186771154,
+            "E_no3c": 0.0009720000089146197,
+            "E_orgi": 0.00801900029182434,
+            "E_orgj": 0.03329100087285042,
+            "E_orgc": 0.003806999884545803,
+            "E_eci": 0.004131000023335218,
+            "E_ecj": 0.016442999243736267,
+            "E_ecc": 0.0010529999854043126,
+            "E_pm25i": 0.008666999638080597,
+            "E_pm25j": 0.04155300185084343,
+            "E_pm_10": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_so4",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 4.374894690497196e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        6.562342035745794e-06,
+                        4.92175652681004e-06,
+                        2.679622997929602e-05,
+                        4.374894690497196e-05,
+                        1.093723672624299e-05,
+                        1.640585508936495e-05,
+                        7.780095706698871e-06,
+                        1.815355664896388e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_no3",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 2.2099983247503287e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        3.3149974871254e-06,
+                        2.4862481153437033e-06,
+                        1.3536239739095809e-05,
+                        2.2099983247503287e-05,
+                        5.524995811875822e-06,
+                        8.287493717813732e-06,
+                        4.059180442693827e-06,
+                        9.471421032952261e-06
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.8536924337641351e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2.780538650646221e-05,
+                        2.0854039879846428e-05,
+                        0.00011353866156805226,
+                        0.0001853692433764135,
+                        4.634231084410338e-05,
+                        6.951346626615414e-05,
+                        1.589845610592324e-05,
+                        3.7096397580487404e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_bc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 9.15570649345073e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        1.3733559740176232e-05,
+                        1.0300169805132117e-05,
+                        5.607870227238576e-05,
+                        9.155706493450729e-05,
+                        2.2889266233626823e-05,
+                        3.4333899350440696e-05,
+                        4.397445378300988e-06,
+                        1.026070588270219e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oin",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 2.3137329341729925e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        3.470599401259461e-05,
+                        2.6029495509446074e-05,
+                        0.0001417161422180957,
+                        0.00023137329341729924,
+                        5.784332335432481e-05,
+                        8.67649850314863e-05,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_num",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0006198988626986663,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        619898.8626986663,
+                        58115.51837799946,
+                        39550.83889613847,
+                        8071.599774722258,
+                        252.23749296007057,
+                        47.29452993001226,
+                        1.083083034294638,
+                        0.31589921833593354
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "chem170_emis_pnnlcm_step2879",
+          "description": "Reference: the chem_opt = 170 emissions capture (data/eqwefic/chem170_scm/run_emis.sh, MODE=pnnlcm: emiss_opt = 4, emiss_inpt_opt = 101; GNU gfortran real32 in model; fork ctessum-claude/WRF branch earthsciml-instrumented-chem170, the `emissions` hook around emissions_driver in chem/chem_driver.F) at model step 2879 (dt = 60 s), surface layer. Inputs are the dumped aerosol emission fields, the layer's specific volume and depth and MOSAIC's run-time section centre volumes; expected values are the real64 replay of mosaic_addemiss (kernels/emissions_driver), each section's increment over the step divided by dt, at 1e-9 of each vector's maximum. The in-model real32 increments differ from the replay by at most 0.00051 relative (cancellation in the large number mixing ratios).",
+          "parameter_overrides": {
+            "emiss_inpt_opt": 101,
+            "alt": 0.8717774152755737,
+            "dz": 62.625370025634766,
+            "volumcen": [
+              8.827217540445742e-17,
+              7.061774032356594e-16,
+              5.649419225885275e-15,
+              4.51953538070822e-14,
+              3.615628304566576e-13,
+              2.892502643653261e-12,
+              2.3140021149226087e-11,
+              1.851201691938087e-10
+            ],
+            "E_so4i": 0.00307346205227077,
+            "E_so4j": 0.014196467585861683,
+            "E_so4c": 0.003366172779351473,
+            "E_no3i": 0.0016099087661132216,
+            "E_no3j": 0.007171411532908678,
+            "E_no3c": 0.0017562640132382512,
+            "E_orgi": 0.01448917854577303,
+            "E_orgj": 0.06015204265713692,
+            "E_orgc": 0.006878701038658619,
+            "E_eci": 0.0074641224928200245,
+            "E_ecj": 0.029710134491324425,
+            "E_ecc": 0.0019026193767786026,
+            "E_pm25i": 0.01566002145409584,
+            "E_pm25j": 0.07508029043674469,
+            "E_pm_10": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "d_so4",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 7.904885711959761e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        1.1857328567939768e-05,
+                        8.892996425953943e-06,
+                        4.84174249857509e-05,
+                        7.904885711959761e-05,
+                        1.9762214279898473e-05,
+                        2.964332141984956e-05,
+                        1.4057657801077224e-05,
+                        3.280120153584624e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_no3",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.993189729643021e-14,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        5.989784594465086e-06,
+                        4.492338445845808e-06,
+                        2.4458287094060912e-05,
+                        3.9931897296430206e-05,
+                        9.982974324114953e-06,
+                        1.4974461486161328e-05,
+                        7.334429966843193e-06,
+                        1.7113669922635964e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 3.349389696202687e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        5.024084544303989e-05,
+                        3.76806340822794e-05,
+                        0.00020515011889240913,
+                        0.0003349389696202687,
+                        8.373474240506903e-05,
+                        0.00012560211360759983,
+                        2.872651870710156e-05,
+                        6.702854364990333e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_bc",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 1.6543215149856795e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        2.4814822724784912e-05,
+                        1.8611117043588568e-05,
+                        0.00010132719279287346,
+                        0.00016543215149856795,
+                        4.135803787464291e-05,
+                        6.203705681196251e-05,
+                        7.945632585623179e-06,
+                        1.8539809366453774e-05
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_oin",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 4.180625296635654e-13,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        6.270937944953513e-05,
+                        4.703203458715221e-05,
+                        0.00025606329941893307,
+                        0.00041806252966356536,
+                        0.00010451563241589134,
+                        0.00015677344862383702,
+                        0.0,
+                        0.0
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            },
+            {
+              "variable": "d_num",
+              "time": 0.0,
+              "reduce": "Linf_error",
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0011200795097434043,
+                "rel": 0.0
+              },
+              "reference": {
+                "op": "faq",
+                "output_idx": [
+                  "k"
+                ],
+                "args": [],
+                "ranges": {
+                  "k": {
+                    "from": "bin"
+                  }
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        1120079.5097434043,
+                        105007.45403844515,
+                        71463.40622061094,
+                        14584.368616450827,
+                        455.76151926418146,
+                        85.45528486201462,
+                        1.9569953346377589,
+                        0.5707903059360433
+                      ]
+                    },
+                    "k"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
