@@ -3,6 +3,8 @@
 Status values: `not started` · `instrumented` · `stub` (tests written, on this repo) · `physics` (tests pass locally) · `PR` · `merged`.
 `Existing` names an EarthSciModels file that already implements (part of) the component.
 
+**Merged components are local copies synced to EarthSciModels `main` `fc40c8c` (2026-11-11).** The review of #15-#23 changed physics as well as form, so the counts in the rows below predate it; current counts: `lib` 42 (incl. upstream's `lib/tests/wrf_templates.esm`), sfclayrev 618, slab 89, YSU 316, WSM6 794, Dudhia SW 307, RRTM LW 1453, `wildland_fire/fire_behavior` 1018, `wildland_fire/level_set` 24, all green on ESD `main` `85963d7`. What upstream changed and what this repo keeps that upstream lacks (follow-up PRs) is in the commit `Adopt the merged EarthSciModels #15-#23 components...`.
+
 ## EqWeather — reference suite (WRF v4.8.0)
 
 | Component | Sub-components (planned) | Fortran source | Existing in EarthSciModels | Status |
