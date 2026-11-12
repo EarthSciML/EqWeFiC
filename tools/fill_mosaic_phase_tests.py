@@ -38,7 +38,19 @@ SRC_DRV = ("Reference: WRF's own compiled aerosol_phase_state (main/libwrflib.a 
            "on a hand-specified bin by kernels/mosaic_therm_driver mode 2 (conform_electrolytes, then aerosol_phase_state), "
            "cases in chem170_scm/therm64/make_cases.py, recorded by the same esm_ps_* hooks; double precision")
 # column cases: (step, level, bin, slot, why)
-COL = []
+COL = [
+    (918, 1, 1, "c1", "upper leg at the surface, mid-afternoon, one Kelvin pass"),
+    (918, 21, 1, "c1", "upper leg, smallest section, two Kelvin passes"),
+    (1621, 49, 5, "c2", "upper leg at 71% relative humidity, the last call of the step"),
+    (1621, 56, 1, "c2", "upper leg in the upper troposphere, two Kelvin passes, the last call"),
+    (1, 53, 1, "c1", "effloresced below crh in the upper troposphere"),
+    (1621, 59, 8, "c2", "effloresced below crh at the model top, largest section, the last call"),
+    (1, 48, 1, "c1", "lower leg below the mutual deliquescence point"),
+    (1621, 56, 8, "c2", "lower leg below the mutual deliquescence point, largest section, the last call"),
+    (918, 57, 2, "c1", "excess-sulfate bin handed to mesa_ptc, which converges on mass (all solid)"),
+    (1, 11, 1, "c1", "handed to mesa_ptc, which converges on the fluxes"),
+    (1, 50, 2, "c2", "handed to mesa_ptc, which does NOT converge in nmax_mesa = 80 iterations"),
+]
 
 
 def tol(x):
