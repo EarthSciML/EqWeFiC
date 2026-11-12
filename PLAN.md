@@ -646,8 +646,50 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       exists yet to add their tendencies to: CBM-Z is a 0-D reaction
       system, and the column that lifts it over `lev` beside vertmx,
       Wesely, Madronich, emissions and wet deposition is the next coupling
-      step. Wet deposition over all 169 species needs a decision first --
-      esm cannot mount one component per element of a species index set.)
+      step. Wet deposition over all 169 species was decided the same day:
+      WetDepLS got a species axis (`spc`, metaparameters NSPEC/NGAS), and
+      `couplings/wetdep_ls_column.esm` now binds all 169 on one mount, 18/18.)
+    - **Scoping the CBM-Z chemistry column (2026-11-12, not built).** Probed
+      on the `be1fafe6d` binary in `data/eqwefic/phase3_probes/lift_column/`:
+      * **Pointwise lifting of a 0-D system over `lev` WORKS** through a
+        `variable_map` with `lifting: "pointwise"`: a 3-level column feeding
+        a per-level `T` into an inline 0-D reaction system gave the right
+        per-level tendency (`colrs_inline.esm`), and the same for a 0-D model
+        mounted by `models.<k>` ref (`col_scalar.esm`). So CBM-Z does not
+        need rewriting over `lev`; its rate constants (T, M, 14 j-values,
+        and the ten peroxy-pool concentrations that close back onto the
+        mechanism's own species) would be lifted with it.
+      * **But the runner's assertion surface on a lifted field is broken:**
+        `Linf_error` on the lifted observed errors (`array state ... has no
+        cells in var_map`), and element assertions `X[k]` only evaluate when
+        the same test ALSO carries a bare-name assertion on `X`, which itself
+        errors (`col_elem.esm` vs `col_elem2.esm`). Every lifted test is
+        therefore red as written. That is a CLI finding to report, not to work
+        around; it decides whether the column can be tested on `be1fafe6d`.
+      * **`reaction_systems.<k>` `{ref}` mounts are refused** on `be1fafe6d`
+        (`mount_form_unsupported`, `colrs.esm`), and `cbmz.esm` carries its
+        reaction system beside two models, so a column document cannot reach
+        it by a `models.<k>` ref either. Options: a `subsystems.<k>` edge from
+        a wrapper model, or the newer binary (spec says all five bindings now
+        mount the form) -- the latter needs the user's go-ahead.
+      * **Species axes are needed elsewhere too.** `chem_vertical_mixing.esm`
+        (vertmx) and `wrf_wesely/deposition_velocity.esm` are one species
+        per instance (`C[lev]`, scalar `vd`/`igas`), exactly the shape
+        WetDepLS had; they need the same `spc` axis (gases for Wesely; every
+        transported species for vertmx) before a 233-species column is one
+        mount each. Emissions already output per-species columns.
+      * **Photolysis is one level per instance.** `madronich_column.esm`
+        returns j-values at a single `jlev`, and its channel set is RADM2's
+        21; CBM-Z's rate constants read 14 `j_*`. The column needs the
+        j-values lifted over `lev` (or a `lev` axis in `j_values.esm`) and a
+        stated channel map -- check which `phot_opt` the chem170 run used.
+      * **What the coupling itself is:** per species, d c/dt = chemistry
+        (lifted CBM-Z, ppmv <-> molec/cm^3 by `conv = 1e-6 dens2con_a rho`)
+        + vertmx (with the Wesely flux as its lower boundary) + emissions
+        `dc_dt` + wetdep `dc_dt`; MOSAIC joins later. WRF applies these
+        operator-split in a fixed order, so the reference is a per-process
+        tendency at one state, not WRF's sequential step (CLAUDE.md,
+        operator-split schemes).
 1.5 Stubs live on this repo's `main` under `components/<domain>/…` mirroring
     the EarthSciModels layout. They are *not* opened as EarthSciModels PRs
     until their tests pass (finding 9).
