@@ -58,6 +58,11 @@ COL = [
     (918, 57, 2, "c1", "excess-sulfate bin handed to mesa_ptc, which converges on mass (all solid)"),
     (1, 11, 1, "c1", "handed to mesa_ptc, which converges on the fluxes"),
     (1, 50, 2, "c2", "handed to mesa_ptc, which does NOT converge in nmax_mesa = 80 iterations"),
+    (1, 1, 2, "c1", "handed to mesa_ptc, which dissolves every salt (all liquid), one Kelvin pass"),
+    (1, 1, 1, "c1", "handed to mesa_ptc, all liquid, two Kelvin passes"),
+    (1, 1, 6, "c1", "handed to mesa_ptc, which leaves the bin mixed, one Kelvin pass"),
+    (1, 43, 1, "c1", "handed to mesa_ptc, mixed, two Kelvin passes"),
+    (60, 59, 2, "c1", "handed to mesa_ptc, which converges on mass (all solid) on the second Kelvin pass"),
 ]
 
 
@@ -80,6 +85,10 @@ def build(v, k, b, slot, tid, why, src):
     base = {"rh_pc": rh, "t_k": float(v["ps_t_k"][k]), "num": float(s[SC["num"]]),
             "aer_t": v[f"ps_aert_in_{slot}"][:, b, k].tolist(), "elec": v[f"ps_elet_in_{slot}"][:22, b, k].tolist(),
             "water_hyst": float(s[SC["hyst_in"]])}
+    if path == 6:
+        # mesa_ptc's outcome, the consumer's inputs on this branch (the MESA equilibrium is solver, CLAUDE.md)
+        base["mesa_state"] = float(s[SC["state"]])
+        base["water_mesa"] = float(s[SC["water"]])
     assert float(v[f"ps_elet_in_{slot}"][22, b, k]) == 0.0
     a = [{"variable": "path", "time": 0.0, "expected": float(path), "tolerance": EXACT}]
     def put(var, val, coords=None, aa=a):
@@ -91,7 +100,23 @@ def build(v, k, b, slot, tid, why, src):
         aa.append({"variable": var, "time": 0.0, "expected": float(val), "tolerance": EXACT})
     put("water_up", s[SC["water_up"]])
     put("mass_dry", s[SC["mass_dry"]])
-    solid_late = path in (1, 4, 5) and niter > 1
+    mesa_solid = path == 6 and int(s[SC["state"]]) == 1
+    solid_late = (path in (1, 4, 5) or mesa_solid) and niter > 1
+    if path == 6:
+        # given MESA's phase and water: the state, the water and the Kelvin factors formed from them
+        put_exact("state", s[SC["state"]])
+        put_exact("jhyst", s[SC["jhyst"]])
+        put("water", s[SC["water"]])
+        for g in range(5):
+            put("kel", v[f"ps_kel_{slot}"][g, b, k], {"gas": g + 1})
+        if not solid_late:
+            put("kelvin", s[SC["kelvin"]])
+            a.append({"variable": "kelvin_residual", "time": 0.0, "expected": aw0 / float(s[SC["kelvin"]]) - x,
+                      "tolerance": {"rel": REL, "abs": 1e-14}})
+        if not mesa_solid:
+            for n in ("mass_wet", "vol_wet", "dpmv"):
+                put(n, s[SC[n]])
+            put("sigma_soln", s[SC["sigma"]])
     if path != 6:
         put_exact("state", s[SC["state"]])
         put_exact("jhyst", s[SC["jhyst"]])
@@ -118,14 +143,15 @@ def build(v, k, b, slot, tid, why, src):
             put("aer_l", v[f"ps_aerl_{slot}"][ia - 1, b, k], {"aer": ia})
             put("aer_s", v[f"ps_aers_{slot}"][ia - 1, b, k], {"aer": ia})
     names = ["", "efflorescence below crh, all solid", "upper hysteresis leg, fully liquid", "", "no salt present, all solid",
-             "below the mutual deliquescence point, all solid", "handed to mesa_ptc (only the branch, water_up and dry mass asserted)"]
+             "below the mutual deliquescence point, all solid",
+             "handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them"]
     head = f"{why[0].upper()}{why[1:]}: MESA path {path} ({names[path]}), {niter} Kelvin pass(es), relative humidity {rh:.4f}%."
     tail = f" {src}; tolerance rel {REL:g}, integer flags exactly."
     po = dict(base, ah2o_a=x)
     out = [{"id": tid, "description": head + " Evaluated at the water activity the Fortran's Kelvin iteration stopped at"
-            + (" (kelvin_residual is the update its tolerance declined to apply)." if path == 2 else
+            + (" (kelvin_residual is the update its tolerance declined to apply)." if path == 2 or (path == 6 and not solid_late) else
                "; on this solid branch K = 1 and the residual is exactly 0." if path != 6 and not solid_late else
-               "; kelvin is not asserted here: the Fortran leaves the first iterate's K in it (asserted at that iterate)." if solid_late else ".")
+               ("; kelvin is not asserted here: the Fortran leaves the first iterate's K in it" + (" (asserted at that iterate)." if path != 6 else ".")) if solid_late else ".")
             + tail, "parameter_overrides": po, "time_span": {"start": 0, "end": 1}, "assertions": a}]
     if niter == 2 and path != 6:
         a1 = []

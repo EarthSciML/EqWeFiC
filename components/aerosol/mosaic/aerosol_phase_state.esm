@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "MosaicAerosolPhaseState",
-    "description": "MOSAIC's phase state of ONE size bin: SUBROUTINE aerosol_phase_state of chem/module_mosaic_therm.F (WRF v4.8.0), with the branch decisions of SUBROUTINE mesa, do_full_deliquescence / adjust_liquid_aerosol / adjust_solid_aerosol, calculate_kelvin, drh_mutual and aerosol_water_up. ASTEM calls it for every bin at the start of each of its sub-steps, after conform_electrolytes has rebuilt the bin's total electrolytes; it decides whether the bin is solid, liquid or mixed, how much water it holds, and the Kelvin factors that raise the equilibrium vapour pressures of HNO3, HCl, NH3 over a small droplet.\n\nINPUTS a consumer supplies: rh_pc, t_k, the bin's number concentration, the total species and the total electrolytes (as conform_electrolytes left them), and water_a_hyst -- the water the bin carried on the upper hysteresis leg at the end of the previous MOSAIC step (0 on the lower leg).\n\nDRY MASS AND VOLUME. sum_a A_a mw_a (and A_a mw_a / rho_a), plus the charge-balance H+ aer_H = (2 SO4 + NO3 + Cl + MSA + 2 CO3) - (2 Ca + Na + NH4), which the Fortran adds as nmol straight into the ng and ncc sums (an implied 1 g/mol and 1 g/cm3, written as such in mosaic_phase_parameters.esm), times 1e-15.\n\nTHE BRANCH (SUBROUTINE mesa, template mesa_path), tried in this order at the current water activity x: (1) x < crh = 0.35 and X_T > 1 or X_T < 0 and neither Ca(NO3)2 nor CaCl2 above ptol_mol_astem = 0.01 mol percent: effloresced, ALL SOLID. (2) water_a_hyst > 0.5 water_a_up, where water_a_up is the ZSR water of the totals at a fixed a_w = 0.6 without the kappa term (mhyst_method = uporlo_waterhyst): the upper hysteresis leg, FULLY LIQUID, water = ZSR water of the TOTAL electrolytes at x. (6) 0 < X_T < 1, the excess-sulfate domain: handed to mesa_ptc. (4) no salt above ptol_mol_astem: ALL SOLID -- which includes a pure H2SO4 or a purely carbonaceous bin on the lower leg. (5) x*100 below the mutual deliquescence RH of the salts present (jsulf_poor/jsulf_rich of the salt code, drh_mutual's cubic in T plus 1, or 10% for Ca(NO3)2/CaCl2 mixtures): ALL SOLID. (6) otherwise mesa_ptc. MESA_PTC, the pseudo-transient solid-liquid equilibrium solver (mixed phases), IS NOT TRANSCRIBED HERE: where the branch is 6, only `path` (and the inputs-only water_up and mass_dry) mean anything. The Fortran's step-2 'negative water' exit cannot occur with non-negative amounts and is omitted.\n\nTHE KELVIN EQUILIBRIUM. On the liquid branch the wet volume V = vol_dry + 1e-3 W(x), the volume-mean diameter Dp = (6 V/(N pi))^(1/3), the solution tension sigma = sigma_water + 49 (1 - x), and K = 1 + t(1 + t/2 (1 + t/3)) with t = 72 sigma/(R T Dp) (R = 8.3144e7) give the water activity the curved surface allows, x' = rh_pc 0.01/K(x) (`aw_next`). The bin's water activity is the FIXED POINT x = x'(x): written here as its residual `kelvin_residual` = aw0/K(x) - x, a function of the state x = `ah2o_a`, which is an input. Every other output is evaluated at that x. aerosol_phase_state finds the fixed point by plain fixed-point iteration from x = aw0, stopping when |x' - x|/x <= 1e-2 (1e-6 above 99% RH) or after ten updates; that iteration, its tolerance, its cap and its pass counter are a numerical solver, not physics, and are not written here (CLAUDE.md: .esm files never implement a numerical solver). EarthSciIntegrator solves kelvin_residual = 0 for ah2o_a (a scalar `solve` node; see data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md, which also measures how far the Fortran's 1e-2 stop leaves it from the root). Because the branch is decided at x, a bin just above crh can be liquid at aw0 and solid at aw0/K(aw0) < crh: then the residual has no root (liquid gives K > 1 and wants x < crh; solid gives K = 1 and wants x = aw0), and the Fortran's answer -- solid, at the lowered x, with the first iterate's K left in kelvin(ibin) -- is an artefact of where its iteration stopped.\n\nOUTPUTS, at the state ah2o_a. aw_next and kelvin_residual, path, state (jaerosolstate; 0 where mesa_ptc decides), jhyst (jhyst_leg), water, mass/vol wet, dpmv, sigma_soln, kelvin, kel(gas) for H2SO4, HNO3, HCl, NH3, MSA (t = 4 sigma vbar/(R T Dp), 1 when solid), and the solid/liquid partition of species and electrolytes (liquid: all but CaSO4 and CaCO3 dissolve, Ca++ in the liquid is the Ca(NO3)2 + CaCl2; solid: everything stays solid). dpmv, sigma_soln, mass_wet and vol_wet are meaningful on the liquid branch only: on a solid exit the Fortran leaves whatever the previous pass, or the previous call, put there.\n\nFORTRAN_BUGS B29: sigma_water = 0.2358 tau^1.256 (1 - 0.625 tau) is the IAPWS surface tension of water in N/m (about 0.072), and calculate_kelvin adds it to 49 (1 - a_w), a term in dyn/cm; pure water's 72 dyn/cm enters as 0.072. The solution tension, and so every Kelvin factor, is too small: at 290 K and a_w = 0.6 it is 19.7 instead of 93.3 dyn/cm (every Kelvin term 4.7 times too small), and toward a_w = 1 it falls to 0.073 instead of 73 (a thousandfold). Reproduced as written; fixing it fails 65 assertions.\n\nPRECISION. Double-precision arithmetic with the default-real literals at their binary32 values (mosaic_phase_parameters.esm): 0.35, 0.01, 0.6, 1e-15, 1e-3, 3.1415926, 1./3. (formed in REAL), 647.15, 0.2358, 1.256, 1e-2, 1e-6. rh_pc itself is 100*relhumclm formed in default REAL.\n\nTESTS AND COVERAGE. Eleven calls from the chem170 aerosol_phase_state capture (dumps/chem170_mosaic_phase, WRF fork e277517c; reference namelist unchanged, fields shared with dumps/chem170_mosaic_therm bit-identical): the upper leg with one and two Kelvin passes, efflorescence below crh, lower-leg bins below their mutual DRH, and three mesa_ptc hand-offs (mass-converged, flux-converged and NOT converged in 80 iterations). Of the column's 15104 recorded calls, 6892 take the upper leg, 446 effloresce, 3692 sit below their mutual DRH, and 4074 go to mesa_ptc (206 of them unconverged); 1020 need a second Kelvin pass and none a third. A sweep of 480 non-mesa_ptc calls sampled across all 16 steps (not kept as tests) agreed bit for bit in 38055 of 39264 assertions and to 5.4e-15 relative at worst (water). Plus 14 hand-specified bins run through WRF's own compiled aerosol_phase_state (kernels/mosaic_therm_driver mode 2; chem170_scm/therm64/make_cases.py) for what the column does not show: liquid at 0.30 (Ca blocks efflorescence), 0.90 and 0.995 (the 1e-6 tolerance, three passes); efflorescence on the SECOND pass; the no-salt solids (H2SO4, carbon); ammonium sulfate and NaCl + NH4NO3 below their DRH. Every call is evaluated at the water activity the Fortran's Kelvin iteration STOPPED at (its final ah2o_a, an input here), where kelvin_residual is the update its tolerance declined to apply; a call that took a second pass is evaluated as well at its FIRST iterate aw0, where aw_next must be the second iterate the Fortran moved to (and, for the hand bin that effloresces on its second pass, kelvin is the first iterate's K the Fortran leaves in kelvin(ibin)). The 0.995 bin's middle iterate is not taped, so it is tested at its final iterate only. All at rel 1e-9 (the residual, a difference of two O(1) numbers, with an absolute floor of 1e-14), integer flags exactly. The Fortran's stopping point is NOT a target: data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md measures it against the converged root (median 1.9e-3, worst 1.0e-2 relative in ah2o_a; 1.6e-2 in the water). Mutation-checked (2026-11-12, after the iteration was removed): fixing B29 fails 78, aw_next formed from ah2o_a instead of aw0 5, K = 1 everywhere 24, a second-order Kelvin series 57, the residual's sign 18. (Before the rework, on the driver bins: crh = 0.30 failed 14, the double-precision pi 9 and 1/3 44, dropping aer_H from the dry mass 14.) The 63 mutual-DRH curves are pinned as a whole table (mdrh_table, the drh_mutual cubic at t_k) at six temperatures from 240 to 315 K through the driver (chem170_scm/therm64/mdrh) and at the column's top-level temperature from the capture, 63 assertions each (tools/fill_mosaic_mdrh_table_tests.py); perturbing any curve's leading coefficient by 1e-4 fails all seven. NOT covered: a bin whose ZSR water is exactly zero on the upper leg (aerosol_water then flags it all solid from inside the liquid branch). THE ROOT (2026-11-12): five liquid upper-leg column calls re-solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance tightened to 1e-13 (chem170_scm/solver_tol, out_kel_tight), tests kelvin_root_*: at that root kelvin_residual is zero within 2e-13 absolute (twice the tightened stopping test) and K, the water and aw_next at rel 1e-9. They include the call farthest from its root at the model's own setting (1.0e-2 in ah2o_a) and the driest (36.5% RH); a residual shifted by 1e-12 fails all five. couplings/mosaic_kelvin_equilibrium.esm states the root as an algebraic problem (ah2o_a an algebraic unknown, `0 ~ kelvin_residual`) with its run configuration beside it. Since 2026-11-12 the n-ary `and`/`or` of crh_ok, mdrh_table, elec_l, aer_l and aer_s are written as nested binary ones: the be1fafe6d binary evaluates only the first two arguments of an n-ary `and`/`or` (EarthSciAST main 3e1f9bb2f evaluates all), so before then the third and later conditions were dead; no assertion moved when they came alive. Surface tensions are declared mN/m, exactly dyn/cm, which `esm validate` does not parse.\n\nCELL AXES (2026-11-12). Every quantity of the bin carries the cell axes [lev, bin] ahead of its own axes, and every quantity of the grid cell (rh_pc, t_k, sigma_water, aw0, mdrh_table) carries [lev] (metaparameters NLEV and NBIN, both 1 by default), so a coupling evaluates every size section of every grid cell at once by binding NLEV and NBIN at the mount. The equations are the single-bin ones: an elementwise relation is written on bare names, whose operands esm-spec 4.3.4 aligns by index-set name, and only the reductions and gathers name the cell subscripts k (level) and b (section). The axes are the component's own because pointwise lifting, which would let a single-bin component be mounted per bin, applies to 0-D systems only (esm-spec 10.5).",
+    "description": "MOSAIC's phase state of ONE size bin: SUBROUTINE aerosol_phase_state of chem/module_mosaic_therm.F (WRF v4.8.0), with the branch decisions of SUBROUTINE mesa, do_full_deliquescence / adjust_liquid_aerosol / adjust_solid_aerosol, calculate_kelvin, drh_mutual and aerosol_water_up. ASTEM calls it for every bin at the start of each of its sub-steps, after conform_electrolytes has rebuilt the bin's total electrolytes; it decides whether the bin is solid, liquid or mixed, how much water it holds, and the Kelvin factors that raise the equilibrium vapour pressures of HNO3, HCl, NH3 over a small droplet.\n\nINPUTS a consumer supplies: rh_pc, t_k, the bin's number concentration, the total species and the total electrolytes (as conform_electrolytes left them), and water_a_hyst -- the water the bin carried on the upper hysteresis leg at the end of the previous MOSAIC step (0 on the lower leg).\n\nDRY MASS AND VOLUME. sum_a A_a mw_a (and A_a mw_a / rho_a), plus the charge-balance H+ aer_H = (2 SO4 + NO3 + Cl + MSA + 2 CO3) - (2 Ca + Na + NH4), which the Fortran adds as nmol straight into the ng and ncc sums (an implied 1 g/mol and 1 g/cm3, written as such in mosaic_phase_parameters.esm), times 1e-15.\n\nTHE BRANCH (SUBROUTINE mesa, template mesa_path), tried in this order at the current water activity x: (1) x < crh = 0.35 and X_T > 1 or X_T < 0 and neither Ca(NO3)2 nor CaCl2 above ptol_mol_astem = 0.01 mol percent: effloresced, ALL SOLID. (2) water_a_hyst > 0.5 water_a_up, where water_a_up is the ZSR water of the totals at a fixed a_w = 0.6 without the kappa term (mhyst_method = uporlo_waterhyst): the upper hysteresis leg, FULLY LIQUID, water = ZSR water of the TOTAL electrolytes at x. (6) 0 < X_T < 1, the excess-sulfate domain: handed to mesa_ptc. (4) no salt above ptol_mol_astem: ALL SOLID -- which includes a pure H2SO4 or a purely carbonaceous bin on the lower leg. (5) x*100 below the mutual deliquescence RH of the salts present (jsulf_poor/jsulf_rich of the salt code, drh_mutual's cubic in T plus 1, or 10% for Ca(NO3)2/CaCl2 mixtures): ALL SOLID. (6) otherwise mesa_ptc. MESA_PTC, the pseudo-transient solid-liquid equilibrium solver (mixed phases), IS NOT TRANSCRIBED HERE (CLAUDE.md: it is a solver; the equilibrium it approaches is couplings/mosaic_mesa_equilibrium.esm). Where the branch is 6 the consumer supplies its outcome, the phase mesa_state (1 all solid, 2 all liquid, 3 mixed; mesa_salt_equilibrium.esm's all_solid / all_liquid at MESA's solid) and the liquid water water_mesa at MESA's state, and this component forms from them what aerosol_phase_state does after mesa returns: the state, jhyst (upper only when all liquid), the water, and -- unless all solid -- the wet diameter and the Kelvin factors (calculate_kelvin on MESA's water), hence kelvin_residual; the solid/liquid partition outputs are the analytic branches' only (on path 6 the partition is MESA's solid itself). The Fortran's step-2 'negative water' exit cannot occur with non-negative amounts and is omitted.\n\nTHE KELVIN EQUILIBRIUM. On the liquid branch the wet volume V = vol_dry + 1e-3 W(x), the volume-mean diameter Dp = (6 V/(N pi))^(1/3), the solution tension sigma = sigma_water + 49 (1 - x), and K = 1 + t(1 + t/2 (1 + t/3)) with t = 72 sigma/(R T Dp) (R = 8.3144e7) give the water activity the curved surface allows, x' = rh_pc 0.01/K(x) (`aw_next`). The bin's water activity is the FIXED POINT x = x'(x): written here as its residual `kelvin_residual` = aw0/K(x) - x, a function of the state x = `ah2o_a`, which is an input. Every other output is evaluated at that x. aerosol_phase_state finds the fixed point by plain fixed-point iteration from x = aw0, stopping when |x' - x|/x <= 1e-2 (1e-6 above 99% RH) or after ten updates; that iteration, its tolerance, its cap and its pass counter are a numerical solver, not physics, and are not written here (CLAUDE.md: .esm files never implement a numerical solver). EarthSciIntegrator solves kelvin_residual = 0 for ah2o_a (a scalar `solve` node; see data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md, which also measures how far the Fortran's 1e-2 stop leaves it from the root). Because the branch is decided at x, a bin just above crh can be liquid at aw0 and solid at aw0/K(aw0) < crh: then the residual has no root (liquid gives K > 1 and wants x < crh; solid gives K = 1 and wants x = aw0), and the Fortran's answer -- solid, at the lowered x, with the first iterate's K left in kelvin(ibin) -- is an artefact of where its iteration stopped.\n\nOUTPUTS, at the state ah2o_a. aw_next and kelvin_residual, path, state (jaerosolstate; 0 where mesa_ptc decides), jhyst (jhyst_leg), water, mass/vol wet, dpmv, sigma_soln, kelvin, kel(gas) for H2SO4, HNO3, HCl, NH3, MSA (t = 4 sigma vbar/(R T Dp), 1 when solid), and the solid/liquid partition of species and electrolytes (liquid: all but CaSO4 and CaCO3 dissolve, Ca++ in the liquid is the Ca(NO3)2 + CaCl2; solid: everything stays solid). dpmv, sigma_soln, mass_wet and vol_wet are meaningful on the liquid branch only: on a solid exit the Fortran leaves whatever the previous pass, or the previous call, put there.\n\nFORTRAN_BUGS B29: sigma_water = 0.2358 tau^1.256 (1 - 0.625 tau) is the IAPWS surface tension of water in N/m (about 0.072), and calculate_kelvin adds it to 49 (1 - a_w), a term in dyn/cm; pure water's 72 dyn/cm enters as 0.072. The solution tension, and so every Kelvin factor, is too small: at 290 K and a_w = 0.6 it is 19.7 instead of 93.3 dyn/cm (every Kelvin term 4.7 times too small), and toward a_w = 1 it falls to 0.073 instead of 73 (a thousandfold). Reproduced as written; fixing it fails 65 assertions.\n\nPRECISION. Double-precision arithmetic with the default-real literals at their binary32 values (mosaic_phase_parameters.esm): 0.35, 0.01, 0.6, 1e-15, 1e-3, 3.1415926, 1./3. (formed in REAL), 647.15, 0.2358, 1.256, 1e-2, 1e-6. rh_pc itself is 100*relhumclm formed in default REAL.\n\nTESTS AND COVERAGE. Sixteen calls from the chem170 aerosol_phase_state capture (dumps/chem170_mosaic_phase, WRF fork e277517c; reference namelist unchanged, fields shared with dumps/chem170_mosaic_therm bit-identical): the upper leg with one and two Kelvin passes, efflorescence below crh, lower-leg bins below their mutual DRH, and eight mesa_ptc hand-offs (mass-converged on the first and on the second Kelvin pass, flux-converged all liquid with one and two passes, mixed with one and two passes, and NOT converged in 80 iterations), given mesa_ptc's outcome (mesa_state, water_mesa) as the consumer would supply it (2026-11-12: state, jhyst, water, the five Kelvin factors and, where the bin holds water, K, the residual, the wet diameter, the solution tension and the wet mass and volume; forming K from the ZSR water of the totals instead of MESA's water fails 35, forming it only on the upper leg 90). Of the column's 15104 recorded calls, 6892 take the upper leg, 446 effloresce, 3692 sit below their mutual DRH, and 4074 go to mesa_ptc (206 of them unconverged); 1020 need a second Kelvin pass and none a third. A sweep of 480 non-mesa_ptc calls sampled across all 16 steps (not kept as tests) agreed bit for bit in 38055 of 39264 assertions and to 5.4e-15 relative at worst (water). Plus 14 hand-specified bins run through WRF's own compiled aerosol_phase_state (kernels/mosaic_therm_driver mode 2; chem170_scm/therm64/make_cases.py) for what the column does not show: liquid at 0.30 (Ca blocks efflorescence), 0.90 and 0.995 (the 1e-6 tolerance, three passes); efflorescence on the SECOND pass; the no-salt solids (H2SO4, carbon); ammonium sulfate and NaCl + NH4NO3 below their DRH. Every call is evaluated at the water activity the Fortran's Kelvin iteration STOPPED at (its final ah2o_a, an input here), where kelvin_residual is the update its tolerance declined to apply; a call that took a second pass is evaluated as well at its FIRST iterate aw0, where aw_next must be the second iterate the Fortran moved to (and, for the hand bin that effloresces on its second pass, kelvin is the first iterate's K the Fortran leaves in kelvin(ibin)). The 0.995 bin's middle iterate is not taped, so it is tested at its final iterate only. All at rel 1e-9 (the residual, a difference of two O(1) numbers, with an absolute floor of 1e-14), integer flags exactly. The Fortran's stopping point is NOT a target: data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md measures it against the converged root (median 1.9e-3, worst 1.0e-2 relative in ah2o_a; 1.6e-2 in the water). Mutation-checked (2026-11-12, after the iteration was removed): fixing B29 fails 78, aw_next formed from ah2o_a instead of aw0 5, K = 1 everywhere 24, a second-order Kelvin series 57, the residual's sign 18. (Before the rework, on the driver bins: crh = 0.30 failed 14, the double-precision pi 9 and 1/3 44, dropping aer_H from the dry mass 14.) The 63 mutual-DRH curves are pinned as a whole table (mdrh_table, the drh_mutual cubic at t_k) at six temperatures from 240 to 315 K through the driver (chem170_scm/therm64/mdrh) and at the column's top-level temperature from the capture, 63 assertions each (tools/fill_mosaic_mdrh_table_tests.py); perturbing any curve's leading coefficient by 1e-4 fails all seven. NOT covered: a bin whose ZSR water is exactly zero on the upper leg (aerosol_water then flags it all solid from inside the liquid branch). THE ROOT (2026-11-12): five liquid upper-leg column calls re-solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance tightened to 1e-13 (chem170_scm/solver_tol, out_kel_tight), tests kelvin_root_*: at that root kelvin_residual is zero within 2e-13 absolute (twice the tightened stopping test) and K, the water and aw_next at rel 1e-9. They include the call farthest from its root at the model's own setting (1.0e-2 in ah2o_a) and the driest (36.5% RH); a residual shifted by 1e-12 fails all five. couplings/mosaic_kelvin_equilibrium.esm states the root as an algebraic problem (ah2o_a an algebraic unknown, `0 ~ kelvin_residual`) with its run configuration beside it. Since 2026-11-12 the n-ary `and`/`or` of crh_ok, mdrh_table, elec_l, aer_l and aer_s are written as nested binary ones: the be1fafe6d binary evaluates only the first two arguments of an n-ary `and`/`or` (EarthSciAST main 3e1f9bb2f evaluates all), so before then the third and later conditions were dead; no assertion moved when they came alive. Surface tensions are declared mN/m, exactly dyn/cm, which `esm validate` does not parse.\n\nCELL AXES (2026-11-12). Every quantity of the bin carries the cell axes [lev, bin] ahead of its own axes, and every quantity of the grid cell (rh_pc, t_k, sigma_water, aw0, mdrh_table) carries [lev] (metaparameters NLEV and NBIN, both 1 by default), so a coupling evaluates every size section of every grid cell at once by binding NLEV and NBIN at the mount. The equations are the single-bin ones: an elementwise relation is written on bare names, whose operands esm-spec 4.3.4 aligns by index-set name, and only the reductions and gathers name the cell subscripts k (level) and b (section). The axes are the component's own because pointwise lifting, which would let a single-bin component be mounted per bin, applies to 0-D systems only (esm-spec 10.5).",
     "authors": [
       "EqWeFiC"
     ],
@@ -441,6 +441,26 @@
             "bin"
           ]
         },
+        "mesa_state": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 1.0,
+          "description": "Read on path 6 only: the phase mesa_ptc's solid-liquid equilibrium gives the bin (jaerosolstate: 1 all solid, 2 all liquid, 3 mixed), supplied by the consumer from the MESA state (mesa_salt_equilibrium.esm all_solid / all_liquid at the equilibrium's solid electrolytes). mesa_ptc is a solver and is not written here (CLAUDE.md); the equilibrium it approaches is couplings/mosaic_mesa_equilibrium.esm."
+        },
+        "water_mesa": {
+          "type": "parameter",
+          "units": "kg/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Read on path 6 only, where the bin is not all solid: the liquid water at MESA's state (water_a as mesa_ptc leaves it: aerosol_water_zsr.esm on the liquid electrolytes ions_to_electrolytes forms from the totals less MESA's solid, at ah2o_a), supplied by the consumer."
+        },
         "aer_h": {
           "type": "unknown",
           "units": "nmol/m^3",
@@ -578,7 +598,7 @@
         "path": {
           "type": "unknown",
           "units": "1",
-          "description": "The MESA branch at water activity ah2o_a (see mesa_path). 6 means mesa_ptc decides the phase (mesa_salt_equilibrium.esm), which this component does not evaluate: none of its other outputs is meaningful there.",
+          "description": "The MESA branch at water activity ah2o_a (see mesa_path). 6 means mesa_ptc decides the phase: its solid-liquid partition is the consumer's (mesa_salt_equilibrium.esm, couplings/mosaic_mesa_equilibrium.esm), and this component takes the resulting phase and water (mesa_state, water_mesa) and forms the Kelvin factors, the water and the state from them; the partition outputs (elec_l/elec_s/aer_l/aer_s) are meaningful on the analytic paths only.",
           "shape": [
             "lev",
             "bin"
@@ -593,10 +613,28 @@
             "bin"
           ]
         },
+        "wet": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "1 where the bin holds liquid water at the end of mesa: path 2, or path 6 with MESA's phase not all solid. The Kelvin factors are formed only there; elsewhere aerosol_phase_state leaves the loop at once with K = 1."
+        },
+        "water_k": {
+          "type": "unknown",
+          "units": "kg/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "The liquid water the wet diameter and the Kelvin factor are formed from: the ZSR water of the totals on the analytic branches, MESA's water on path 6."
+        },
         "state": {
           "type": "unknown",
           "units": "1",
-          "description": "jaerosolstate: 2 all liquid (path 2), 1 all solid (paths 1, 4, 5), 0 where mesa_ptc decides (path 6, not transcribed).",
+          "description": "jaerosolstate: 2 all liquid (path 2), 1 all solid (paths 1, 4, 5), mesa_state on path 6 (1 all solid, 2 all liquid, 3 mixed).",
           "shape": [
             "lev",
             "bin"
@@ -605,7 +643,7 @@
         "jhyst": {
           "type": "unknown",
           "units": "1",
-          "description": "jhyst_leg on exit: 1 (upper) when liquid, 0 (lower) when solid.",
+          "description": "jhyst_leg on exit: 1 (upper) when all liquid (path 2, or path 6 with MESA's phase all liquid: aerosol_phase_state sets it after the Kelvin loop), 0 (lower) otherwise.",
           "shape": [
             "lev",
             "bin"
@@ -623,7 +661,7 @@
         "water": {
           "type": "unknown",
           "units": "kg/m^3",
-          "description": "Liquid water water_a: the ZSR water of the total electrolytes at ah2o_a when liquid, 0 when solid.",
+          "description": "Liquid water water_a: the ZSR water of the total electrolytes at ah2o_a on path 2, MESA's water on path 6 when the bin is not all solid, 0 when solid.",
           "shape": [
             "lev",
             "bin"
@@ -650,7 +688,7 @@
         "dpmv": {
           "type": "unknown",
           "units": "cm",
-          "description": "Volume-mean wet diameter of the liquid bin at ah2o_a.",
+          "description": "Volume-mean wet diameter of the bin holding water_k at ah2o_a (meaningful where wet).",
           "shape": [
             "lev",
             "bin"
@@ -668,7 +706,7 @@
         "kelvin": {
           "type": "unknown",
           "units": "1",
-          "description": "Kelvin factor kelvin(ibin) at ah2o_a: K(ah2o_a) when liquid, 1 otherwise (no curved liquid surface). (On a solid exit the Fortran leaves the PREVIOUS iterate's K in kelvin(ibin), an artefact of its loop; the tests assert that value at the previous iterate, where it belongs.)",
+          "description": "Kelvin factor kelvin(ibin) at ah2o_a: K(ah2o_a) where the bin holds liquid (wet), 1 otherwise (no curved liquid surface). (On a solid exit the Fortran leaves the PREVIOUS iterate's K in kelvin(ibin), an artefact of its loop; the tests assert that value at the previous iterate, where it belongs.)",
           "shape": [
             "lev",
             "bin"
@@ -677,7 +715,7 @@
         "kel": {
           "type": "unknown",
           "units": "1",
-          "description": "Kelvin factors of the condensing gases kel(iv), iv = H2SO4, HNO3, HCl, NH3, MSA: the series of 4 sigma vbar_iv/(R T Dp) when liquid; 1 when solid.",
+          "description": "Kelvin factors of the condensing gases kel(iv), iv = H2SO4, HNO3, HCl, NH3, MSA: the series of 4 sigma vbar_iv/(R T Dp) where the bin holds liquid (wet); 1 when solid.",
           "shape": [
             "lev",
             "bin",
@@ -745,7 +783,7 @@
         "kelvin_residual": {
           "type": "unknown",
           "units": "1",
-          "description": "THE RESIDUAL of the Kelvin equilibrium, aw0/K(ah2o_a) - ah2o_a: zero at the bin's equilibrium water activity. On the liquid branch K depends on ah2o_a through the ZSR water, so this is a scalar nonlinear equation in ah2o_a; on a solid branch K = 1 and the root is ah2o_a = aw0. Meaningless on path 6 (mesa_ptc decides, and its water is mesa_salt_equilibrium's).",
+          "description": "THE RESIDUAL of the Kelvin equilibrium, aw0/K(ah2o_a) - ah2o_a: zero at the bin's equilibrium water activity. On the liquid branch K depends on ah2o_a through the ZSR water, so this is a scalar nonlinear equation in ah2o_a; on a solid branch K = 1 and the root is ah2o_a = aw0. On path 6 K is formed from MESA's water (water_mesa), which itself depends on ah2o_a through MESA's equilibrium: there the Kelvin and MESA equilibria are one nested problem, and this residual is its Kelvin half at the given MESA state.",
           "shape": [
             "lev",
             "bin"
@@ -2086,7 +2124,7 @@
                       6.0
                     ]
                   },
-                  0.0,
+                  "mesa_state",
                   1.0
                 ]
               }
@@ -2101,8 +2139,49 @@
               {
                 "op": "==",
                 "args": [
-                  "path",
+                  "state",
                   2.0
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "wet",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "path",
+                      2.0
+                    ]
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "==",
+                        "args": [
+                          "path",
+                          6.0
+                        ]
+                      },
+                      {
+                        "op": "!=",
+                        "args": [
+                          "mesa_state",
+                          1.0
+                        ]
+                      }
+                    ]
+                  }
                 ]
               },
               1.0,
@@ -2147,6 +2226,23 @@
           }
         },
         {
+          "lhs": "water_k",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "==",
+                "args": [
+                  "path",
+                  6.0
+                ]
+              },
+              "water_mesa",
+              "water_zsr"
+            ]
+          }
+        },
+        {
           "lhs": "water",
           "rhs": {
             "op": "ifelse",
@@ -2159,7 +2255,20 @@
                 ]
               },
               "water_zsr",
-              0.0
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "wet",
+                      0.5
+                    ]
+                  },
+                  "water_mesa",
+                  0.0
+                ]
+              }
             ]
           }
         },
@@ -2202,7 +2311,7 @@
             "args": [],
             "name": "wet_diameter",
             "bindings": {
-              "w": "water_zsr"
+              "w": "water_k"
             }
           }
         },
@@ -2225,7 +2334,7 @@
               {
                 "op": ">",
                 "args": [
-                  "liquid",
+                  "wet",
                   0.5
                 ]
               },
@@ -2235,7 +2344,7 @@
                 "name": "kelvin_factor",
                 "bindings": {
                   "x": "ah2o_a",
-                  "w": "water_zsr"
+                  "w": "water_k"
                 }
               },
               1.0
@@ -2272,7 +2381,7 @@
                     {
                       "op": "index",
                       "args": [
-                        "liquid",
+                        "wet",
                         "k",
                         "b"
                       ]
@@ -13343,7 +13452,7 @@
         },
         {
           "id": "col_s918_lev57_bin2_c1",
-          "description": "Excess-sulfate bin handed to mesa_ptc, which converges on mass (all solid); model step 918, level 57, section 2 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc (only the branch, water_up and dry mass asserted)), 1 Kelvin pass(es), relative humidity 26.6555%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
+          "description": "Excess-sulfate bin handed to mesa_ptc, which converges on mass (all solid); model step 918, level 57, section 2 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 1 Kelvin pass(es), relative humidity 26.6555%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
           "parameter_overrides": {
             "rh_pc": 26.65547752380371,
             "t_k": 233.0,
@@ -13495,6 +13604,8 @@
               ]
             ],
             "water_hyst": 5.745568210705846e-21,
+            "mesa_state": 1.0,
+            "water_mesa": 0.0,
             "ah2o_a": 0.2665547692800736
           },
           "time_span": {
@@ -13540,12 +13651,147 @@
                 "lev": 1,
                 "bin": 1
               }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
             }
           ]
         },
         {
           "id": "col_s1_lev11_bin1_c1",
-          "description": "Handed to mesa_ptc, which converges on the fluxes; model step 1, level 11, section 1 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc (only the branch, water_up and dry mass asserted)), 1 Kelvin pass(es), relative humidity 55.8414%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
+          "description": "Handed to mesa_ptc, which converges on the fluxes; model step 1, level 11, section 1 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 1 Kelvin pass(es), relative humidity 55.8414%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
           "parameter_overrides": {
             "rh_pc": 55.84142303466797,
             "t_k": 300.4603271484375,
@@ -13697,6 +13943,8 @@
               ]
             ],
             "water_hyst": 5.183268130741289e-13,
+            "mesa_state": 2.0,
+            "water_mesa": 1.8029631822365935e-12,
             "ah2o_a": 0.558414217865149
           },
           "time_span": {
@@ -13742,12 +13990,199 @@
                 "lev": 1,
                 "bin": 1
               }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 1.8029631822365935e-12,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0284068069984824,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0171420007772827,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0113919538921032,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0130713889367007,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0292408252330791,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0097753315344096,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -0.00540584023266355,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 6.464513780164007e-15,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 4.98962137391289e-15,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 6.431959165997643e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 21.709321661087476,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
             }
           ]
         },
         {
           "id": "col_s1_lev50_bin2_c2",
-          "description": "Handed to mesa_ptc, which does NOT converge in nmax_mesa = 80 iterations; model step 1, level 50, section 2 of 8, the last call of the step: MESA path 6 (handed to mesa_ptc (only the branch, water_up and dry mass asserted)), 1 Kelvin pass(es), relative humidity 43.0949%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
+          "description": "Handed to mesa_ptc, which does NOT converge in nmax_mesa = 80 iterations; model step 1, level 50, section 2 of 8, the last call of the step: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 1 Kelvin pass(es), relative humidity 43.0949%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
           "parameter_overrides": {
             "rh_pc": 43.09485626220703,
             "t_k": 237.75926208496094,
@@ -13899,6 +14334,8 @@
               ]
             ],
             "water_hyst": 2.78838802977114e-12,
+            "mesa_state": 3.0,
+            "water_mesa": 7.444838139325977e-13,
             "ah2o_a": 0.4309485529896193
           },
           "time_span": {
@@ -13943,6 +14380,2070 @@
               "coords": {
                 "lev": 1,
                 "bin": 1
+              }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 3.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 7.444838139325977e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.026437080928316,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0159594313484277,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0106081279773866,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0121713153957137,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0272125069682463,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0091032376667137,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -0.0038876370162698737,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 2.5847684904076166e-14,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 1.7901943479709808e-14,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 1.1239130301180456e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 27.96373496091512,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            }
+          ]
+        },
+        {
+          "id": "col_s1_lev1_bin2_c1",
+          "description": "Handed to mesa_ptc, which dissolves every salt (all liquid), one Kelvin pass; model step 1, level 1, section 2 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 1 Kelvin pass(es), relative humidity 44.1459%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
+          "parameter_overrides": {
+            "rh_pc": 44.1458625793457,
+            "t_k": 306.1650695800781,
+            "num": 24.111597494884336,
+            "aer_t": [
+              [
+                [
+                  0.14543280583169735,
+                  0.0,
+                  0.0,
+                  0.14543282280439965,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.2028428673295216e-08,
+                  2.828404301872539e-15,
+                  0.00048819166969096774,
+                  0.02794229764644649,
+                  1.3971147762429355
+                ]
+              ]
+            ],
+            "elec": [
+              [
+                [
+                  0.0,
+                  2.2986919451239984e-08,
+                  0.1454327538436413,
+                  0.0,
+                  0.0,
+                  0.0,
+                  6.014214336647608e-09,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  2.828404301872539e-15,
+                  0.0
+                ]
+              ]
+            ],
+            "water_hyst": 2.7917480415781262e-12,
+            "mesa_state": 2.0,
+            "water_mesa": 6.240093219469132e-12,
+            "ah2o_a": 0.4414586159260878
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 6.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water_up",
+              "time": 0.0,
+              "expected": 1.120669795734797e-11,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_dry",
+              "time": 0.0,
+              "expected": 2.5107950694409857e-14,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 6.240093219469132e-12,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0183581477539776,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0110997019360184,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0073838217137283,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0084698947382253,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0188944346286708,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0063377717460946,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -0.0027802433950500083,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 3.134804421026751e-14,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 2.340386563968368e-14,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 1.228440681246412e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 27.439250087810194,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            }
+          ]
+        },
+        {
+          "id": "col_s1_lev1_bin1_c1",
+          "description": "Handed to mesa_ptc, all liquid, two Kelvin passes; model step 1, level 1, section 1 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 2 Kelvin pass(es), relative humidity 44.1459%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
+          "parameter_overrides": {
+            "rh_pc": 44.1458625793457,
+            "t_k": 306.1650695800781,
+            "num": 35.82890441267955,
+            "aer_t": [
+              [
+                [
+                  0.027013731713322008,
+                  0.0,
+                  0.0,
+                  0.02701373595649757,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.9801364744043818e-11,
+                  2.828404301872539e-15,
+                  2.13203916722096e-06,
+                  0.005190202496136014,
+                  0.259510190576022
+                ]
+              ]
+            ],
+            "elec": [
+              [
+                [
+                  0.0,
+                  4.253079072952248e-09,
+                  0.02701372319726035,
+                  0.0,
+                  0.0,
+                  0.0,
+                  9.900682372021909e-12,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  2.828404301872539e-15,
+                  0.0
+                ]
+              ]
+            ],
+            "water_hyst": 5.185594449902102e-13,
+            "mesa_state": 2.0,
+            "water_mesa": 1.1323846350728513e-12,
+            "ah2o_a": 0.43591564346947875
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 6.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water_up",
+              "time": 0.0,
+              "expected": 2.081612350275287e-12,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_dry",
+              "time": 0.0,
+              "expected": 4.663642183168278e-15,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 1.1323846350728513e-12,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0375051136279185,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0225928676742635,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0150009554870438,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0172169511231928,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0386112272973405,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0128689328968787,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -6.594802716314296e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 5.796026872026514e-15,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 4.3204726840591e-15,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 6.129610650877283e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 27.710855738184037,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            }
+          ]
+        },
+        {
+          "id": "col_s1_lev1_bin6_c1",
+          "description": "Handed to mesa_ptc, which leaves the bin mixed, one Kelvin pass; model step 1, level 1, section 6 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 1 Kelvin pass(es), relative humidity 44.1459%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
+          "parameter_overrides": {
+            "rh_pc": 44.1458625793457,
+            "t_k": 306.1650695800781,
+            "num": 0.04272508132540054,
+            "aer_t": [
+              [
+                [
+                  0.7281653167560649,
+                  0.0,
+                  0.0,
+                  0.7281653167560649,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.10304309154607666,
+                  2.828404301872539e-15,
+                  92.54333704039112,
+                  0.13990387169084856,
+                  6.995193058388657
+                ]
+              ]
+            ],
+            "elec": [
+              [
+                [
+                  0.0,
+                  0.05152154577304113,
+                  0.5736006794369415,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.05152154577303833,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  2.828404301872539e-15,
+                  0.0
+                ]
+              ]
+            ],
+            "water_hyst": 1.470788986087693e-11,
+            "mesa_state": 3.0,
+            "water_mesa": 3.3444583126277533e-11,
+            "ah2o_a": 0.4414586159260878
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 6.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water_up",
+              "time": 0.0,
+              "expected": 5.766370077528363e-11,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_dry",
+              "time": 0.0,
+              "expected": 2.2052045826238976e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 3.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 3.3444583126277533e-11,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0011705262761752,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0007101019443743,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0004731947117274,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.000542522125046,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0012044225966417,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.00040635594668,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -0.00017931646748181596,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 2.5396504297719974e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 1.5594849372332145e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 0.0001910292119589704,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 27.439250087810194,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            }
+          ]
+        },
+        {
+          "id": "col_s1_lev43_bin1_c1",
+          "description": "Handed to mesa_ptc, mixed, two Kelvin passes; model step 1, level 43, section 1 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 2 Kelvin pass(es), relative humidity 60.1324%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
+          "parameter_overrides": {
+            "rh_pc": 60.132415771484375,
+            "t_k": 257.5667724609375,
+            "num": 35.790676786801896,
+            "aer_t": [
+              [
+                [
+                  0.026984912022793055,
+                  0.0,
+                  0.0,
+                  0.026984912022793055,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.9780241348551565e-11,
+                  1.5823721562191813e-15,
+                  2.1297641901956433e-06,
+                  0.00518466525269145,
+                  0.2592333101121051
+                ]
+              ]
+            ],
+            "elec": [
+              [
+                [
+                  0.0,
+                  9.891702040798478e-12,
+                  0.02698491199311795,
+                  0.0,
+                  0.0,
+                  0.0,
+                  9.890120674275783e-12,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.5823721562191813e-15,
+                  0.0
+                ]
+              ]
+            ],
+            "water_hyst": 5.180061498788767e-13,
+            "mesa_state": 3.0,
+            "water_mesa": 1.77173832566749e-12,
+            "ah2o_a": 0.595200387649834
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 6.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water_up",
+              "time": 0.0,
+              "expected": 2.079391639375752e-12,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_dry",
+              "time": 0.0,
+              "expected": 4.6586666530048685e-15,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 3.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 1.77173832566749e-12,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0304878296410946,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0183904232259073,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0122190985892972,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.014021316557648,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0313838727356464,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0104844894717975,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -0.00011540560470946204,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 6.430405062825413e-15,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 4.956425117421867e-15,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 6.418987415230384e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 19.91293572594638,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            }
+          ]
+        },
+        {
+          "id": "col_s60_lev59_bin2_c1",
+          "description": "Handed to mesa_ptc, which converges on mass (all solid) on the second Kelvin pass; model step 60, level 59, section 2 of 8, the first call of the step: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 2 Kelvin pass(es), relative humidity 22.8572%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at; kelvin is not asserted here: the Fortran leaves the first iterate's K in it. Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist unchanged), aerosol_phase_state capture dumps/chem170_mosaic_phase (WRF fork earthsciml-instrumented-chem170, the esm_ps_* hooks); the thermodynamics runs in real(kind=8), a double-precision reference; tolerance rel 1e-09, integer flags exactly.",
+          "parameter_overrides": {
+            "rh_pc": 22.857206344604492,
+            "t_k": 233.0,
+            "num": 24.077053231110312,
+            "aer_t": [
+              [
+                [
+                  0.14570300540710734,
+                  0.0,
+                  0.0,
+                  0.14506173694249375,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.1984845832067077e-08,
+                  2.8680275688073506e-16,
+                  0.0004864275811983743,
+                  0.027855061127496663,
+                  1.3927511936609558
+                ]
+              ]
+            ],
+            "elec": [
+              [
+                [
+                  0.0,
+                  0.0,
+                  0.14506173694249375,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.1984845832067077e-08,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0006412564797674825,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  2.8680275688073506e-16,
+                  0.0
+                ]
+              ]
+            ],
+            "water_hyst": 1.1466984520960068e-26,
+            "mesa_state": 1.0,
+            "water_mesa": 0.0,
+            "ah2o_a": 0.22569886910404555
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 6.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water_up",
+              "time": 0.0,
+              "expected": 1.1279421524939614e-11,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_dry",
+              "time": 0.0,
+              "expected": 2.510194731575901e-14,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
               }
             }
           ]
@@ -28344,7 +30845,7 @@
         },
         {
           "id": "r_as85lo",
-          "description": "Hand-specified bin 'as85lo': lower leg, ammonium sulfate at rh 0.85 above its deliquescence point: handed to mesa_ptc (path 6): MESA path 6 (handed to mesa_ptc (only the branch, water_up and dry mass asserted)), 1 Kelvin pass(es), relative humidity 85.0000%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at. Reference: WRF's own compiled aerosol_phase_state (main/libwrflib.a of the chem170 build, the model's flags) run on a hand-specified bin by kernels/mosaic_therm_driver mode 2 (conform_electrolytes, then aerosol_phase_state), cases in chem170_scm/therm64/make_cases.py, recorded by the same esm_ps_* hooks; double precision; tolerance rel 1e-09, integer flags exactly.",
+          "description": "Hand-specified bin 'as85lo': lower leg, ammonium sulfate at rh 0.85 above its deliquescence point: handed to mesa_ptc (path 6): MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 1 Kelvin pass(es), relative humidity 85.0000%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: WRF's own compiled aerosol_phase_state (main/libwrflib.a of the chem170 build, the model's flags) run on a hand-specified bin by kernels/mosaic_therm_driver mode 2 (conform_electrolytes, then aerosol_phase_state), cases in chem170_scm/therm64/make_cases.py, recorded by the same esm_ps_* hooks; double precision; tolerance rel 1e-09, integer flags exactly.",
           "parameter_overrides": {
             "rh_pc": 85.0,
             "t_k": 290.0,
@@ -28496,6 +30997,8 @@
               ]
             ],
             "water_hyst": 0.0,
+            "mesa_state": 2.0,
+            "water_mesa": 4.4549083641217244e-10,
             "ah2o_a": 0.8499999810010195
           },
           "time_span": {
@@ -28541,12 +31044,199 @@
                 "lev": 1,
                 "bin": 1
               }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 4.4549083641217244e-10,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.005763873310095,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0034935161642062,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0023269156753396,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0026681922746008,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0059311779508415,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0019979774925851,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -0.001694894469735031,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 8.344908589829468e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 7.171575291093277e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 1.11055099599002e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 7.423214650291494,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
             }
           ]
         },
         {
           "id": "r_bisulf50lo",
-          "description": "Hand-specified bin 'bisulf50lo': lower leg, X_T = 0.75 (excess-sulfate domain): handed to mesa_ptc (path 6): MESA path 6 (handed to mesa_ptc (only the branch, water_up and dry mass asserted)), 1 Kelvin pass(es), relative humidity 50.0000%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at. Reference: WRF's own compiled aerosol_phase_state (main/libwrflib.a of the chem170 build, the model's flags) run on a hand-specified bin by kernels/mosaic_therm_driver mode 2 (conform_electrolytes, then aerosol_phase_state), cases in chem170_scm/therm64/make_cases.py, recorded by the same esm_ps_* hooks; double precision; tolerance rel 1e-09, integer flags exactly.",
+          "description": "Hand-specified bin 'bisulf50lo': lower leg, X_T = 0.75 (excess-sulfate domain): handed to mesa_ptc (path 6): MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 1 Kelvin pass(es), relative humidity 50.0000%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: WRF's own compiled aerosol_phase_state (main/libwrflib.a of the chem170 build, the model's flags) run on a hand-specified bin by kernels/mosaic_therm_driver mode 2 (conform_electrolytes, then aerosol_phase_state), cases in chem170_scm/therm64/make_cases.py, recorded by the same esm_ps_* hooks; double precision; tolerance rel 1e-09, integer flags exactly.",
           "parameter_overrides": {
             "rh_pc": 50.0,
             "t_k": 290.0,
@@ -28698,6 +31388,8 @@
               ]
             ],
             "water_hyst": 0.0,
+            "mesa_state": 2.0,
+            "water_mesa": 1.4576621952760728e-10,
             "ah2o_a": 0.4999999888241291
           },
           "time_span": {
@@ -28743,12 +31435,199 @@
                 "lev": 1,
                 "bin": 1
               }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 1.4576621952760728e-10,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0234827693629684,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0141840706594045,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0094308190599353,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0108195942915024,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0241705263991372,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0080936122928235,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -0.004014315740732077,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 4.922662277080578e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 3.949328972447147e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 9.10279480615536e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 24.573214266959123,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
             }
           ]
         },
         {
           "id": "r_cano3lo",
-          "description": "Hand-specified bin 'cano3lo': lower leg with Ca(NO3)2 and NH4Cl: mutual deliquescence point fixed at 10%, so mesa_ptc: MESA path 6 (handed to mesa_ptc (only the branch, water_up and dry mass asserted)), 2 Kelvin pass(es), relative humidity 40.0000%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at. Reference: WRF's own compiled aerosol_phase_state (main/libwrflib.a of the chem170 build, the model's flags) run on a hand-specified bin by kernels/mosaic_therm_driver mode 2 (conform_electrolytes, then aerosol_phase_state), cases in chem170_scm/therm64/make_cases.py, recorded by the same esm_ps_* hooks; double precision; tolerance rel 1e-09, integer flags exactly.",
+          "description": "Hand-specified bin 'cano3lo': lower leg with Ca(NO3)2 and NH4Cl: mutual deliquescence point fixed at 10%, so mesa_ptc: MESA path 6 (handed to mesa_ptc, whose outcome (phase and water) is given; asserted: the branch, the state, water and the Kelvin factors formed from them), 2 Kelvin pass(es), relative humidity 40.0000%. Evaluated at the water activity the Fortran's Kelvin iteration stopped at (kelvin_residual is the update its tolerance declined to apply). Reference: WRF's own compiled aerosol_phase_state (main/libwrflib.a of the chem170 build, the model's flags) run on a hand-specified bin by kernels/mosaic_therm_driver mode 2 (conform_electrolytes, then aerosol_phase_state), cases in chem170_scm/therm64/make_cases.py, recorded by the same esm_ps_* hooks; double precision; tolerance rel 1e-09, integer flags exactly.",
           "parameter_overrides": {
             "rh_pc": 40.0,
             "t_k": 290.0,
@@ -28900,6 +31779,8 @@
               ]
             ],
             "water_hyst": 0.0,
+            "mesa_state": 3.0,
+            "water_mesa": 1.0806135689037907e-10,
             "ah2o_a": 0.3959729083383845
           },
           "time_span": {
@@ -28937,6 +31818,193 @@
               "variable": "mass_dry",
               "time": 0.0,
               "expected": 3.425000012424166e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "state",
+              "time": 0.0,
+              "expected": 3.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "jhyst",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 1.0806135689037907e-10,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0297964724656579,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 1
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0179757823883604,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 2
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0119444150221335,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 3
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0137058458312438,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 4
+              }
+            },
+            {
+              "variable": "kel",
+              "time": 0.0,
+              "expected": 1.0306718957778733,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1,
+                "gas": 5
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0102489967894126,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": -3.092539110155501e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-14
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "mass_wet",
+              "time": 0.0,
+              "expected": 4.505613632654347e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "vol_wet",
+              "time": 0.0,
+              "expected": 3.434712330912341e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "dpmv",
+              "time": 0.0,
+              "expected": 8.688879448682946e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              },
+              "coords": {
+                "lev": 1,
+                "bin": 1
+              }
+            },
+            {
+              "variable": "sigma_soln",
+              "time": 0.0,
+              "expected": 29.670541210760607,
               "tolerance": {
                 "rel": 1e-09,
                 "abs": 0.0
