@@ -27,6 +27,8 @@ tolerance-study build, mesa64/make_tight_cases.py): the rate zero and g in compl
 """
 import gzip, json, os, sys, glob
 import numpy as np
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mosaic_cell_axes import cell_axes  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMP = os.path.join(HERE, '..', 'components', 'aerosol', 'mosaic')
@@ -433,7 +435,7 @@ def main(d):
                                (os.path.join(HERE, '..', 'couplings', 'mosaic_mesa_salt_rates.esm'), 'MesaRates', pass_sel)):
         p = name
         doc = json.load(open(p))
-        doc['models'][model]['tests'] = tests
+        doc['models'][model]['tests'] = cell_axes(doc, model, tests, p)
         with open(p, 'w') as f:
             json.dump(doc, f, indent=2); f.write('\n')
         print(name, len(tests), 'tests', sum(len(t['assertions']) for t in tests), 'assertions')

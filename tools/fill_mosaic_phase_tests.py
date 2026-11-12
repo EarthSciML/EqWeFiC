@@ -32,6 +32,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 from esm_dump import load  # noqa: E402
+from mosaic_cell_axes import cell_axes  # noqa: E402
 
 COMP = os.path.join(os.path.dirname(__file__), "..", "components", "aerosol", "mosaic", "aerosol_phase_state.esm")
 REL = 1e-9
@@ -205,6 +206,7 @@ def main(dump_dir, drv, tight=None):
     doc = json.load(open(COMP))
     # the mdrh_table_* tests belong to tools/fill_mosaic_mdrh_table_tests.py: keep them
     keep = [t for t in doc["models"]["MosaicAerosolPhaseState"]["tests"] if t["id"].startswith("mdrh_table_")]
+    cell_axes(doc, "MosaicAerosolPhaseState", tests, COMP)
     doc["models"]["MosaicAerosolPhaseState"]["tests"] = tests + keep
     with open(COMP, "w") as f:
         json.dump(doc, f, indent=2)

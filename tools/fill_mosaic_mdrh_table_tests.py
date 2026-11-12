@@ -16,6 +16,8 @@ Other tests of the component are left untouched.
 """
 import glob, json, os, sys
 import numpy as np
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mosaic_cell_axes import cell_axes  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMP = os.path.join(HERE, '..', 'components', 'aerosol', 'mosaic', 'aerosol_phase_state.esm')
@@ -67,7 +69,7 @@ def main(data):
                           "the column's last MOSAIC call (level 59)."))
     doc = json.load(open(COMP))
     mdl = doc['models']['MosaicAerosolPhaseState']
-    mdl['tests'] = [t for t in mdl['tests'] if not t['id'].startswith('mdrh_table_')] + tests
+    mdl['tests'] = [t for t in mdl['tests'] if not t['id'].startswith('mdrh_table_')] + cell_axes(doc, 'MosaicAerosolPhaseState', tests, COMP)
     with open(COMP, 'w') as fh:
         json.dump(doc, fh, indent=2); fh.write('\n')
     print(len(tests), 'table tests,', 63 * len(tests), 'assertions')
