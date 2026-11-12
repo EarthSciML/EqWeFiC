@@ -639,6 +639,15 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     - **Emissions, wet scavenging, cloud chemistry and convective tracer
       transport stay off** (the last has no New Tiedtke path in WRF-Chem), so
       they remain stage-1 gaps, as they were for RADM2.
+      (Update 2026-11-12: emissions and `wetdep_ls` were captured in
+      separate runs and are now components plus two coupled documents,
+      `couplings/emissions_column.esm` (208/208) and
+      `couplings/wetdep_ls_column.esm` (108/108). No chemistry column
+      exists yet to add their tendencies to: CBM-Z is a 0-D reaction
+      system, and the column that lifts it over `lev` beside vertmx,
+      Wesely, Madronich, emissions and wet deposition is the next coupling
+      step. Wet deposition over all 169 species needs a decision first --
+      esm cannot mount one component per element of a species index set.)
 1.5 Stubs live on this repo's `main` under `components/<domain>/…` mirroring
     the EarthSciModels layout. They are *not* opened as EarthSciModels PRs
     until their tests pass (finding 9).
