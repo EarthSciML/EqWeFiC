@@ -138,13 +138,24 @@ def _eval(expr: str, ns: dict[str, Any]) -> Any:
 
 
 # --------------------------------------------------------------------------- esm AST
-def _const_gather(values: np.ndarray, axis: str) -> dict[str, Any]:
+def _const_gather(values: np.ndarray, axis: Any) -> dict[str, Any]:
     """faq(k from axis; index(const [...], k)) -- an inline column literal.
+
+    ``axis`` may also be a LIST of index-set names, for a field shaped over
+    several axes (e.g. ``["dep", "lev"]``): ``values`` is then reshaped to that
+    rank (row-major, last axis fastest) and written as a nested ``const``
+    gathered by one symbol per axis.
 
     `faq` since 2026-09-20; the `aggregate` spelling this used to emit is the
     pre-1.1.0 alias and is REMOVED at esm 2.0.0.  Files written before that date
     still carry it and warn on load until they are re-filled.
     """
+    if isinstance(axis, (list, tuple)):
+        syms = [f"i{n + 1}" for n in range(len(axis))]
+        arr = np.asarray(values, dtype=float)
+        return {"op": "faq", "output_idx": syms, "args": [],
+                "ranges": {sy: {"from": ax} for sy, ax in zip(syms, axis)},
+                "expr": {"op": "index", "args": [{"op": "const", "args": [], "value": arr.tolist()}, *syms]}}
     return {"op": "faq", "output_idx": ["k"], "args": [], "ranges": {"k": {"from": axis}},
             "expr": {"op": "index", "args": [{"op": "const", "args": [], "value": [float(x) for x in values]}, "k"]}}
 
@@ -152,7 +163,9 @@ def _const_gather(values: np.ndarray, axis: str) -> dict[str, Any]:
 def _fields_library(test: dict[str, Any], ns: dict[str, Any], esm_name: str) -> dict[str, Any]:
     templates = {}
     for op_name, spec in test["fields"].items():
-        vals = np.asarray(_eval(spec["expr"], ns), dtype=float).reshape(-1)
+        vals = np.asarray(_eval(spec["expr"], ns), dtype=float)
+        if not isinstance(spec.get("axis"), (list, tuple)):
+            vals = vals.reshape(-1)
         # A field with no "axis" is a SCALAR input: the body is a bare literal, not a
         # column gather.  esm-spec 6.6 parameter_overrides admit scalars, but only of the
         # model under test -- a scalar a MOUNTED component reads has no other way in, so
@@ -199,7 +212,9 @@ def _assertions(test: dict[str, Any], ns: dict[str, Any]) -> list[dict[str, Any]
         val = _eval(a["expr"], ns)
         base = {"variable": a["variable"], "time": float(a.get("time", 0.0))}
         if "reduce" in a:
-            arr = np.asarray(val, dtype=float).reshape(-1)
+            arr = np.asarray(val, dtype=float)
+            if not isinstance(a["axis"], (list, tuple)):
+                arr = arr.reshape(-1)
             d = dict(base, reduce=a["reduce"], expected=0.0, reference=_const_gather(arr, a["axis"]))
             if "tolerance" in a:
                 d["tolerance"] = _tol(a["tolerance"])

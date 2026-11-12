@@ -1,0 +1,592 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "ntiedtke_parcel_templates",
+    "description": "The test-parcel step of WRF New Tiedtke (`cutypen`'s shallow ascent and deep departure-level scan; cuascn's updraught has the same shape), as scalar templates, so that each ascent is written once and every component that lifts a parcel applies the same algebra: entrain (the shared EarthSciDiscretizations plume stencil), condense (`up_adjust_T`/`up_adjust_q` of moist_thermodynamics.esm), refreeze, re-form the dry static energy, load the virtual temperature, compare with the environment, advance the kinetic energy, and locate the cloud base. A consumer mounts lib/wrf_constants.esm as `wrf` and ntiedtke_parameters.esm as `par`, and this file brings moist_thermodynamics.esm and the ESD stencil with it.",
+    "license": "MIT",
+    "tags": [
+      "wrf",
+      "cumulus",
+      "ntiedtke",
+      "template-library"
+    ]
+  },
+  "expression_template_imports": [
+    {
+      "ref": "./moist_thermodynamics.esm"
+    },
+    {
+      "ref": "${ESD_ROOT}/grids/column_nonuniform_1d/stencils/entraining_plume_lev_interior.esm"
+    }
+  ],
+  "expression_templates": {
+    "entrain_step": {
+      "params": [
+        "prev",
+        "env_prev",
+        "env",
+        "eta",
+        "dz"
+      ],
+      "description": "A parcel value after entraining over one step of height dz: the implicit-trapezoidal step of dphi/dz = eta (phi_env - phi) from `prev` at the lower half level, environment `env_prev` there and `env` at the upper one, with the rate frozen at its upper-end value eta as the scheme writes it -- `(coef (env_prev + env) + (1 - coef) prev)/(1 + coef)`, coef = eta dz/2. The step is the shared EarthSciDiscretizations plume stencil (grids/column_nonuniform_1d/stencils/entraining_plume_lev_interior) given eta at both ends and no source.",
+      "body": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "entraining_plume_lev_interior",
+        "bindings": {
+          "phi_prev": "prev",
+          "phi_env_prev": "env_prev",
+          "phi_env": "env",
+          "lam_prev": "eta",
+          "lam": "eta",
+          "src": 0.0,
+          "ds": "dz"
+        }
+      }
+    },
+    "ke_step": {
+      "params": [
+        "prev",
+        "eta",
+        "acc",
+        "dz"
+      ],
+      "description": "The parcel's kinetic energy per unit mass after one step of dK/dz = 2 (B - eta K): the same plume stencil with environment 0, rate 2 eta and source 2 B, B = `acc` the buoyant acceleration over the step. It reproduces the scheme's `((1 - 2 coef) K + 2 dz B)/(1 + 2 coef)` bit for bit.",
+      "body": {
+        "op": "apply_expression_template",
+        "args": [],
+        "name": "entraining_plume_lev_interior",
+        "bindings": {
+          "phi_prev": "prev",
+          "phi_env_prev": 0.0,
+          "phi_env": 0.0,
+          "lam_prev": {
+            "op": "*",
+            "args": [
+              2.0,
+              "eta"
+            ]
+          },
+          "lam": {
+            "op": "*",
+            "args": [
+              2.0,
+              "eta"
+            ]
+          },
+          "src": {
+            "op": "*",
+            "args": [
+              2.0,
+              "acc"
+            ]
+          },
+          "ds": "dz"
+        }
+      }
+    },
+    "temperature_from_dse": {
+      "params": [
+        "dse",
+        "phi"
+      ],
+      "description": "Temperature of air with dry static energy `dse` at geopotential `phi`: (dse - phi)/cp.",
+      "body": {
+        "op": "*",
+        "args": [
+          {
+            "op": "-",
+            "args": [
+              "dse",
+              "phi"
+            ]
+          },
+          "par.rcpd"
+        ]
+      }
+    },
+    "freezing_amount": {
+      "params": [
+        "dq",
+        "tt",
+        "tt_below"
+      ],
+      "description": "Condensate that changes phase over a step: the water `dq` condensed at temperature tt times the change of the ICE fraction 1 - foealfa between tt and the parcel's temperature tt_below one level down (cutypen and cuascn's zlglac). Its latent heat L_f goes into the parcel.",
+      "body": {
+        "op": "*",
+        "args": [
+          "dq",
+          {
+            "op": "-",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foealfa",
+                    "bindings": {
+                      "tt": "tt"
+                    }
+                  }
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "foealfa",
+                    "bindings": {
+                      "tt": "tt_below"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "parcel_dse": {
+      "params": [
+        "phi",
+        "tt",
+        "dl"
+      ],
+      "description": "The parcel's dry static energy re-formed after condensation: phi + cp (tt + (L_f/cp) dl), dl the freezing amount.",
+      "body": {
+        "op": "+",
+        "args": [
+          "phi",
+          {
+            "op": "*",
+            "args": [
+              "wrf.cp",
+              {
+                "op": "+",
+                "args": [
+                  "tt",
+                  {
+                    "op": "*",
+                    "args": [
+                      "par.ralfdcp",
+                      "dl"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "virtual_temperature": {
+      "params": [
+        "tt",
+        "qq"
+      ],
+      "description": "Virtual temperature without condensate loading, tt (1 + (R_v/R_d - 1) qq).",
+      "body": {
+        "op": "*",
+        "args": [
+          "tt",
+          {
+            "op": "+",
+            "args": [
+              1.0,
+              {
+                "op": "*",
+                "args": [
+                  "par.vtmpc1",
+                  "qq"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "parcel_virtual_temperature": {
+      "params": [
+        "tt",
+        "qq",
+        "ll",
+        "dl"
+      ],
+      "description": "The parcel's virtual temperature WITH condensate loading and the freezing heat, tt (1 + (R_v/R_d - 1) qq - ll) + (L_f/cp) dl.",
+      "body": {
+        "op": "+",
+        "args": [
+          {
+            "op": "*",
+            "args": [
+              "tt",
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "*",
+                        "args": [
+                          "par.vtmpc1",
+                          "qq"
+                        ]
+                      }
+                    ]
+                  },
+                  "ll"
+                ]
+              }
+            ]
+          },
+          {
+            "op": "*",
+            "args": [
+              "par.ralfdcp",
+              "dl"
+            ]
+          }
+        ]
+      }
+    },
+    "buoyancy": {
+      "params": [
+        "tv",
+        "tv_env"
+      ],
+      "description": "Fractional virtual-temperature excess of a parcel over its environment, (tv - tv_env)/tv_env.",
+      "body": {
+        "op": "/",
+        "args": [
+          {
+            "op": "-",
+            "args": [
+              "tv",
+              "tv_env"
+            ]
+          },
+          "tv_env"
+        ]
+      }
+    },
+    "lcl_pressure": {
+      "params": [
+        "tt",
+        "qq",
+        "pp"
+      ],
+      "description": "Pressure of the lifting condensation level of a parcel at (tt, qq) on pressure level pp, by one Newton step along the dry adiabat: pp + dq/(dq_sat/dT dT/dp), with dq = min(0, qq - q_sat) the parcel's sub-saturation (non-positive, so the result lies above pp), q_sat the capped saturation mixing ratio with its virtual-temperature correction, dq_sat/dT the liquid-fraction blend of the two Clausius-Clapeyron factors, and dT/dp = R_d T/(cp p). The cloud-base block of cutypen's two ascents.",
+      "body": {
+        "op": "+",
+        "args": [
+          "pp",
+          {
+            "op": "/",
+            "args": [
+              {
+                "op": "min",
+                "args": [
+                  0.0,
+                  {
+                    "op": "-",
+                    "args": [
+                      "qq",
+                      {
+                        "op": "*",
+                        "args": [
+                          {
+                            "op": "apply_expression_template",
+                            "args": [],
+                            "name": "qsat_capped",
+                            "bindings": {
+                              "tt": "tt",
+                              "pp": "pp"
+                            }
+                          },
+                          {
+                            "op": "/",
+                            "args": [
+                              1.0,
+                              {
+                                "op": "-",
+                                "args": [
+                                  1.0,
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      "par.vtmpc1",
+                                      {
+                                        "op": "apply_expression_template",
+                                        "args": [],
+                                        "name": "qsat_capped",
+                                        "bindings": {
+                                          "tt": "tt",
+                                          "pp": "pp"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          {
+                            "op": "+",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  {
+                                    "op": "apply_expression_template",
+                                    "args": [],
+                                    "name": "foealfa",
+                                    "bindings": {
+                                      "tt": "tt"
+                                    }
+                                  },
+                                  {
+                                    "op": "/",
+                                    "args": [
+                                      "par.c5les",
+                                      {
+                                        "op": "^",
+                                        "args": [
+                                          {
+                                            "op": "-",
+                                            "args": [
+                                              "tt",
+                                              "par.c4les"
+                                            ]
+                                          },
+                                          2
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "*",
+                                "args": [
+                                  {
+                                    "op": "-",
+                                    "args": [
+                                      1.0,
+                                      {
+                                        "op": "apply_expression_template",
+                                        "args": [],
+                                        "name": "foealfa",
+                                        "bindings": {
+                                          "tt": "tt"
+                                        }
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "/",
+                                    "args": [
+                                      "par.c5ies",
+                                      {
+                                        "op": "^",
+                                        "args": [
+                                          {
+                                            "op": "-",
+                                            "args": [
+                                              "tt",
+                                              "par.c4ies"
+                                            ]
+                                          },
+                                          2
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "/",
+                            "args": [
+                              1.0,
+                              {
+                                "op": "-",
+                                "args": [
+                                  1.0,
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      "par.vtmpc1",
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          {
+                                            "op": "apply_expression_template",
+                                            "args": [],
+                                            "name": "foeewm",
+                                            "bindings": {
+                                              "tt": "tt"
+                                            }
+                                          },
+                                          "pp"
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          {
+                            "op": "apply_expression_template",
+                            "args": [],
+                            "name": "qsat_capped",
+                            "bindings": {
+                              "tt": "tt",
+                              "pp": "pp"
+                            }
+                          },
+                          {
+                            "op": "/",
+                            "args": [
+                              1.0,
+                              {
+                                "op": "-",
+                                "args": [
+                                  1.0,
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      "par.vtmpc1",
+                                      {
+                                        "op": "apply_expression_template",
+                                        "args": [],
+                                        "name": "qsat_capped",
+                                        "bindings": {
+                                          "tt": "tt",
+                                          "pp": "pp"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "wrf.r_d",
+                          "tt"
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          "wrf.cp",
+                          "pp"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lcl_pressure_held": {
+      "params": [
+        "tt",
+        "qq",
+        "pp"
+      ],
+      "description": "`lcl_pressure` as cutypen HOLDS it: truncated to whole pascals, because the local it is stored in, `zcbase`, is declared INTEGER (FORTRAN_BUGS N114). floor is Fortran's truncation for a positive pressure.",
+      "body": {
+        "op": "floor",
+        "args": [
+          {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "lcl_pressure",
+            "bindings": {
+              "tt": "tt",
+              "qq": "qq",
+              "pp": "pp"
+            }
+          }
+        ]
+      }
+    },
+    "base_is_low": {
+      "params": [
+        "p_lcl",
+        "p_here",
+        "p_below"
+      ],
+      "description": "1 when the condensation pressure p_lcl lies strictly nearer the lower half level p_below than the upper one p_here, so cutypen places the cloud base at the LOWER half level: `zcbase - paph(jk) > paph(jk+1) - zcbase`.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          {
+            "op": ">",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  "p_lcl",
+                  "p_here"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  "p_below",
+                  "p_lcl"
+                ]
+              }
+            ]
+          },
+          1.0,
+          0.0
+        ]
+      }
+    }
+  }
+}

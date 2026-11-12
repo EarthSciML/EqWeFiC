@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "NTiedtkeShallowAscent",
-    "description": "The SHALLOW phase of `cutypen`, the convection trigger of WRF's New Tiedtke scheme (`phys/physics_mmm/cu_ntiedtke.F90:1221-1515`, WRF 4.8): a test parcel launched from the lowest layer with a surface-flux excess, lifted through the column, and classified as a shallow cloud (`ktype = 2`) if it rises into cloud and stops within 200 hPa of its base. It runs before the deep departure-level scan, which can override its verdict (the tape shows this: the ascent runs at 14 of the 16 dumped steps and classifies as shallow at only one).\n\nLAUNCH. When the surface virtual-temperature flux is upward the parcel leaves the lowest layer with velocity w = 1.2 (0.001 + 0.6 (phi/(rho T)) (hfx/cp + 0.608 T qfx))^(1/3), a Deardorff convective velocity, and with temperature and humidity excesses 1.5 hfx/(rho cp w) and 1.5 qfx/(rho w) over the lowest half level; its kinetic energy starts at w^2/2. Otherwise nothing is launched and every array is left as cuinin handed it.\n\nONE LEVEL OF THE ASCENT is two operations. First the parcel ENTRAINS from half level k+1 to k: its dry static energy s and humidity q obey the entraining-plume ODE dphi/dz = eta (phi_env - phi) with eta = 0.8/z + 2e-4 (Jakob and Siebesma 2003), integrated by one implicit-trapezoidal step -- the routine's `dh = (coef (dhen[k+1] + dhen[k]) + (1 - coef) dh[k+1])/(1 + coef)` is exactly that step with the rate frozen at the upper end, and it is taken here by the shared EarthSciDiscretizations plume stencil (grids/column_nonuniform_1d/stencils/entraining_plume_lev_interior, EarthSciDiscretizations PR #45) passed eta[k] at both ends. Then the parcel is PROJECTED onto saturation at the half-level pressure by cuadjtqn's condensation-only adjustment (`up_adjust_T`/`up_adjust_q` of moist_thermodynamics.esm), the condensed water accumulates (capped at 5e-3) and the latent heat of any change of ice fraction is added back into s. The kinetic energy obeys dK/dz = 2 (B - eta K) with B the buoyant acceleration averaged over the step, the same stencil again (environment 0, rate 2 eta, source 2 B), and the parcel stops at the first level where K goes negative.\n\nWHY THE SWEEP IS FORCED FROM THE TAPE (read this before changing it). The parcel's (s, q) is carried from level to level THROUGH the projection: the s and q leaving level k are each a function of BOTH the s and the q leaving level k+1, because the saturation adjustment mixes them. That is a cycle between two distinct variables, and esm-spec 4.3.1.1 admits a recurrence on one variable only; the Rust binding rejects the two-variable form with `observed_cycle` (probed 2026-11-11 on the be1fafe6d binary: a[k] = a[k-1] + b[k-1], b[k] = a[k-1] b[k-1]), and the recurrence RFC keeps the rejection deliberately. None of the three ways out this repository uses for apparent cycles applies (CLAUDE.md): it does not unroll, because each step goes through a nonlinear projection; it is not a quadrature rule in disguise, because the projection sits between steps -- that is exactly why PR #45's lowering rule cannot be used whole and only its STEP is; and there is no conserved sum to carry, because the moist static energy cp T + L q is conserved by the adjustment only while L is constant, which fails in the mixed-phase range the parcel climbs through and is broken outright by the freezing term. So the component steps each level from the TAPED state of the level below (`dh_tr`, `q_tr`, `T_tr`, the sh_* tape at cutypen's shallow exit) rather than from its own output. Every operation of the step map -- entrainment, projection, condensate, freezing, buoyancy, kinetic energy, stall, cloud base, cloud top, verdict -- is transcribed and pinned; what is not yet expressed is feeding the step's output back as its next input. When the spec admits a recurrence over a TUPLE of variables (or a mutually recursive group whose every cross-read is strictly earlier along one shared axis), `dh_c`, `q_c` and `T_c` become reads of `dh_up`, `q_up` and `T_up` at k+1 and nothing else moves. The condensate and the kinetic energy ARE single-variable recurrences and are written as such (l_climb, ke_climb): neither feeds back into the projection.\n\nThe closed sweep was checked outside the format against the same tape: a float64 reimplementation that carries its own state from level to level reproduces sh_ptu, sh_pqu, sh_dh to 2e-15 and sh_kup, sh_zbuo to 1e-13 of their profile maxima over all 16 steps and both tile columns, with kcbot, kctop, ktype and wbase identical, so the forcing hides no drift.\n\nCLIMB AXIS. A recurrence sweeps upward in index (esm-spec 4.3.1.1), and the scheme indexes top-down, so the two sweeps live on `climb` (j = 1 the lowest layer, kernel level NLEV + 1 - j) and are read back in kernel order as l_up and ke_up. Everything else stays in the kernel's top-down ordering, as in the rest of this scheme's components.\n\nCLOUD BASE AND TOP. The base is looked for at the first level where the parcel holds condensate: the lifting condensation level is extrapolated from the half level below by one Newton step (`lcl_pressure`) and the base placed at whichever adjacent half level is nearer -- to the condensation pressure TRUNCATED to whole pascals, because cutypen stores it in an integer (FORTRAN_BUGS N114) -- the lower one marked by writing 1e-8 of condensate into it, a marker the cloud-top test then reads. The top is the stall level if the parcel stalls with condensate below it. A cloud deeper than 200 hPa is not shallow; the deep scan deals with it.\n\nThe OUTPUT arrays (`*_out`, `lab_out`, `kcbot`, `kctop`, `ktype`, `wbase`) reproduce what cutypen leaves in its locals at the end of the shallow phase, including the levels it never touches (left as cuinin handed them, or zero for the arrays cutypen zero-initialises), because that is what the tape records and what the deep phase then overwrites. The routine's copy into cutu/cuqu/culu/culab for jk >= kctop is not exposed: the deep phase that follows overwrites the same arrays.\n\nConstants: the seven cu_ntiedtke_init arguments from lib/wrf_constants.esm at binary64; the routine's inline literals (0.6 = float32(1.5*0.4), 0.001, 1.2, 1.5, 0.8, 2e-4, 5e-3, 1e-8) at their binary32 roundings in ntiedtke_parameters.esm (FORTRAN_BUGS N109).",
+    "description": "The SHALLOW phase of `cutypen`, the convection trigger of WRF's New Tiedtke scheme (`phys/physics_mmm/cu_ntiedtke.F90:1221-1515`, WRF 4.8): a test parcel launched from the lowest layer with a surface-flux excess, lifted through the column, and classified as a shallow cloud (`ktype = 2`) if it rises into cloud and stops within 200 hPa of its base. It runs before the deep departure-level scan, which can override its verdict (the tape shows this: the ascent runs at 14 of the 16 dumped steps and classifies as shallow at only one).\n\nLAUNCH. When the surface virtual-temperature flux is upward the parcel leaves the lowest layer with velocity w = 1.2 (0.001 + 0.6 (phi/(rho T)) (hfx/cp + 0.608 T qfx))^(1/3), a Deardorff convective velocity, and with temperature and humidity excesses 1.5 hfx/(rho cp w) and 1.5 qfx/(rho w) over the lowest half level; its kinetic energy starts at w^2/2. Otherwise nothing is launched and every array is left as cuinin handed it.\n\nONE LEVEL OF THE ASCENT is two operations. First the parcel ENTRAINS from half level k+1 to k: its dry static energy s and humidity q obey the entraining-plume ODE dphi/dz = eta (phi_env - phi) with eta = 0.8/z + 2e-4 (Jakob and Siebesma 2003), integrated by one implicit-trapezoidal step -- the routine's `dh = (coef (dhen[k+1] + dhen[k]) + (1 - coef) dh[k+1])/(1 + coef)` is exactly that step with the rate frozen at the upper end, and it is taken here, through parcel_templates.esm's `entrain_step` (the per-level step this component shares with deep_departure_scan.esm), by the shared EarthSciDiscretizations plume stencil (grids/column_nonuniform_1d/stencils/entraining_plume_lev_interior, EarthSciDiscretizations PR #45) passed eta[k] at both ends. Then the parcel is PROJECTED onto saturation at the half-level pressure by cuadjtqn's condensation-only adjustment (`up_adjust_T`/`up_adjust_q` of moist_thermodynamics.esm), the condensed water accumulates (capped at 5e-3) and the latent heat of any change of ice fraction is added back into s. The kinetic energy obeys dK/dz = 2 (B - eta K) with B the buoyant acceleration averaged over the step, the same stencil again (environment 0, rate 2 eta, source 2 B), and the parcel stops at the first level where K goes negative.\n\nWHY THE SWEEP IS FORCED FROM THE TAPE (read this before changing it). The parcel's (s, q) is carried from level to level THROUGH the projection: the s and q leaving level k are each a function of BOTH the s and the q leaving level k+1, because the saturation adjustment mixes them. That is a cycle between two distinct variables, and esm-spec 4.3.1.1 admits a recurrence on one variable only; the Rust binding rejects the two-variable form with `observed_cycle` (probed 2026-11-11 on the be1fafe6d binary: a[k] = a[k-1] + b[k-1], b[k] = a[k-1] b[k-1]), and the recurrence RFC keeps the rejection deliberately. EarthSciAST #701 proposes the extension that would admit it: a recurrence GROUP of equations over one cell frame whose every cross-read is strictly earlier along one shared axis. None of the three ways out this repository uses for apparent cycles applies (CLAUDE.md): it does not unroll, because each step goes through a nonlinear projection; it is not a quadrature rule in disguise, because the projection sits between steps -- that is exactly why PR #45's lowering rule cannot be used whole and only its STEP is; and there is no conserved sum to carry, because the moist static energy cp T + L q is conserved by the adjustment only while L is constant, which fails in the mixed-phase range the parcel climbs through and is broken outright by the freezing term. So the component steps each level from the TAPED state of the level below (`dh_tr`, `q_tr`, `T_tr`, the sh_* tape at cutypen's shallow exit) rather than from its own output. Every operation of the step map -- entrainment, projection, condensate, freezing, buoyancy, kinetic energy, stall, cloud base, cloud top, verdict -- is transcribed and pinned; what is not yet expressed is feeding the step's output back as its next input. When the spec admits such a group (EarthSciAST #701), `dh_c`, `q_c` and `T_c` become reads of `dh_up`, `q_up` and `T_up` at k+1 and nothing else moves. The condensate and the kinetic energy ARE single-variable recurrences and are written as such (l_climb, ke_climb): neither feeds back into the projection.\n\nThe closed sweep was checked outside the format against the same tape: a float64 reimplementation that carries its own state from level to level reproduces sh_ptu, sh_pqu, sh_dh to 2e-15 and sh_kup, sh_zbuo to 1e-13 of their profile maxima over all 16 steps and both tile columns, with kcbot, kctop, ktype and wbase identical, so the forcing hides no drift.\n\nCLIMB AXIS. A recurrence sweeps upward in index (esm-spec 4.3.1.1), and the scheme indexes top-down, so the two sweeps live on `climb` (j = 1 the lowest layer, kernel level NLEV + 1 - j) and are read back in kernel order as l_up and ke_up. Everything else stays in the kernel's top-down ordering, as in the rest of this scheme's components.\n\nCLOUD BASE AND TOP. The base is looked for at the first level where the parcel holds condensate: the lifting condensation level is extrapolated from the half level below by one Newton step (`lcl_pressure`) and the base placed at whichever adjacent half level is nearer -- to the condensation pressure TRUNCATED to whole pascals, because cutypen stores it in an integer (FORTRAN_BUGS N114) -- the lower one marked by writing 1e-8 of condensate into it, a marker the cloud-top test then reads. The top is the stall level if the parcel stalls with condensate below it. A cloud deeper than 200 hPa is not shallow; the deep scan deals with it.\n\nThe OUTPUT arrays (`*_out`, `lab_out`, `kcbot`, `kctop`, `ktype`, `wbase`) reproduce what cutypen leaves in its locals at the end of the shallow phase, including the levels it never touches (left as cuinin handed them, or zero for the arrays cutypen zero-initialises), because that is what the tape records and what the deep phase then overwrites. The routine's copy into cutu/cuqu/culu/culab for jk >= kctop is not exposed: the deep phase that follows overwrites the same arrays.\n\nConstants: the seven cu_ntiedtke_init arguments from lib/wrf_constants.esm at binary64; the routine's inline literals (0.6 = float32(1.5*0.4), 0.001, 1.2, 1.5, 0.8, 2e-4, 5e-3, 1e-8) at their binary32 roundings in ntiedtke_parameters.esm (FORTRAN_BUGS N109).",
     "license": "MIT",
     "tags": [
       "wrf",
@@ -53,10 +53,7 @@
     "NTiedtkeShallowAscent": {
       "expression_template_imports": [
         {
-          "ref": "./moist_thermodynamics.esm"
-        },
-        {
-          "ref": "${ESD_ROOT}/grids/column_nonuniform_1d/stencils/entraining_plume_lev_interior.esm"
+          "ref": "./parcel_templates.esm"
         }
       ],
       "subsystems": {
@@ -605,262 +602,6 @@
           "description": "Level labels as cutypen leaves them (sh_klab): 1 for the launch layer; at a level the ascent reached, 2 if the parcel holds condensate there and 1 if not -- except the stall level, which keeps cuinin's label -- with the base placement's direct labels on top; cuinin's label everywhere else."
         }
       },
-      "expression_templates": {
-        "lcl_pressure": {
-          "params": [
-            "tt",
-            "qq",
-            "pp"
-          ],
-          "description": "Pressure of the lifting condensation level of a parcel at (tt, qq) on pressure level pp, by one Newton step along the dry adiabat: pp + dq/(dq_sat/dT dT/dp), with dq = min(0, qq - q_sat) the parcel's sub-saturation (non-positive, so the result lies above pp), q_sat the capped saturation mixing ratio with its virtual-temperature correction, dq_sat/dT the liquid-fraction blend of the two Clausius-Clapeyron factors, and dT/dp = R_d T/(cp p). cutypen's cloud-base block, which places the base at whichever adjacent half level is nearer this pressure.",
-          "body": {
-            "op": "+",
-            "args": [
-              "pp",
-              {
-                "op": "/",
-                "args": [
-                  {
-                    "op": "min",
-                    "args": [
-                      0.0,
-                      {
-                        "op": "-",
-                        "args": [
-                          "qq",
-                          {
-                            "op": "*",
-                            "args": [
-                              {
-                                "op": "apply_expression_template",
-                                "args": [],
-                                "name": "qsat_capped",
-                                "bindings": {
-                                  "tt": "tt",
-                                  "pp": "pp"
-                                }
-                              },
-                              {
-                                "op": "/",
-                                "args": [
-                                  1.0,
-                                  {
-                                    "op": "-",
-                                    "args": [
-                                      1.0,
-                                      {
-                                        "op": "*",
-                                        "args": [
-                                          "par.vtmpc1",
-                                          {
-                                            "op": "apply_expression_template",
-                                            "args": [],
-                                            "name": "qsat_capped",
-                                            "bindings": {
-                                              "tt": "tt",
-                                              "pp": "pp"
-                                            }
-                                          }
-                                        ]
-                                      }
-                                    ]
-                                  }
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "op": "*",
-                    "args": [
-                      {
-                        "op": "*",
-                        "args": [
-                          {
-                            "op": "*",
-                            "args": [
-                              {
-                                "op": "+",
-                                "args": [
-                                  {
-                                    "op": "*",
-                                    "args": [
-                                      {
-                                        "op": "apply_expression_template",
-                                        "args": [],
-                                        "name": "foealfa",
-                                        "bindings": {
-                                          "tt": "tt"
-                                        }
-                                      },
-                                      {
-                                        "op": "/",
-                                        "args": [
-                                          "par.c5les",
-                                          {
-                                            "op": "^",
-                                            "args": [
-                                              {
-                                                "op": "-",
-                                                "args": [
-                                                  "tt",
-                                                  "par.c4les"
-                                                ]
-                                              },
-                                              2
-                                            ]
-                                          }
-                                        ]
-                                      }
-                                    ]
-                                  },
-                                  {
-                                    "op": "*",
-                                    "args": [
-                                      {
-                                        "op": "-",
-                                        "args": [
-                                          1.0,
-                                          {
-                                            "op": "apply_expression_template",
-                                            "args": [],
-                                            "name": "foealfa",
-                                            "bindings": {
-                                              "tt": "tt"
-                                            }
-                                          }
-                                        ]
-                                      },
-                                      {
-                                        "op": "/",
-                                        "args": [
-                                          "par.c5ies",
-                                          {
-                                            "op": "^",
-                                            "args": [
-                                              {
-                                                "op": "-",
-                                                "args": [
-                                                  "tt",
-                                                  "par.c4ies"
-                                                ]
-                                              },
-                                              2
-                                            ]
-                                          }
-                                        ]
-                                      }
-                                    ]
-                                  }
-                                ]
-                              },
-                              {
-                                "op": "/",
-                                "args": [
-                                  1.0,
-                                  {
-                                    "op": "-",
-                                    "args": [
-                                      1.0,
-                                      {
-                                        "op": "*",
-                                        "args": [
-                                          "par.vtmpc1",
-                                          {
-                                            "op": "/",
-                                            "args": [
-                                              {
-                                                "op": "apply_expression_template",
-                                                "args": [],
-                                                "name": "foeewm",
-                                                "bindings": {
-                                                  "tt": "tt"
-                                                }
-                                              },
-                                              "pp"
-                                            ]
-                                          }
-                                        ]
-                                      }
-                                    ]
-                                  }
-                                ]
-                              }
-                            ]
-                          },
-                          {
-                            "op": "*",
-                            "args": [
-                              {
-                                "op": "apply_expression_template",
-                                "args": [],
-                                "name": "qsat_capped",
-                                "bindings": {
-                                  "tt": "tt",
-                                  "pp": "pp"
-                                }
-                              },
-                              {
-                                "op": "/",
-                                "args": [
-                                  1.0,
-                                  {
-                                    "op": "-",
-                                    "args": [
-                                      1.0,
-                                      {
-                                        "op": "*",
-                                        "args": [
-                                          "par.vtmpc1",
-                                          {
-                                            "op": "apply_expression_template",
-                                            "args": [],
-                                            "name": "qsat_capped",
-                                            "bindings": {
-                                              "tt": "tt",
-                                              "pp": "pp"
-                                            }
-                                          }
-                                        ]
-                                      }
-                                    ]
-                                  }
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      },
-                      {
-                        "op": "/",
-                        "args": [
-                          {
-                            "op": "*",
-                            "args": [
-                              "wrf.r_d",
-                              "tt"
-                            ]
-                          },
-                          {
-                            "op": "*",
-                            "args": [
-                              "wrf.cp",
-                              "pp"
-                            ]
-                          }
-                        ]
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          }
-        }
-      },
       "equations": [
         {
           "lhs": "T",
@@ -1378,35 +1119,25 @@
               }
             },
             "expr": {
-              "op": "*",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "virtual_temperature",
+              "bindings": {
+                "tt": {
                   "op": "index",
                   "args": [
                     "T_h",
                     "k"
                   ]
                 },
-                {
-                  "op": "+",
+                "qq": {
+                  "op": "index",
                   "args": [
-                    1.0,
-                    {
-                      "op": "*",
-                      "args": [
-                        "par.vtmpc1",
-                        {
-                          "op": "index",
-                          "args": [
-                            "q_h",
-                            "k"
-                          ]
-                        }
-                      ]
-                    }
+                    "q_h",
+                    "k"
                   ]
                 }
-              ]
+              }
             }
           }
         },
@@ -1534,29 +1265,25 @@
                   ]
                 },
                 {
-                  "op": "*",
-                  "args": [
-                    {
-                      "op": "-",
+                  "op": "apply_expression_template",
+                  "args": [],
+                  "name": "temperature_from_dse",
+                  "bindings": {
+                    "dse": {
+                      "op": "index",
                       "args": [
-                        {
-                          "op": "index",
-                          "args": [
-                            "dh_c",
-                            "k"
-                          ]
-                        },
-                        {
-                          "op": "index",
-                          "args": [
-                            "phi_h",
-                            "k"
-                          ]
-                        }
+                        "dh_c",
+                        "k"
                       ]
                     },
-                    "par.rcpd"
-                  ]
+                    "phi": {
+                      "op": "index",
+                      "args": [
+                        "phi_h",
+                        "k"
+                      ]
+                    }
+                  }
                 },
                 {
                   "op": "index",
@@ -1585,9 +1312,9 @@
             "expr": {
               "op": "apply_expression_template",
               "args": [],
-              "name": "entraining_plume_lev_interior",
+              "name": "entrain_step",
               "bindings": {
-                "phi_prev": {
+                "prev": {
                   "op": "index",
                   "args": [
                     "dh_c",
@@ -1600,7 +1327,7 @@
                     }
                   ]
                 },
-                "phi_env_prev": {
+                "env_prev": {
                   "op": "index",
                   "args": [
                     "s_env",
@@ -1613,29 +1340,21 @@
                     }
                   ]
                 },
-                "phi_env": {
+                "env": {
                   "op": "index",
                   "args": [
                     "s_env",
                     "k"
                   ]
                 },
-                "lam_prev": {
+                "eta": {
                   "op": "index",
                   "args": [
                     "eta",
                     "k"
                   ]
                 },
-                "lam": {
-                  "op": "index",
-                  "args": [
-                    "eta",
-                    "k"
-                  ]
-                },
-                "src": 0.0,
-                "ds": {
+                "dz": {
                   "op": "index",
                   "args": [
                     "dz",
@@ -1662,9 +1381,9 @@
             "expr": {
               "op": "apply_expression_template",
               "args": [],
-              "name": "entraining_plume_lev_interior",
+              "name": "entrain_step",
               "bindings": {
-                "phi_prev": {
+                "prev": {
                   "op": "index",
                   "args": [
                     "q_c",
@@ -1677,7 +1396,7 @@
                     }
                   ]
                 },
-                "phi_env_prev": {
+                "env_prev": {
                   "op": "index",
                   "args": [
                     "q_h",
@@ -1690,29 +1409,21 @@
                     }
                   ]
                 },
-                "phi_env": {
+                "env": {
                   "op": "index",
                   "args": [
                     "q_h",
                     "k"
                   ]
                 },
-                "lam_prev": {
+                "eta": {
                   "op": "index",
                   "args": [
                     "eta",
                     "k"
                   ]
                 },
-                "lam": {
-                  "op": "index",
-                  "args": [
-                    "eta",
-                    "k"
-                  ]
-                },
-                "src": 0.0,
-                "ds": {
+                "dz": {
                   "op": "index",
                   "args": [
                     "dz",
@@ -1737,29 +1448,25 @@
               }
             },
             "expr": {
-              "op": "*",
-              "args": [
-                {
-                  "op": "-",
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "temperature_from_dse",
+              "bindings": {
+                "dse": {
+                  "op": "index",
                   "args": [
-                    {
-                      "op": "index",
-                      "args": [
-                        "dh_mix",
-                        "k"
-                      ]
-                    },
-                    {
-                      "op": "index",
-                      "args": [
-                        "phi_h",
-                        "k"
-                      ]
-                    }
+                    "dh_mix",
+                    "k"
                   ]
                 },
-                "par.rcpd"
-              ]
+                "phi": {
+                  "op": "index",
+                  "args": [
+                    "phi_h",
+                    "k"
+                  ]
+                }
+              }
             }
           }
         },
@@ -1903,67 +1610,38 @@
               }
             },
             "expr": {
-              "op": "*",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "freezing_amount",
+              "bindings": {
+                "dq": {
                   "op": "index",
                   "args": [
                     "dq_cond",
                     "k"
                   ]
                 },
-                {
-                  "op": "-",
+                "tt": {
+                  "op": "index",
                   "args": [
+                    "T_up",
+                    "k"
+                  ]
+                },
+                "tt_below": {
+                  "op": "index",
+                  "args": [
+                    "T_c",
                     {
-                      "op": "-",
+                      "op": "+",
                       "args": [
-                        1.0,
-                        {
-                          "op": "apply_expression_template",
-                          "args": [],
-                          "name": "foealfa",
-                          "bindings": {
-                            "tt": {
-                              "op": "index",
-                              "args": [
-                                "T_up",
-                                "k"
-                              ]
-                            }
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "op": "-",
-                      "args": [
-                        1.0,
-                        {
-                          "op": "apply_expression_template",
-                          "args": [],
-                          "name": "foealfa",
-                          "bindings": {
-                            "tt": {
-                              "op": "index",
-                              "args": [
-                                "T_c",
-                                {
-                                  "op": "+",
-                                  "args": [
-                                    "k",
-                                    1
-                                  ]
-                                }
-                              ]
-                            }
-                          }
-                        }
+                        "k",
+                        1
                       ]
                     }
                   ]
                 }
-              ]
+              }
             }
           }
         },
@@ -1981,47 +1659,32 @@
               }
             },
             "expr": {
-              "op": "+",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "parcel_dse",
+              "bindings": {
+                "phi": {
                   "op": "index",
                   "args": [
                     "phi_h",
                     "k"
                   ]
                 },
-                {
-                  "op": "*",
+                "tt": {
+                  "op": "index",
                   "args": [
-                    "wrf.cp",
-                    {
-                      "op": "+",
-                      "args": [
-                        {
-                          "op": "index",
-                          "args": [
-                            "T_up",
-                            "k"
-                          ]
-                        },
-                        {
-                          "op": "*",
-                          "args": [
-                            "par.ralfdcp",
-                            {
-                              "op": "index",
-                              "args": [
-                                "dl_frz",
-                                "k"
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
+                    "T_up",
+                    "k"
+                  ]
+                },
+                "dl": {
+                  "op": "index",
+                  "args": [
+                    "dl_frz",
+                    "k"
                   ]
                 }
-              ]
+              }
             }
           }
         },
@@ -2150,65 +1813,39 @@
               }
             },
             "expr": {
-              "op": "+",
-              "args": [
-                {
-                  "op": "*",
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "parcel_virtual_temperature",
+              "bindings": {
+                "tt": {
+                  "op": "index",
                   "args": [
-                    {
-                      "op": "index",
-                      "args": [
-                        "T_up",
-                        "k"
-                      ]
-                    },
-                    {
-                      "op": "-",
-                      "args": [
-                        {
-                          "op": "+",
-                          "args": [
-                            1.0,
-                            {
-                              "op": "*",
-                              "args": [
-                                "par.vtmpc1",
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "q_up",
-                                    "k"
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "op": "index",
-                          "args": [
-                            "l_up",
-                            "k"
-                          ]
-                        }
-                      ]
-                    }
+                    "T_up",
+                    "k"
                   ]
                 },
-                {
-                  "op": "*",
+                "qq": {
+                  "op": "index",
                   "args": [
-                    "par.ralfdcp",
-                    {
-                      "op": "index",
-                      "args": [
-                        "dl_frz",
-                        "k"
-                      ]
-                    }
+                    "q_up",
+                    "k"
+                  ]
+                },
+                "ll": {
+                  "op": "index",
+                  "args": [
+                    "l_up",
+                    "k"
+                  ]
+                },
+                "dl": {
+                  "op": "index",
+                  "args": [
+                    "dl_frz",
+                    "k"
                   ]
                 }
-              ]
+              }
             }
           }
         },
@@ -2226,102 +1863,58 @@
               }
             },
             "expr": {
-              "op": "ifelse",
-              "args": [
-                {
-                  "op": "==",
-                  "args": [
-                    "k",
-                    "NLEV"
-                  ]
-                },
-                {
-                  "op": "/",
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "buoyancy",
+              "bindings": {
+                "tv": {
+                  "op": "ifelse",
                   "args": [
                     {
-                      "op": "-",
+                      "op": "==",
                       "args": [
-                        {
-                          "op": "*",
-                          "args": [
-                            {
-                              "op": "index",
-                              "args": [
-                                "T_c",
-                                "k"
-                              ]
-                            },
-                            {
-                              "op": "+",
-                              "args": [
-                                1.0,
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    "par.vtmpc1",
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "q_c",
-                                        "k"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
+                        "k",
+                        "NLEV"
+                      ]
+                    },
+                    {
+                      "op": "apply_expression_template",
+                      "args": [],
+                      "name": "virtual_temperature",
+                      "bindings": {
+                        "tt": {
                           "op": "index",
                           "args": [
-                            "Tv_env",
+                            "T_c",
+                            "k"
+                          ]
+                        },
+                        "qq": {
+                          "op": "index",
+                          "args": [
+                            "q_c",
                             "k"
                           ]
                         }
-                      ]
+                      }
                     },
                     {
                       "op": "index",
                       "args": [
-                        "Tv_env",
+                        "Tv_up",
                         "k"
                       ]
                     }
                   ]
                 },
-                {
-                  "op": "/",
+                "tv_env": {
+                  "op": "index",
                   "args": [
-                    {
-                      "op": "-",
-                      "args": [
-                        {
-                          "op": "index",
-                          "args": [
-                            "Tv_up",
-                            "k"
-                          ]
-                        },
-                        {
-                          "op": "index",
-                          "args": [
-                            "Tv_env",
-                            "k"
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "op": "index",
-                      "args": [
-                        "Tv_env",
-                        "k"
-                      ]
-                    }
+                    "Tv_env",
+                    "k"
                   ]
                 }
-              ]
+              }
             }
           }
         },
@@ -2416,9 +2009,9 @@
                 {
                   "op": "apply_expression_template",
                   "args": [],
-                  "name": "entraining_plume_lev_interior",
+                  "name": "ke_step",
                   "bindings": {
-                    "phi_prev": {
+                    "prev": {
                       "op": "index",
                       "args": [
                         "ke_climb",
@@ -2431,84 +2024,45 @@
                         }
                       ]
                     },
-                    "phi_env_prev": 0.0,
-                    "phi_env": 0.0,
-                    "lam_prev": {
-                      "op": "*",
+                    "eta": {
+                      "op": "index",
                       "args": [
-                        2.0,
+                        "eta",
                         {
-                          "op": "index",
+                          "op": "-",
                           "args": [
-                            "eta",
                             {
-                              "op": "-",
+                              "op": "+",
                               "args": [
-                                {
-                                  "op": "+",
-                                  "args": [
-                                    "NLEV",
-                                    1
-                                  ]
-                                },
-                                "j"
+                                "NLEV",
+                                1
                               ]
-                            }
+                            },
+                            "j"
                           ]
                         }
                       ]
                     },
-                    "lam": {
-                      "op": "*",
+                    "acc": {
+                      "op": "index",
                       "args": [
-                        2.0,
+                        "buoy_acc",
                         {
-                          "op": "index",
+                          "op": "-",
                           "args": [
-                            "eta",
                             {
-                              "op": "-",
+                              "op": "+",
                               "args": [
-                                {
-                                  "op": "+",
-                                  "args": [
-                                    "NLEV",
-                                    1
-                                  ]
-                                },
-                                "j"
+                                "NLEV",
+                                1
                               ]
-                            }
+                            },
+                            "j"
                           ]
                         }
                       ]
                     },
-                    "src": {
-                      "op": "*",
-                      "args": [
-                        2.0,
-                        {
-                          "op": "index",
-                          "args": [
-                            "buoy_acc",
-                            {
-                              "op": "-",
-                              "args": [
-                                {
-                                  "op": "+",
-                                  "args": [
-                                    "NLEV",
-                                    1
-                                  ]
-                                },
-                                "j"
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    "ds": {
+                    "dz": {
                       "op": "index",
                       "args": [
                         "dz",
@@ -2848,16 +2402,50 @@
               }
             },
             "expr": {
-              "op": "floor",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "lcl_pressure_held",
+              "bindings": {
+                "tt": {
                   "op": "index",
                   "args": [
-                    "p_lcl",
-                    "k"
+                    "T_c",
+                    {
+                      "op": "+",
+                      "args": [
+                        "k",
+                        1
+                      ]
+                    }
+                  ]
+                },
+                "qq": {
+                  "op": "index",
+                  "args": [
+                    "q_c",
+                    {
+                      "op": "+",
+                      "args": [
+                        "k",
+                        1
+                      ]
+                    }
+                  ]
+                },
+                "pp": {
+                  "op": "index",
+                  "args": [
+                    "p_h",
+                    {
+                      "op": "+",
+                      "args": [
+                        "k",
+                        1
+                      ]
+                    }
                   ]
                 }
-              ]
+              }
             }
           }
         },
@@ -2987,28 +2575,25 @@
                       "op": ">",
                       "args": [
                         {
-                          "op": "-",
-                          "args": [
-                            {
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "base_is_low",
+                          "bindings": {
+                            "p_lcl": {
                               "op": "index",
                               "args": [
                                 "p_lcl_int",
                                 "k"
                               ]
                             },
-                            {
+                            "p_here": {
                               "op": "index",
                               "args": [
                                 "p_h",
                                 "k"
                               ]
-                            }
-                          ]
-                        },
-                        {
-                          "op": "-",
-                          "args": [
-                            {
+                            },
+                            "p_below": {
                               "op": "index",
                               "args": [
                                 "p_h",
@@ -3020,16 +2605,10 @@
                                   ]
                                 }
                               ]
-                            },
-                            {
-                              "op": "index",
-                              "args": [
-                                "p_lcl_int",
-                                "k"
-                              ]
                             }
-                          ]
-                        }
+                          }
+                        },
+                        0.0
                       ]
                     },
                     {
@@ -3098,28 +2677,25 @@
                           "op": ">",
                           "args": [
                             {
-                              "op": "-",
-                              "args": [
-                                {
+                              "op": "apply_expression_template",
+                              "args": [],
+                              "name": "base_is_low",
+                              "bindings": {
+                                "p_lcl": {
                                   "op": "index",
                                   "args": [
                                     "p_lcl_int",
                                     "k"
                                   ]
                                 },
-                                {
+                                "p_here": {
                                   "op": "index",
                                   "args": [
                                     "p_h",
                                     "k"
                                   ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "-",
-                              "args": [
-                                {
+                                },
+                                "p_below": {
                                   "op": "index",
                                   "args": [
                                     "p_h",
@@ -3131,16 +2707,10 @@
                                       ]
                                     }
                                   ]
-                                },
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "p_lcl_int",
-                                    "k"
-                                  ]
                                 }
-                              ]
-                            }
+                              }
+                            },
+                            0.0
                           ]
                         }
                       ]
@@ -4059,35 +3629,25 @@
                       ]
                     },
                     {
-                      "op": "*",
-                      "args": [
-                        {
+                      "op": "apply_expression_template",
+                      "args": [],
+                      "name": "virtual_temperature",
+                      "bindings": {
+                        "tt": {
                           "op": "index",
                           "args": [
                             "T_c",
                             "k"
                           ]
                         },
-                        {
-                          "op": "+",
+                        "qq": {
+                          "op": "index",
                           "args": [
-                            1.0,
-                            {
-                              "op": "*",
-                              "args": [
-                                "par.vtmpc1",
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "q_c",
-                                    "k"
-                                  ]
-                                }
-                              ]
-                            }
+                            "q_c",
+                            "k"
                           ]
                         }
-                      ]
+                      }
                     },
                     0.0
                   ]
