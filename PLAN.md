@@ -2327,6 +2327,19 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     the restored arrays when `config_flags%restart`) is worth doing in the
     `ctessum-claude/WRF` fork, but is not on the critical path for this run.
 
+    **Outcome (checked 2026-11-11).** Job 10593449 was pre-empted at 17:14
+    simulated (partial output in `runs/full/attempts_pre_20260919/`); the rerun,
+    job **10633194**, completed all 14 h cleanly (~34 h wall, 50 GB, every
+    wrfout and fire_output readable and finite). It is a code reference, not a
+    hindcast: 39.6 km² burned by 06Z against ~182 km² observed
+    (`fire_wind_height = 1 m`, constant 8 % `fmc_g` since `fmoist_run` is off),
+    so it cannot test the fuel-moisture model. wrfout has no physics
+    tendencies and fire_output no ROS, so level-set and column-physics stage-3
+    tests need a short instrumented 16Z-18:30Z rerun. Seven more
+    fire-to-atmosphere frames (18:20 to 06Z) are already extracted and replayed
+    for `fire_atmosphere_column_lastchance.esm`. Status, sanity checks and the
+    stage-3 proposal: `data/eqwefic/notes/lastchance_reference_run.md`.
+
 ## 6. Test and authoring conventions (normative; summarized in CLAUDE.md)
 
 - Tendencies are observeds; assert at `time: 0.0`. Trajectory assertions only
