@@ -1,5 +1,5 @@
 {
- "esm": "1.1.0",
+ "esm": "1.2.0",
  "metadata": {
   "name": "WildlandFireBehavior",
   "description": "The fire-behavior half of EqAtmFire: NCAR's Community Fire Behavior Model (WRF 4.8 phys/fire_behavior) for one fire cell and its level set, with the nine per-cell components coupled to each other by reference instead of each being driven by its own dumped inputs. The chain is fuel category -> Anderson-13 table -> (fuel load, depth, SAVR, extinction moisture, burn weight) ; 2 m temperature/humidity/pressure -> five-class time-lag fuel moisture -> the cell's bulk moisture state and d(fmc_g)/dt ; (fuel, moisture) -> Rothermel reaction intensity, packing ratio, wind/slope coefficients and the no-wind spread r_0 ; (Rothermel, mid-flame wind, terrain slope, front normal) -> rate of spread ; ros -> the level-set PDE d psi/dt = -R |grad psi| + nu |R| (dx psi_xx + dy psi_yy) ; the level set -> ignition time and, through the subcell quadrature, the fuel fraction left and the fuel consumption RATE ; (burn rate, load, moisture) -> the sensible and latent heat flux that FireAtmosphereColumn hands to the atmosphere. THE THREE TENDENCIES ARE d psi/dt (level set, 80 x 80), dfuel_frac_dt (fuel burn rate of the cell) and dfmc_g_dt (bulk fuel moisture); everything else is a diagnostic on the way to them. WHAT IS LOAD-BEARING: the only numbers prescribed here are the ones the fire model receives from OUTSIDE itself (the fuel category, the 2 m forcing, the mid-flame wind and terrain slope, the front normal, the level-set stencil and the previous step's fuel fraction) plus the level-set field itself; every quantity that one fire-behavior component computes for another travels a coupling edge. Deleting any of the 17 inter-mount edges makes a Fortran-dump assertion fail. STAGING, measured not assumed: fire_behavior evaluates its stages sequentially within a step, and two of the couplings are therefore not bit-identical to the Fortran. (i) Calc_ros_params runs on the fuel moisture BEFORE Advance_moisture_classes updates it and Calc_fire_fluxes runs on the moisture AFTER, while a continuous formulation must evaluate both at one instantaneous state; this document feeds both the state, fmc_g_state = sum_k w_k fmc_old_k, which is what Rothermel sees exactly (2e-8 relative) and what the flux sees to 7.9e-7 relative -- inside the real32 tolerance, so no assertion is loosened for it. (ii) Calc_flame_length is called before Calc_fuel_left with the PREVIOUS step's fire_area and the LAST Runge-Kutta stage's ros, so its two inputs are prescribed from the dump rather than taken from the coupling, and the document says so rather than pretending the edge exists. Regime: cell (18, 64) of the 80 x 80 fire mesh at step 20 (ts = 10 s, dt = 0.5 s) of the fire_behavior test7 standalone run with the fuel-moisture model active, Anderson category 2 (timber with grass understory), a heading front with fire_area = 0.957 and a 0.40 m/s spread rate. The level set is Runge-Kutta stage 1 of that step with the default fire_upwinding = 9 (hybrid WENO5 in a 4-cell band around the front, ENO1 outside, guarded linear-extrapolation halo), lowered by the EarthSciDiscretizations cartesian_uniform_2d rules. References: dumps fire/run_fmc/esm_dump_{fmc,fmc_avg,ros_params,ls_tend,ls_tign,fuel_left,flame,fire_flux}_*.json, instrumented fork ctessum-claude/fire_behavior @ c9dda02, real32, rel 1e-5. Run as `./esm test couplings/wildlandfire_behavior.esm` with ESD_ROOT set.",
@@ -1316,13 +1316,6 @@
    "to": "Roth.fuelmce",
    "transform": "param_to_var",
    "description": "fuel table -> Rothermel: moisture of extinction"
-  },
-  {
-   "type": "variable_map",
-   "from": "Fuel.ichap",
-   "to": "Roth.ischap",
-   "transform": "param_to_var",
-   "description": "fuel table -> Rothermel: chaparral flag"
   },
   {
    "type": "variable_map",

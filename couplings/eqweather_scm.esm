@@ -1,5 +1,5 @@
 {
- "esm": "1.1.0",
+ "esm": "1.2.0",
  "metadata": {
   "name": "EqWeatherScm",
   "description": "EqWeather-SCM: the STATE document of PLAN.md 3.1 -- the dynamics half (couplings/eqweather_scm_dynamics.esm) and the physics half (couplings/scm_physics_column.esm) CO-MOUNTED over one shared ODE state, which is what neither half could be on its own. Ten states are integrated here: the five WRF-ARW prognostics u, v, w, phi' and theta_m, the three moist species q_v, q_c and q_i, the soil column T_s and the skin temperature T_sk. Every tendency is a SUM, and forming those sums is the whole point of the document: D(u) and D(v) take the perturbation-Coriolis, curvature and sponge tendencies plus YSU's RUBLTEN/RVBLTEN; D(theta_m) takes the sponge plus WRFMoistThetaTendency's conversion of the radiative and PBL theta and q_v tendencies; D(q_v), D(q_c) and D(q_i) are YSU's RQVBLTEN/RQCBLTEN/RQIBLTEN; D(T_s) and D(T_sk) are the slab's. The state goes back into all sixteen mounted components through document-level coupling.variable_map param_to_var edges, so nothing about the column is read from a dump that the state could supply: WRFColumnGeometry recomputes the heights, the equation of state, the Exner function, the layer temperature and the hydrostatic interface pressure from theta_m, q_v and phi' at every right-hand-side evaluation, and those feed YSU, Dudhia SW, the RRTM longwave chain and cal_cldfra; the surface layer and the slab read the lowest layer by indexing the state and the geometry rather than a prescribed u1/t1/p1/dz1; and the skin temperature the radiation emits from is the same ODE state the surface layer exchanges with and the slab integrates. cal_cldfra closes the last of those edges: the grid-scale cloud fraction the longwave sees is COMPUTED here from the state (components/atmospheric_radiation/cloud_fraction/cal_cldfra.esm, WRF's cal_cldfra1 at icloud = 1) instead of being prescribed from the dumped CLDFRA of the reference call, which is what every frozen-column document in couplings/ had to do. KNOWN LIMITS, all of them absences rather than approximations, and all exact at t = 0: (a) NO MICROPHYSICS is mounted, so q_r, q_s and q_g are held at their step-1410 profiles (read by reference from the same hand-authored libraries the frozen-column documents use) and q_c and q_i only diffuse; (b) the column mass mu' is constant, as in the dynamics half -- a horizontally uniform periodic column has no mass-flux divergence; (c) the total water q_t entering the hydrostatic interface pressure is the step-1410 profile rather than the sum of the evolving species, so p_hyd carries an O(dq_v mu_d) staleness that is zero at t = 0; (d) psfc is prescribed, because WRF carries it rather than rediagnosing it; (e) there is no acoustic sub-step or off-centring, so the undamped vertical acoustic mode of the dynamics half is present here too (see that document's own 60 s test for its measured amplitude). WHAT IS ASSERTED, and why there is no trajectory test: ONE right-hand-side evaluation of this document costs 1 h 47 m of wall clock, measured -- against 86 s for the nine-component physics column, and with nothing integrated and no Jacobian formed (the test's time span is empty). A 24 h run is therefore out of reach at the cost measured on EarthSciAST main at 3cf6f6f92. That cost is an interpreter defect rather than a property of this model: EarthSciAST #438, fixed in PR #439 -- the Rust driver built an implicit solver even for a run that cannot advance, and materialising its finite-difference Jacobian costs 2*n_states + 1 full right-hand-side evaluations to return the untouched initial state. With that fixed the same 65/65 takes 2 m 31 s. RE-TIME THIS DOCUMENT, AND THE ACCEPTANCE QUESTION OF PLAN.md 3.1, WHEN #439 LANDS; the test's own description records the measurements and the hypotheses they ruled out. What this document therefore pins is that the loop CLOSES and that closing it changes nothing: at t = 0, with the state set to the WRF step-1410 column, every tendency and every diagnostic still meets the same references the two halves assert separately, and the cloud fraction the longwave sees is computed here rather than prescribed.",
@@ -21761,7 +21761,7 @@
   {
    "type": "variable_map",
    "from": "Geo.p",
-   "to": "Melt.p_in",
+   "to": "Melt.sd.p_in",
    "transform": "param_to_var",
    "description": "layer pressure into the melting/freezing block"
   },
@@ -21831,21 +21831,21 @@
   {
    "type": "variable_map",
    "from": "Melt.T_out",
-   "to": "Warm.T_in",
+   "to": "Warm.sd.T_in",
    "transform": "param_to_var",
    "description": "post-melt temperature into the warm-rain rates"
   },
   {
    "type": "variable_map",
    "from": "Geo.p",
-   "to": "Warm.p_in",
+   "to": "Warm.sd.p_in",
    "transform": "param_to_var",
    "description": "layer pressure into the warm-rain rates"
   },
   {
    "type": "variable_map",
    "from": "Geo.rho",
-   "to": "Warm.rho_in",
+   "to": "Warm.sd.rho_in",
    "transform": "param_to_var",
    "description": "air density into the warm-rain rates"
   },
@@ -21859,7 +21859,7 @@
   {
    "type": "variable_map",
    "from": "Melt.qr_out",
-   "to": "Warm.qr_in",
+   "to": "Warm.sd.qr_in",
    "transform": "param_to_var",
    "description": "post-melt rain into the warm-rain rates"
   },
@@ -21942,8 +21942,29 @@
   },
   {
    "type": "variable_map",
+   "from": "Melt.qi_out",
+   "to": "Warm.sd.qi_in",
+   "transform": "param_to_var",
+   "description": "post-melting/freezing cloud ice into the warm-rain size distributions (EarthSciModels #19 mounts the shared hydrometeor_slopes as Warm.sd)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Melt.qs_out",
+   "to": "Warm.sd.qs_in",
+   "transform": "param_to_var",
+   "description": "post-melting/freezing snow into the warm-rain size distributions (EarthSciModels #19 mounts the shared hydrometeor_slopes as Warm.sd)"
+  },
+  {
+   "type": "variable_map",
+   "from": "Melt.qg_out",
+   "to": "Warm.sd.qg_in",
+   "transform": "param_to_var",
+   "description": "post-melting/freezing graupel into the warm-rain size distributions (EarthSciModels #19 mounts the shared hydrometeor_slopes as Warm.sd)"
+  },
+  {
+   "type": "variable_map",
    "from": "Geo.p",
-   "to": "IceDep.p_in",
+   "to": "IceDep.sd.p_in",
    "transform": "param_to_var",
    "description": "layer pressure into the ice deposition budget"
   },
