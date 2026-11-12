@@ -5,9 +5,19 @@
     "authors": [
       "EqWeFiC"
     ],
-    "description": "The Kelvin equilibrium of one MOSAIC size bin (WRF v4.8.0 chem/module_mosaic_therm.F, aerosol_phase_state) STATED AS THE PROBLEM an EarthSciIntegrator `solve` node solves: the bin water activity `Kelvin.aw` is an ALGEBRAIC UNKNOWN, constrained by `0 ~ residual` with residual = aerosol_phase_state.esm's kelvin_residual = aw0/K(aw) - aw, i.e. aw = aw0/K(aw), the water activity a curved droplet of this composition holds in equilibrium with the ambient relative humidity. The constraint's residual rhs - lhs is aw0/K(aw) - aw, the update the Fortran's fixed-point loop applies, so a pseudo-time rate that raises aw when positive (EarthSciIntegrator run-config \u00a74.10 pairing). Starting value aw0 = rh_pc 0.01 (initialization equation), where aerosol_phase_state starts. The solve and its settings are in mosaic_kelvin_equilibrium.run.json beside this file; no iteration is written here (CLAUDE.md). The Fortran iterates by fixed point to a relative update of 1e-2 (1e-6 above 99% RH), at most ten updates; how far that stops from the root is measured in data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md, and the root itself is asserted in aerosol_phase_state.esm's kelvin_root_* tests. This document has no tests of its own because the Rust CLI does not evaluate an implicit equation (`unsupported_construct`); it is checked with `esm validate`.\n\nSCOPE. On the MESA branch (aerosol_phase_state path 6) the water, hence K, comes from MESA's equilibrium (couplings/mosaic_mesa_equilibrium.esm), so there the two solves nest (MESA inside each Kelvin residual) or are solved together; this document covers the other branches, where aerosol_phase_state gives the water itself. Where the branch changes with aw (a bin just above crh, liquid at aw0 and solid at aw0/K(aw0)) the residual is discontinuous and may have no root."
+    "description": "The Kelvin equilibrium of one MOSAIC size bin (WRF v4.8.0 chem/module_mosaic_therm.F, aerosol_phase_state) STATED AS THE PROBLEM an EarthSciIntegrator `solve` node solves: the bin water activity `Kelvin.aw` is an ALGEBRAIC UNKNOWN, constrained by `0 ~ residual` with residual = aerosol_phase_state.esm's kelvin_residual = aw0/K(aw) - aw, i.e. aw = aw0/K(aw), the water activity a curved droplet of this composition holds in equilibrium with the ambient relative humidity. The constraint's residual rhs - lhs is aw0/K(aw) - aw, the update the Fortran's fixed-point loop applies, so a pseudo-time rate that raises aw when positive (EarthSciIntegrator run-config \u00a74.10 pairing). Starting value aw0 = rh_pc 0.01 (initialization equation), where aerosol_phase_state starts. The solve and its settings are in mosaic_kelvin_equilibrium.run.json beside this file; no iteration is written here (CLAUDE.md). The Fortran iterates by fixed point to a relative update of 1e-2 (1e-6 above 99% RH), at most ten updates; how far that stops from the root is measured in data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md, and the root itself is asserted in aerosol_phase_state.esm's kelvin_root_* tests. This document has no tests of its own because the Rust CLI does not evaluate an implicit equation (`unsupported_construct`); it is checked with `esm validate`.\n\nSCOPE. On the MESA branch (aerosol_phase_state path 6) the water, hence K, comes from MESA's equilibrium (couplings/mosaic_mesa_equilibrium.esm), so there the two solves nest (MESA inside each Kelvin residual) or are solved together; this document covers the other branches, where aerosol_phase_state gives the water itself. Where the branch changes with aw (a bin just above crh, liquid at aw0 and solid at aw0/K(aw0)) the residual is discontinuous and may have no root.\n\nEvery quantity carries the cell axes [lev, bin] (NLEV, NBIN, 1 by default; aw0 is the cell's, [lev]) like aerosol_phase_state.esm, so this states the Kelvin equilibrium of every size section of every grid cell at once; the bins are independent."
   },
   "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 1,
+      "description": "Grid cells (model levels); 1 for a single cell."
+    },
+    "NBIN": {
+      "type": "integer",
+      "default": 1,
+      "description": "MOSAIC size sections per cell; 1 for a single bin."
+    },
     "NEL": {
       "type": "integer",
       "default": 22,
@@ -30,6 +40,14 @@
     }
   },
   "index_sets": {
+    "lev": {
+      "kind": "interval",
+      "size": "NLEV"
+    },
+    "bin": {
+      "kind": "interval",
+      "size": "NBIN"
+    },
     "el": {
       "kind": "interval",
       "size": "NEL"
@@ -53,26 +71,41 @@
   },
   "models": {
     "Ps": {
-      "ref": "../components/aerosol/mosaic/aerosol_phase_state.esm"
+      "ref": "../components/aerosol/mosaic/aerosol_phase_state.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
     },
     "Kelvin": {
       "variables": {
         "aw": {
           "type": "unknown",
           "units": "1",
-          "description": "THE UNKNOWN: the bin water activity ah2o_a. Algebraic: no equation defines it; `0 ~ residual` constrains it."
+          "description": "THE UNKNOWN: the bin water activity ah2o_a. Algebraic: no equation defines it; `0 ~ residual` constrains it.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         },
         "aw0": {
           "type": "parameter",
           "units": "1",
           "default": 0.5,
-          "description": "The ambient water activity rh_pc*0.01 (coupled from Ps.aw0): the starting value."
+          "description": "The ambient water activity rh_pc*0.01 (coupled from Ps.aw0): the starting value.",
+          "shape": [
+            "lev"
+          ]
         },
         "residual": {
           "type": "parameter",
           "units": "1",
           "default": 0.0,
-          "description": "aw0/K(aw) - aw (coupled from Ps.kelvin_residual)."
+          "description": "aw0/K(aw) - aw (coupled from Ps.kelvin_residual).",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         }
       },
       "equations": [

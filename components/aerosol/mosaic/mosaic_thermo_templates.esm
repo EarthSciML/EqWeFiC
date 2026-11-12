@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "MosaicThermoTemplates",
-    "description": "Expression templates shared by MOSAIC's thermodynamics components (chem/module_mosaic_therm.F, WRF v4.8.0). The ZSR water of a bin is needed wherever the bin's water activity is: at the activity compute_activities is handed (aerosol_water_zsr.esm), at the fixed 0.6 of the hysteresis reference (aerosol_water_up), and inside the Kelvin iteration of aerosol_phase_state, where it is evaluated once per iterate. Writing it once is the reason these are templates. The same holds for the sulfate ratio X_T (aerosol_xt), the sulfate-poor ion pairing (ion_pair_electrolyte, used by ions_to_electrolytes.esm and by MESA's liquid-electrolyte estimate) and fn_keq. They read the consuming model's mounted parameter library by its mount name `tp` (mosaic_thermo_parameters.esm), and zsr_water reads the consumer's `elec` (electrolyte amounts, nmol/m3) and `v_kappa` (the kappa-weighted non-electrolyte dry volume) by bare name -- the keyed-factor convention of the EarthSciDiscretizations column rules.",
+    "description": "Expression templates shared by MOSAIC's thermodynamics components (chem/module_mosaic_therm.F, WRF v4.8.0). The ZSR water of a bin is needed wherever the bin's water activity is: at the activity compute_activities is handed (aerosol_water_zsr.esm), at the fixed 0.6 of the hysteresis reference (aerosol_water_up), and inside the Kelvin iteration of aerosol_phase_state, where it is evaluated once per iterate. Writing it once is the reason these are templates. The same holds for the sulfate ratio X_T (aerosol_xt), the sulfate-poor ion pairing (ion_pair_electrolyte, used by ions_to_electrolytes.esm and by MESA's liquid-electrolyte estimate) and fn_keq. They read the consuming model's mounted parameter library by its mount name `tp` (mosaic_thermo_parameters.esm), and zsr_water reads the consumer's `elec` (electrolyte amounts, nmol/m3) and `v_kappa` (the kappa-weighted non-electrolyte dry volume), ion_pair_electrolyte its `n_ion`, `cation_eq` and `anion_eq`, by bare name at the cell (k, b) the caller passes: every consumer carries the cell axes [lev, bin] (2026-11-12) -- the keyed-factor convention of the EarthSciDiscretizations column rules.",
     "authors": [
       "EqWeFiC"
     ],
@@ -197,9 +197,11 @@
     },
     "zsr_water": {
       "params": [
-        "a"
+        "a",
+        "k",
+        "b"
       ],
-      "description": "ZSR liquid water of a bin at water activity a, kg per m3 of air (FUNCTION aerosol_water): W = (sum over the first NZSR electrolytes of E_e/m_e(a) + 1e-3 v_kappa a/(1 - a)) 1e-9, every literal at its binary32 value. Reads the consumer's `elec`, `v_kappa` and metaparameter NZSR.",
+      "description": "ZSR liquid water of a bin at water activity a, kg per m3 of air (FUNCTION aerosol_water): W = (sum over the first NZSR electrolytes of E_e/m_e(a) + 1e-3 v_kappa a/(1 - a)) 1e-9, every literal at its binary32 value. Reads the consumer's `elec` and `v_kappa` of cell k, section b (both shaped [lev, bin, ...] in every consumer) and metaparameter NZSR.",
       "body": {
         "op": "*",
         "args": [
@@ -224,6 +226,8 @@
                       "op": "index",
                       "args": [
                         "elec",
+                        "k",
+                        "b",
                         "e"
                       ]
                     },
@@ -249,7 +253,14 @@
                         "op": "*",
                         "args": [
                           "tp.kappa_water_per_volume",
-                          "v_kappa"
+                          {
+                            "op": "index",
+                            "args": [
+                              "v_kappa",
+                              "k",
+                              "b"
+                            ]
+                          }
                         ]
                       },
                       "a"
@@ -344,9 +355,11 @@
     },
     "ion_pair_electrolyte": {
       "params": [
-        "e"
+        "e",
+        "k",
+        "b"
       ],
-      "description": "Electrolyte e formed by EQUIVALENT-FRACTION PAIRING of the ions in the sulfate-poor domain (ions_to_electrolytes, mesa_estimate_eleliquid): with x_c = n_c z_c / sum over cations of n z and x_a likewise over the anions, E_e = (x_c n_a M_a + x_a n_c M_c)/M_e for e's cation c and anion a (tp.pair_cation, tp.pair_anion), so every cation is shared among the anions in proportion to their charge equivalents and vice versa. 0 for an electrolyte that is not a pair, and for every electrolyte when either sum is zero (the Fortran returns with all of them zero). Reads the consumer's n_ion (ion amounts in the `ion` order, nmol/m3), cation_eq and anion_eq (the two charge sums) by bare name, and the mounted parameter library `tp`.",
+      "description": "Electrolyte e formed by EQUIVALENT-FRACTION PAIRING of the ions in the sulfate-poor domain (ions_to_electrolytes, mesa_estimate_eleliquid): with x_c = n_c z_c / sum over cations of n z and x_a likewise over the anions, E_e = (x_c n_a M_a + x_a n_c M_c)/M_e for e's cation c and anion a (tp.pair_cation, tp.pair_anion), so every cation is shared among the anions in proportion to their charge equivalents and vice versa. 0 for an electrolyte that is not a pair, and for every electrolyte when either sum is zero (the Fortran returns with all of them zero). Reads the consumer's n_ion (ion amounts in the `ion` order, nmol/m3), cation_eq and anion_eq (the two charge sums) of cell k, section b by bare name (shaped [lev, bin, ...] in every consumer), and the mounted parameter library `tp`.",
       "body": {
         "op": "ifelse",
         "args": [
@@ -384,7 +397,14 @@
                   {
                     "op": "!=",
                     "args": [
-                      "cation_eq",
+                      {
+                        "op": "index",
+                        "args": [
+                          "cation_eq",
+                          "k",
+                          "b"
+                        ]
+                      },
                       0.0
                     ]
                   }
@@ -393,7 +413,14 @@
               {
                 "op": "!=",
                 "args": [
-                  "anion_eq",
+                  {
+                    "op": "index",
+                    "args": [
+                      "anion_eq",
+                      "k",
+                      "b"
+                    ]
+                  },
                   0.0
                 ]
               }
@@ -439,6 +466,8 @@
                                       "op": "index",
                                       "args": [
                                         "n_ion",
+                                        "k",
+                                        "b",
                                         "i"
                                       ]
                                     },
@@ -451,7 +480,14 @@
                                     }
                                   ]
                                 },
-                                "cation_eq"
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "cation_eq",
+                                    "k",
+                                    "b"
+                                  ]
+                                }
                               ]
                             }
                           ]
@@ -485,6 +521,8 @@
                                   "op": "index",
                                   "args": [
                                     "n_ion",
+                                    "k",
+                                    "b",
                                     "i"
                                   ]
                                 },
@@ -536,6 +574,8 @@
                                       "op": "index",
                                       "args": [
                                         "n_ion",
+                                        "k",
+                                        "b",
                                         "i"
                                       ]
                                     },
@@ -548,7 +588,14 @@
                                     }
                                   ]
                                 },
-                                "anion_eq"
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "anion_eq",
+                                    "k",
+                                    "b"
+                                  ]
+                                }
                               ]
                             }
                           ]
@@ -582,6 +629,8 @@
                                   "op": "index",
                                   "args": [
                                     "n_ion",
+                                    "k",
+                                    "b",
                                     "i"
                                   ]
                                 },

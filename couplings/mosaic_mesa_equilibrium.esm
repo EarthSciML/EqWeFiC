@@ -5,9 +5,19 @@
     "authors": [
       "EqWeFiC"
     ],
-    "description": "MOSAIC's MESA solid-liquid equilibrium of one size bin (WRF v4.8.0 chem/module_mosaic_therm.F, mesa_ptc) STATED AS THE PROBLEM an EarthSciIntegrator bounded `solve` node solves (EarthSciIntegrator D95, PR #74): the fifteen solid salt amounts `Mesa.e_salt` are ALGEBRAIC UNKNOWNS, constrained by `0 ~ g` with g = mesa_salt_equilibrium.esm's `g` (S_s - 1 where MOSAIC lets the salt exchange, 0 where it does not), and the solve's bounds e_salt >= 0 make it the mixed complementarity problem e_salt >= 0, g <= 0, e_salt g = 0 -- the equilibrium mesa_ptc approaches by explicit pseudo-time steps. The residual is assembled from the state exactly as couplings/mosaic_mesa_salt_rates.esm assembles it (mass balance, ions_to_electrolytes, ZSR water, MTEM activities, mesa_salt_equilibrium); that document carries the tests, at visited and at converged states, because the Rust CLI does not evaluate a document with an implicit equation (`unsupported_construct`, checked on be1fafe6d and on EarthSciAST main 3e1f9bb2f). This one is checked by `esm validate` (balanced: one array constraint for the one array algebraic unknown). No solver is written here (CLAUDE.md): the run configuration that solves it is mosaic_mesa_equilibrium.run.json beside this file.\n\nSIGN AND PAIRING. The constraint is written `0 ~ g`, so its residual rhs - lhs is g, the pseudo-time rate of e_salt (EarthSciIntegrator run-config \u00a74.10: g_i paired with z_i, element by element over `salt`). A salt whose g is identically zero at the state (Ca(NO3)2, CaCl2, and the calcium switch-offs; every salt when the liquid has no water) is not moved by a pseudo-time step, so `ptc` keeps it at its warm start, which is MOSAIC's own behaviour: mesa_ptc starts every hand-off from no salt solid (do_full_deliquescence; checked on 2108 taped calls) and never moves such a salt. A semismooth `newton` would see a zero Jacobian row there, hence `ptc`.\n\nWHAT IS NOT AN UNKNOWN. CaSO4 and CaCO3 are insoluble: their solid comes with the bin (`elec_s_fixed`) and ions_to_electrolytes moves any new CaSO4 there; the acids and HHSO4 are never solid."
+    "description": "MOSAIC's MESA solid-liquid equilibrium of one size bin (WRF v4.8.0 chem/module_mosaic_therm.F, mesa_ptc) STATED AS THE PROBLEM an EarthSciIntegrator bounded `solve` node solves (EarthSciIntegrator D95, PR #74): the fifteen solid salt amounts `Mesa.e_salt` are ALGEBRAIC UNKNOWNS, constrained by `0 ~ g` with g = mesa_salt_equilibrium.esm's `g` (S_s - 1 where MOSAIC lets the salt exchange, 0 where it does not), and the solve's bounds e_salt >= 0 make it the mixed complementarity problem e_salt >= 0, g <= 0, e_salt g = 0 -- the equilibrium mesa_ptc approaches by explicit pseudo-time steps. The residual is assembled from the state exactly as couplings/mosaic_mesa_salt_rates.esm assembles it (mass balance, ions_to_electrolytes, ZSR water, MTEM activities, mesa_salt_equilibrium); that document carries the tests, at visited and at converged states, because the Rust CLI does not evaluate a document with an implicit equation (`unsupported_construct`, checked on be1fafe6d and on EarthSciAST main 3e1f9bb2f). This one is checked by `esm validate` (balanced: one array constraint for the one array algebraic unknown). No solver is written here (CLAUDE.md): the run configuration that solves it is mosaic_mesa_equilibrium.run.json beside this file.\n\nSIGN AND PAIRING. The constraint is written `0 ~ g`, so its residual rhs - lhs is g, the pseudo-time rate of e_salt (EarthSciIntegrator run-config \u00a74.10: g_i paired with z_i, element by element over `salt`). A salt whose g is identically zero at the state (Ca(NO3)2, CaCl2, and the calcium switch-offs; every salt when the liquid has no water) is not moved by a pseudo-time step, so `ptc` keeps it at its warm start, which is MOSAIC's own behaviour: mesa_ptc starts every hand-off from no salt solid (do_full_deliquescence; checked on 2108 taped calls) and never moves such a salt. A semismooth `newton` would see a zero Jacobian row there, hence `ptc`.\n\nWHAT IS NOT AN UNKNOWN. CaSO4 and CaCO3 are insoluble: their solid comes with the bin (`elec_s_fixed`) and ions_to_electrolytes moves any new CaSO4 there; the acids and HHSO4 are never solid.\n\nEvery quantity carries the cell axes [lev, bin] (NLEV, NBIN, 1 by default) like the components it mounts, so this states the equilibrium of every size section of every grid cell at once; the bins are independent."
   },
   "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 1,
+      "description": "Grid cells (model levels); 1 for a single cell."
+    },
+    "NBIN": {
+      "type": "integer",
+      "default": 1,
+      "description": "MOSAIC size sections per cell; 1 for a single bin."
+    },
     "NEL": {
       "type": "integer",
       "default": 22,
@@ -20,6 +30,14 @@
     }
   },
   "index_sets": {
+    "lev": {
+      "kind": "interval",
+      "size": "NLEV"
+    },
+    "bin": {
+      "kind": "interval",
+      "size": "NBIN"
+    },
     "el": {
       "kind": "interval",
       "size": "NEL"
@@ -43,16 +61,32 @@
   },
   "models": {
     "I2E": {
-      "ref": "../components/aerosol/mosaic/ions_to_electrolytes.esm"
+      "ref": "../components/aerosol/mosaic/ions_to_electrolytes.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
     },
     "Zsr": {
-      "ref": "../components/aerosol/mosaic/aerosol_water_zsr.esm"
+      "ref": "../components/aerosol/mosaic/aerosol_water_zsr.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
     },
     "Act": {
-      "ref": "../components/aerosol/mosaic/mtem_activities.esm"
+      "ref": "../components/aerosol/mosaic/mtem_activities.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
     },
     "Eq": {
-      "ref": "../components/aerosol/mosaic/mesa_salt_equilibrium.esm"
+      "ref": "../components/aerosol/mosaic/mesa_salt_equilibrium.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
     },
     "Mesa": {
       "variables": {
@@ -60,18 +94,27 @@
           "type": "parameter",
           "units": "K",
           "default": 298.0,
-          "description": "Temperature."
+          "description": "Temperature.",
+          "shape": [
+            "lev"
+          ]
         },
         "a_w": {
           "type": "parameter",
           "units": "1",
           "default": 0.8,
-          "description": "The bin's water activity ah2o_a (the Kelvin-lowered value aerosol_phase_state passes in), at which compute_activities' ZSR water is taken."
+          "description": "The bin's water activity ah2o_a (the Kelvin-lowered value aerosol_phase_state passes in), at which compute_activities' ZSR water is taken.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         },
         "aer_t": {
           "type": "parameter",
           "units": "nmol/m^3",
           "shape": [
+            "lev",
+            "bin",
             "aer"
           ],
           "default": 0.0,
@@ -81,6 +124,8 @@
           "type": "parameter",
           "units": "nmol/m^3",
           "shape": [
+            "lev",
+            "bin",
             "el"
           ],
           "default": 0.0,
@@ -90,6 +135,7 @@
           "type": "parameter",
           "units": "1",
           "shape": [
+            "lev",
             "el",
             "solv"
           ],
@@ -100,18 +146,26 @@
           "type": "parameter",
           "units": "mol/kg",
           "default": 0.01,
-          "description": "Keq_ll(1) at the cell temperature."
+          "description": "Keq_ll(1) at the cell temperature.",
+          "shape": [
+            "lev"
+          ]
         },
         "k_w": {
           "type": "parameter",
           "units": "mol^2/kg^2",
           "default": 1e-14,
-          "description": "Keq_ll(3), water's ion product."
+          "description": "Keq_ll(3), water's ion product.",
+          "shape": [
+            "lev"
+          ]
         },
         "elec_s_fixed": {
           "type": "parameter",
           "units": "nmol/m^3",
           "shape": [
+            "lev",
+            "bin",
             "el"
           ],
           "default": 0.0,
@@ -121,6 +175,8 @@
           "type": "unknown",
           "units": "nmol/m^3",
           "shape": [
+            "lev",
+            "bin",
             "salt"
           ],
           "default": 0.0,
@@ -130,6 +186,8 @@
           "type": "unknown",
           "units": "nmol/m^3",
           "shape": [
+            "lev",
+            "bin",
             "el"
           ],
           "description": "The solid electrolytes of the state: the unknowns for the fifteen salts, elec_s_fixed for the rest."
@@ -138,6 +196,8 @@
           "type": "parameter",
           "units": "1",
           "shape": [
+            "lev",
+            "bin",
             "salt"
           ],
           "default": 0.0,
@@ -147,6 +207,8 @@
           "type": "parameter",
           "units": "nmol/m^3",
           "shape": [
+            "lev",
+            "bin",
             "sp"
           ],
           "default": 0.0,
@@ -155,37 +217,65 @@
         "so4": {
           "type": "unknown",
           "units": "nmol/m^3",
-          "description": "Liquid sulfate handed to compute_activities."
+          "description": "Liquid sulfate handed to compute_activities.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         },
         "no3": {
           "type": "unknown",
           "units": "nmol/m^3",
-          "description": "Liquid nitrate."
+          "description": "Liquid nitrate.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         },
         "cl": {
           "type": "unknown",
           "units": "nmol/m^3",
-          "description": "Liquid chloride."
+          "description": "Liquid chloride.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         },
         "nh4": {
           "type": "unknown",
           "units": "nmol/m^3",
-          "description": "Liquid ammonium."
+          "description": "Liquid ammonium.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         },
         "msa": {
           "type": "unknown",
           "units": "nmol/m^3",
-          "description": "Liquid MSA."
+          "description": "Liquid MSA.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         },
         "na": {
           "type": "unknown",
           "units": "nmol/m^3",
-          "description": "Liquid sodium."
+          "description": "Liquid sodium.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         },
         "ca": {
           "type": "unknown",
           "units": "nmol/m^3",
-          "description": "Liquid calcium."
+          "description": "Liquid calcium.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
         }
       },
       "equations": [
@@ -194,10 +284,18 @@
           "rhs": {
             "op": "faq",
             "output_idx": [
+              "k",
+              "b",
               "e"
             ],
             "args": [],
             "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
               "e": {
                 "from": "el"
               }
@@ -216,6 +314,8 @@
                   "op": "index",
                   "args": [
                     "e_salt",
+                    "k",
+                    "b",
                     "e"
                   ]
                 },
@@ -223,6 +323,8 @@
                   "op": "index",
                   "args": [
                     "elec_s_fixed",
+                    "k",
+                    "b",
                     "e"
                   ]
                 }
@@ -237,71 +339,197 @@
         {
           "lhs": "so4",
           "rhs": {
-            "op": "index",
-            "args": [
-              "a_liq",
-              1
-            ]
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                1
+              ]
+            }
           }
         },
         {
           "lhs": "no3",
           "rhs": {
-            "op": "index",
-            "args": [
-              "a_liq",
-              2
-            ]
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                2
+              ]
+            }
           }
         },
         {
           "lhs": "cl",
           "rhs": {
-            "op": "index",
-            "args": [
-              "a_liq",
-              3
-            ]
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                3
+              ]
+            }
           }
         },
         {
           "lhs": "nh4",
           "rhs": {
-            "op": "index",
-            "args": [
-              "a_liq",
-              4
-            ]
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                4
+              ]
+            }
           }
         },
         {
           "lhs": "msa",
           "rhs": {
-            "op": "index",
-            "args": [
-              "a_liq",
-              5
-            ]
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                5
+              ]
+            }
           }
         },
         {
           "lhs": "na",
           "rhs": {
-            "op": "index",
-            "args": [
-              "a_liq",
-              6
-            ]
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                6
+              ]
+            }
           }
         },
         {
           "lhs": "ca",
           "rhs": {
-            "op": "index",
-            "args": [
-              "a_liq",
-              7
-            ]
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                7
+              ]
+            }
           }
         }
       ]
