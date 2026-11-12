@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Fill the inline tests of components/aerosol/mosaic/{ions_to_electrolytes,mesa_ptc_step}.esm
-and couplings/mosaic_mesa_pass.esm from the MESA tape.
+"""Fill the inline tests of components/aerosol/mosaic/{ions_to_electrolytes,mesa_salt_equilibrium}.esm
+and couplings/mosaic_mesa_salt_rates.esm from the MESA tape.
+
+The MESA tests evaluate the solid-liquid equilibrium's RATE and RESIDUAL instantaneously at states
+mesa_ptc actually visited (the pass's starting solid); they do not assert mesa_ptc's step, its
+step-size heuristics or its stopping point, which are solver, not physics (CLAUDE.md).
 
 Source (numbers only; the components' equations are hand-written): the MESA tape that
 WRF fork earthsciml-instrumented-chem170 module_esm_mesa_tape writes from inside
@@ -81,16 +85,21 @@ def xt(a):  # a in tape ion order
     return (a[3] + a[6] + 2.0 * a[7]) / d if d > 0 else -1.0
 
 
+def snapped(r):
+    """Salts mesa_dissolve_small_salt returned to the liquid on this pass (a solver snap)."""
+    th, fl = r['therm'], r['flux']
+    return [s for s in range(NS) if th['elec_s'][s] != fl['elec_s'][s]]
+
+
 def keys_step(c, it, r):
-    """Branch keys of one pass, read off the tape (selection only)."""
+    """Physics-branch keys of the state a pass starts from, read off the tape (selection only)."""
     k = set()
-    th, fl, tp = r.get('therm'), r['flux'], r['top']
+    th, fl = r.get('therm'), r['flux']
     if th is None:
         return {'no_water'}
-    k.add('outcome_%d' % (1 if fl['iconv_mass'] else 2 if fl['iconv_flux'] else 0))
+    k.add('all_solid_%d' % fl['iconv_mass'])
     if fl['iconv_mass'] == 0 and fl['iconv_flux'] == 1:
-        k.add('flux_conv_dissolved_%d' % fl['idissolved'])
-    k.add('it1' if it == 1 else 'it2' if it == 2 else 'itlate' if it >= 40 else 'itmid')
+        k.add('all_liquid_%d' % fl['idissolved'])
     if c['entry']['mass_dry_salt'] < np.float32(1e-30):
         k.add('no_salt')
     if th['ions_l'][7] > 0:
@@ -112,59 +121,20 @@ def keys_step(c, it, r):
             k.add('mass_frac_just_below')
         if np.float32(0.98) <= fr < 0.99:
             k.add('mass_frac_just_above')
-    if fl['iconv_mass'] == 0:
-        pm = float(np.max(np.abs(fl['phi'])))
-        if np.float32(0.01) < pm <= 0.02:
-            k.add('phi_just_above_rtol')
-        if 0.005 <= pm <= np.float32(0.01):
-            k.add('phi_just_within_rtol')
-        if fl['iconv_flux'] == 1 and np.sum(np.abs(fl['flux'])) == 0:
-            if fl['elec_s'][21] + fl['elec_s'][20] + et[109] > 0:
-                k.add('crustal_solids_%s' % ('liquid' if fl['idissolved'] == 1 else 'mixed'))
+    if fl['iconv_mass'] == 0 and fl['iconv_flux'] == 1 and np.sum(np.abs(fl['flux'])) == 0:
+        if fl['elec_s'][21] + fl['elec_s'][20] + et[109] > 0:
+            k.add('crustal_solids_%s' % ('liquid' if fl['idissolved'] == 1 else 'mixed'))
+    if th['elec_s'][20] != r['top']['elec_s'][20]:
+        k.add('caso4_to_solid')
+    for s in snapped(r):
+        k.add('snap_' + SALT[s])
     for s in range(NS):
-        if DISSOLVABLE[s] and fl['sat'][s] < 1 and np.float32(0.01) <= th['elec_s'][s] / max(np.sum(th['elec_s'][:NS]), 1e-300) < 0.02:
-            k.add('small_salt_band')
-    x = xt(fl['ions_l'])
-    if np.float32(1.9999) <= x < 2:
-        k.add('est_split_band')
-    if x >= 2 or x < 0:
-        k.add('est_poor')
-        a = fl['ions_l']
-        if (2 * a[0] + a[1] + a[2] + a[4]) - (2 * a[7] + a[3] + a[6]) > 1e-6 * np.max(np.abs(a)):
-            k.add('est_poor_acid')
-    elif fl['ions_l'][3] == 0:
-        k.add('est_rich_no_nh4_' + ('gt1' if x > 1 else 'le1'))
-    else:
-        so4, na, nh4 = fl['ions_l'][0], fl['ions_l'][6], fl['ions_l'][3]
-        xna = 1 + 0.5 * na / so4
-        dum = 2 * so4 - na
-        xn = 2 * nh4 / dum if dum > 0 else 0.0
-        k.add('est_rich_nh4_' + (('xna_' + ('53' if xn >= np.float32(5 / 3) else '15' if xn >= 1.5 else '1'))
-                                 if x >= xna else 'gt1' if x > 1 else 'le1'))
-    for s in range(NS):
-        if th['elec_s'][s] != fl['elec_s'][s]:
-            k.add('dissolve_' + SALT[s])
         if fl['flux'][s] > 0:
             k.add('flux_pos_' + SALT[s])
         if fl['flux'][s] < 0:
             k.add('flux_neg_' + SALT[s])
-        if 'step' in r:
-            sp = r['step']
-            if fl['flux'][s] > 0 and sp['flux'][s] == 0:
-                k.add('taup_zero_pos')
-            if fl['flux'][s] < 0:
-                tpp = -fl['eleliquid'][s] / fl['flux'][s]; td = -fl['elec_s'][s] / fl['flux'][s]
-                k.add('neg_' + ('taup0' if tpp == 0 else 'taud' if td < tpp else 'taup'))
-            if sp['phi_bar'][s] < 0:
-                k.add('phibar_neg')
-            if sp['phi_bar'][s] == -10:
-                k.add('phibar_floor')
-            if sp['phi_bar'][s] > 0:
-                k.add('phibar_pos')
-            if sp['alpha'][s] == 0.9:
-                k.add('alpha_09')
-            if sp['alpha'][s] == 0.5:
-                k.add('alpha_05')
+        if fl['sat'][s] < 1 and fl['elec_s'][s] == 0 and s not in (12, 13):
+            k.add('undersat_no_solid')
     return k
 
 
@@ -208,59 +178,59 @@ def sp(v):
     return [float(v[i]) for i in SP]
 
 
+def rate_expected(c, r):
+    """sat, phi, flux the equilibrium's rate gives at the pass's starting state.  Equal to the FLUX record
+    except for a salt mesa_dissolve_small_salt snapped on that pass, whose taped flux_sl/phi_salt are 0 by
+    the snap: there the rate is formed from the taped S under the same switch-offs (solver snap removed)."""
+    fl, th = r['flux'], r['therm']
+    sat, phi, flux = fl['sat'].copy(), fl['phi'].copy(), fl['flux'].copy()
+    ca = th['ions_l'][7]
+    for s in snapped(r):
+        S = fl['sat'][s]
+        off = ca > 0 and (fl['frac_l'][s] < np.float32(0.01) or c['entry']['jsalt_present'][s] == 0)
+        flux[s] = 0.0 if off else S - 1.0
+        phi[s] = 0.0 if off else (S - 1.0) / max(S, 1.0)
+    return sat, phi, flux
+
+
 def step_test(tid, why, src, c, it, r):
     e, t, th, fl = c['entry'], r['top'], r['therm'], r['flux']
     scale = float(np.max(np.abs(e['ions_t'])))  # largest total species amount of the bin
     fa = 1e-12 * scale                            # round-off floor of a total-minus-solid difference
-    po = {'it': float(it), 't_k': float(e['t_k']), 'aer_t': [float(x) for x in c['aert']['aer_t']],
-          'elec_t': [float(x) for x in e['elec_t']], 'elec_s_in': [float(x) for x in t['elec_s']],
-          'phi_old_in': [float(x) for x in t['phi_old']], 'alpha_in': [float(x) for x in t['alpha']],
-          'phi_in': [float(x) for x in t['phi']], 'a_l': sp(th['ions_l']),
-          'caso4': float(th['elec_s'][20] - t['elec_s'][20]), 'elec_l': [float(x) for x in th['elec_l']],
-          'water': float(th['water']), 'activity': [float(x) for x in th['activity']]}
+    po = {'t_k': float(e['t_k']), 'aer_t': [float(x) for x in c['aert']['aer_t']],
+          'elec_t': [float(x) for x in e['elec_t']], 'elec_s': [float(x) for x in t['elec_s']],
+          'a_l': sp(th['ions_l']), 'caso4': float(th['elec_s'][20] - t['elec_s'][20]),
+          'elec_l': [float(x) for x in th['elec_l']], 'water': float(th['water']),
+          'activity': [float(x) for x in th['activity']]}
     A = []
     for s in range(NS):
         put(A, 'keq_sl', e['keq_sl'][s], {'salt': s + 1})
         put_exact(A, 'present', e['jsalt_present'][s], {'salt': s + 1})
     put(A, 'mass_dry', e['mass_dry_a']); put(A, 'mass_dry_salt', e['mass_dry_salt'])
+    for k, x in enumerate(sp(t['ions_s'])):
+        put(A, 'a_s', x, {'sp': k + 1}, ab=fa)
+    for k, x in enumerate(sp(t['ions_l'])):
+        put(A, 'a_l_state', x, {'sp': k + 1}, ab=fa)
+    sat, phi, flux = rate_expected(c, r)
     for s in range(NS):
-        for v, x in (('sat', fl['sat']), ('phi', fl['phi']), ('flux', fl['flux']), ('frac_s', fl['frac_s']),
-                     ('frac_l', fl['frac_l'])):
+        for v, x in (('sat', sat), ('phi', phi), ('flux', flux), ('frac_l', fl['frac_l'])):
             put(A, v, x[s], {'salt': s + 1})
-    for i in range(NE):
-        put(A, 'elec_s1', fl['elec_s'][i], {'el': i + 1}, ab=fa)
-        put(A, 'eleliquid', fl['eleliquid'][i], {'el': i + 1}, ab=fa)
-    for k, x in enumerate(sp(fl['ions_l'])):
-        put(A, 'a_l1', x, {'sp': k + 1}, ab=fa)
-    put_exact(A, 'conv_mass', fl['iconv_mass'])
-    if fl['iconv_mass'] == 0:
-        put_exact(A, 'conv_flux', fl['iconv_flux'])
-        put_exact(A, 'dissolved', fl['idissolved'])
-    oc = 1 if fl['iconv_mass'] else 2 if fl['iconv_flux'] else 0
-    put_exact(A, 'outcome', oc)
-    if 'step' in r:
-        stp = r['step']
-        for s in range(NS):
-            for v, x in (('phi_bar', stp['phi_bar']), ('alpha', stp['alpha']), ('hsalt', stp['hsalt']),
-                         ('flux_out', stp['flux']), ('phi_out', stp['phi'])):
-                put(A, v, x[s], {'salt': s + 1})
-        for i in range(NE):
-            put(A, 'elec_s_new', stp['elec_s'][i], {'el': i + 1}, ab=fa)
-        for k, x in enumerate(sp(stp['ions_s'])):
-            put(A, 'a_s_new', x, {'sp': k + 1}, ab=fa)
-        for k, x in enumerate(sp(stp['ions_l'])):
-            put(A, 'a_l_new', x, {'sp': k + 1}, ab=fa)
-    elif oc == 2:
-        for i in range(NE):
-            put(A, 'elec_s_exit', c['exit']['elec_s'][i], {'el': i + 1}, ab=fa)
-    desc = (f"{why} Source: {src}, pass {it}. Inputs: the pass's starting state (TOP record) and its "
-            "ions_to_electrolytes / water / activity results (THERM record); expected: the FLUX record "
-            "(after mesa_convergence_criterion), the STEP record (after the step, when the pass does not "
-            "exit) or the EXIT record (solid electrolytes on a flux-converged exit), and keq_sl / "
-            "jsalt_present / dry masses from the ENTRY record. Real64 MESA tape (WRF's own compiled "
-            "mesa_ptc via kernels/mosaic_therm_driver, WRF fork earthsciml-instrumented-chem170); rel 1e-9, "
-            "amounts with an absolute floor of 1e-12 of the bin's largest total species amount (the "
-            "round-off of a total-minus-solid difference), flags exactly.")
+    snap = snapped(r)
+    if not snap:
+        put_exact(A, 'all_solid', fl['iconv_mass'])
+        if fl['iconv_mass'] == 0:
+            put_exact(A, 'all_liquid', fl['idissolved'])
+    note = (" mesa_dissolve_small_salt snapped " + ', '.join(SALT[s] for s in snap) + " on this pass: its rate is "
+            "asserted as the taped S - 1 (the snap is solver), and the solid-mass flags are not asserted (the "
+            "Fortran forms them after the snap).") if snap else ""
+    desc = (f"{why} Source: {src}, pass {it}: the state mesa_ptc started this pass from.{note} Inputs: the pass's "
+            "starting solid (TOP record) and the ions_to_electrolytes / water / activity results at it (THERM "
+            "record); expected: S, phi, the rate and the liquid fractions (FLUX record), the mass balance against "
+            "the TOP record's own solid and liquid ions, keq_sl / jsalt_present / dry masses (ENTRY record) and "
+            "the phase flags (mesa_convergence_criterion). Real64 MESA tape (WRF's own compiled mesa_ptc via "
+            "kernels/mosaic_therm_driver, WRF fork earthsciml-instrumented-chem170); rel 1e-9, amounts with an "
+            "absolute floor of 1e-12 of the bin's largest total species amount (the round-off of a "
+            "total-minus-solid difference), flags exactly.")
     return {'id': tid, 'description': desc, 'parameter_overrides': po, 'time_span': {'start': 0, 'end': 1},
             'assertions': A}
 
@@ -288,34 +258,28 @@ def pass_test(tid, why, src, c, it, r):
     scale = float(np.max(np.abs(e['ions_t'])))
     fa = 1e-12 * scale
     gz = c['gamz']['log_gamz'].reshape((NE, NE), order='F')
-    po = {'MesaPass.it': float(it), 'MesaPass.t_k': float(e['t_k']), 'MesaPass.a_w': float(e['ah2o_a']),
-          'MesaPass.aer_t': [float(x) for x in c['aert']['aer_t']], 'MesaPass.elec_t': [float(x) for x in e['elec_t']],
-          'MesaPass.elec_s_in': [float(x) for x in t['elec_s']], 'MesaPass.a_l_in': sp(t['ions_l']),
-          'MesaPass.phi_old_in': [float(x) for x in t['phi_old']], 'MesaPass.alpha_in': [float(x) for x in t['alpha']],
-          'MesaPass.phi_in': [float(x) for x in t['phi']], 'MesaPass.log_gamz': gz.tolist(),
-          'MesaPass.keq_hso4': float(e['keq_ll'][0]), 'MesaPass.k_w': float(e['keq_ll'][2])}
+    po = {'MesaRates.t_k': float(e['t_k']), 'MesaRates.a_w': float(e['ah2o_a']),
+          'MesaRates.aer_t': [float(x) for x in c['aert']['aer_t']], 'MesaRates.elec_t': [float(x) for x in e['elec_t']],
+          'MesaRates.elec_s': [float(x) for x in t['elec_s']], 'MesaRates.log_gamz': gz.tolist(),
+          'MesaRates.keq_hso4': float(e['keq_ll'][0]), 'MesaRates.k_w': float(e['keq_ll'][2])}
     A = []
+    for k, x in enumerate(sp(t['ions_l'])):
+        put(A, 'Eq.a_l_state', x, {'sp': k + 1}, ab=fa)
     put(A, 'Zsr.water', th['water'])
+    sat, phi, flux = rate_expected(c, r)
     for s in range(NS):
         if s != 7:  # Na3H(SO4)2: the tape holds it after mesa_flux_salt zeroes it; Act returns the MTEM value
             put(A, 'Act.activity', th['activity'][s], {'el': s + 1})
-        for v, x in (('Step.sat', fl['sat']), ('Step.phi', fl['phi']), ('Step.flux', fl['flux'])):
+        for v, x in (('Eq.sat', sat), ('Eq.phi', phi), ('Eq.flux', flux)):
             put(A, v, x[s], {'salt': s + 1})
-    for i in range(NE):
-        put(A, 'Step.eleliquid', fl['eleliquid'][i], {'el': i + 1}, ab=fa)
-        put(A, 'Step.elec_s1', fl['elec_s'][i], {'el': i + 1}, ab=fa)
-    oc = 1 if fl['iconv_mass'] else 2 if fl['iconv_flux'] else 0
-    put_exact(A, 'Step.outcome', oc)
-    if 'step' in r:
-        for i in range(NE):
-            put(A, 'Step.elec_s_new', r['step']['elec_s'][i], {'el': i + 1}, ab=fa)
-        for k, x in enumerate(sp(r['step']['ions_l'])):
-            put(A, 'Step.a_l_new', x, {'sp': k + 1}, ab=fa)
-    desc = (f"{why} Source: {src}, pass {it}. The whole pass from its starting state (TOP record), the bin's "
-            "totals and water activity (ENTRY), and its MTEM inputs (GAMZ, keq_ll): ZSR water and activities as "
-            "mesa_flux_salt saw them (THERM), the fluxes and decisions (FLUX) and the next state (STEP). Real64 "
-            "MESA tape; rel 1e-9, amounts with an absolute floor of 1e-12 of the bin's largest total amount, "
-            "flags exactly.")
+    if not snapped(r):
+        put_exact(A, 'Eq.all_solid', fl['iconv_mass'])
+    desc = (f"{why} Source: {src}, pass {it}. The rate and residual of the solid-liquid equilibrium at the state "
+            "mesa_ptc started this pass from, assembled from that state alone: its solid (TOP record), the bin's "
+            "totals and water activity (ENTRY), and its MTEM inputs (GAMZ, keq_ll); expected: the liquid by mass "
+            "balance (TOP), the ZSR water and activities mesa_flux_salt saw (THERM), and S, phi and the rate "
+            "(FLUX; a salt mesa_dissolve_small_salt snapped is asserted at the taped S - 1). Real64 MESA tape; "
+            "rel 1e-9, amounts with an absolute floor of 1e-12 of the bin's largest total amount, flags exactly.")
     return {'id': tid, 'description': desc, 'parameter_overrides': po, 'time_span': {'start': 0, 'end': 1},
             'assertions': A}
 
@@ -353,16 +317,16 @@ def main(d):
                     if force:
                         late_nc += 1
                     seen_s |= ks
-                    why = ('Covers: ' + ', '.join(sorted(new)) + '.') if new else 'The 80th and last pass of a call MESA does not converge (it then calls the bin mixed).'
+                    why = ('Covers: ' + ', '.join(sorted(new)) + '.') if new else 'The state of the 80th and last pass of a call mesa_ptc does not converge (it then calls the bin mixed): the residual there is what its 80-pass cap leaves.'
                     step_sel.append(step_test(f"{short}_it{it}", why, src, c, it, r))
                     pass_sel.append(pass_test(f"{short}_it{it}", why, src, c, it, r))
                 ki = keys_i2e(r) - seen_i
                 if ki:
                     seen_i |= ki
                     i2e_sel.append(i2e_test(f"{short}_it{it}", 'Covers: ' + ', '.join(sorted(ki)) + '.', src, it, r))
-    for name, model, tests in ((os.path.join(COMP, 'mesa_ptc_step.esm'), 'MosaicMesaPtcStep', step_sel),
+    for name, model, tests in ((os.path.join(COMP, 'mesa_salt_equilibrium.esm'), 'MosaicMesaSaltEquilibrium', step_sel),
                                (os.path.join(COMP, 'ions_to_electrolytes.esm'), 'MosaicIonsToElectrolytes', i2e_sel),
-                               (os.path.join(HERE, '..', 'couplings', 'mosaic_mesa_pass.esm'), 'MesaPass', pass_sel)):
+                               (os.path.join(HERE, '..', 'couplings', 'mosaic_mesa_salt_rates.esm'), 'MesaRates', pass_sel)):
         p = name
         doc = json.load(open(p))
         doc['models'][model]['tests'] = tests

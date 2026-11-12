@@ -10,10 +10,17 @@ Sources (numbers only; the component's equations are hand-written):
 Both record real(kind=8) values (the thermodynamics is double precision), so the
 reference is double precision: rel 1e-9.
 
-What is asserted depends on the MESA branch the Fortran took (ps_sc path):
-  path 2 (liquid): everything the component computes;
-  paths 1, 4, 5 (solid): state, path, niter, ah2o_a, kelvin, water = 0, the partition;
-  path 6 (mesa_ptc, not transcribed): only path, niter = 1 is NOT implied, so only path.
+The component is evaluated at a given water activity ah2o_a (the unknown of the Kelvin equilibrium; the
+Kelvin iteration itself is solver and is not written, CLAUDE.md).  Each call gives a test at the Fortran's
+FINAL iterate (ah2o_a as it left it) and, for a call that took a second pass, a test at the FIRST iterate
+aw0, where aw_next must be the second iterate the Fortran moved to.  What is asserted at the final iterate
+depends on the MESA branch the Fortran took (ps_sc path):
+  path 2 (liquid): everything the component computes, and the residual aw0/K - x (the update the Fortran's
+                   1e-2 tolerance declined to apply);
+  paths 1, 4, 5 (solid): state, path, water = 0, the partition, and kelvin = 1 / residual 0 when the first
+                   pass was already solid (a solid reached on the SECOND pass carries the first iterate's K,
+                   asserted at the first iterate instead);
+  path 6 (mesa_ptc, not evaluated here): only path.
 
     python3 tools/fill_mosaic_phase_tests.py <dump_dir|-> <ps.json>
 """
@@ -58,32 +65,41 @@ def tol(x):
 
 
 EXACT = {"rel": 0.0, "abs": 0.0}
+PC_TO_FRAC = float(np.float32(0.01))   # pp.pc_to_frac, the binary32 0.01 of ah2o = rh_pc*0.01
 
 
 def build(v, k, b, slot, tid, why, src):
     s = v[f"ps_sc_{slot}"][:, b, k]
     path = int(s[SC["path"]])
     path = path % 10 if path >= 6 else path   # 6 + 10*outcome + 100*iterations for mesa_ptc
-    po = {"rh_pc": float(s[SC["rh_pc"]]), "t_k": float(v["ps_t_k"][k]), "num": float(s[SC["num"]]),
-          "aer_t": v[f"ps_aert_in_{slot}"][:, b, k].tolist(), "elec": v[f"ps_elet_in_{slot}"][:22, b, k].tolist(),
-          "water_hyst": float(s[SC["hyst_in"]])}
+    niter = int(s[SC["niter"]])
+    rh = float(s[SC["rh_pc"]])
+    aw0 = rh * PC_TO_FRAC
+    x = float(s[SC["ah2o_a"]])
+    base = {"rh_pc": rh, "t_k": float(v["ps_t_k"][k]), "num": float(s[SC["num"]]),
+            "aer_t": v[f"ps_aert_in_{slot}"][:, b, k].tolist(), "elec": v[f"ps_elet_in_{slot}"][:22, b, k].tolist(),
+            "water_hyst": float(s[SC["hyst_in"]])}
     assert float(v[f"ps_elet_in_{slot}"][22, b, k]) == 0.0
     a = [{"variable": "path", "time": 0.0, "expected": float(path), "tolerance": EXACT}]
-    def put(var, x, coords=None):
-        d = {"variable": var, "time": 0.0, "expected": float(x), "tolerance": tol(float(x))}
+    def put(var, val, coords=None, aa=a):
+        d = {"variable": var, "time": 0.0, "expected": float(val), "tolerance": tol(float(val))}
         if coords:
             d["coords"] = coords
-        a.append(d)
-    def put_exact(var, x):
-        a.append({"variable": var, "time": 0.0, "expected": float(x), "tolerance": EXACT})
+        aa.append(d)
+    def put_exact(var, val, aa=a):
+        aa.append({"variable": var, "time": 0.0, "expected": float(val), "tolerance": EXACT})
     put("water_up", s[SC["water_up"]])
     put("mass_dry", s[SC["mass_dry"]])
+    solid_late = path in (1, 4, 5) and niter > 1
     if path != 6:
         put_exact("state", s[SC["state"]])
         put_exact("jhyst", s[SC["jhyst"]])
-        put_exact("niter", s[SC["niter"]])
-        put("ah2o_a", s[SC["ah2o_a"]])
-        put("kelvin", s[SC["kelvin"]])
+        if not solid_late:
+            put("kelvin", s[SC["kelvin"]])
+            # the update the Fortran's tolerance declined to apply (0 exactly on a first-pass solid)
+            # a difference of two O(1) numbers: an absolute floor of 1e-14 for the cancellation
+            a.append({"variable": "kelvin_residual", "time": 0.0, "expected": aw0 / float(s[SC["kelvin"]]) - x,
+                      "tolerance": {"rel": REL, "abs": 1e-14}})
         put("water", s[SC["water"]])
         put("vol_dry", s[SC["vol_dry"]])
         if path == 5:
@@ -102,9 +118,26 @@ def build(v, k, b, slot, tid, why, src):
             put("aer_s", v[f"ps_aers_{slot}"][ia - 1, b, k], {"aer": ia})
     names = ["", "efflorescence below crh, all solid", "upper hysteresis leg, fully liquid", "", "no salt present, all solid",
              "below the mutual deliquescence point, all solid", "handed to mesa_ptc (only the branch, water_up and dry mass asserted)"]
-    desc = (f"{why[0].upper()}{why[1:]}: MESA path {path} ({names[path]}), {int(s[SC['niter']])} Kelvin pass(es), relative "
-            f"humidity {s[SC['rh_pc']]:.4f}%. {src}; tolerance rel {REL:g}, integer flags exactly.")
-    return {"id": tid, "description": desc, "parameter_overrides": po, "time_span": {"start": 0, "end": 1}, "assertions": a}
+    head = f"{why[0].upper()}{why[1:]}: MESA path {path} ({names[path]}), {niter} Kelvin pass(es), relative humidity {rh:.4f}%."
+    tail = f" {src}; tolerance rel {REL:g}, integer flags exactly."
+    po = dict(base, ah2o_a=x)
+    out = [{"id": tid, "description": head + " Evaluated at the water activity the Fortran's Kelvin iteration stopped at"
+            + (" (kelvin_residual is the update its tolerance declined to apply)." if path == 2 else
+               "; on this solid branch K = 1 and the residual is exactly 0." if path != 6 and not solid_late else
+               "; kelvin is not asserted here: the Fortran leaves the first iterate's K in it (asserted at that iterate)." if solid_late else ".")
+            + tail, "parameter_overrides": po, "time_span": {"start": 0, "end": 1}, "assertions": a}]
+    if niter == 2 and path != 6:
+        a1 = []
+        put("aw_next", x, aa=a1)
+        if solid_late:
+            put("kelvin", s[SC["kelvin"]], aa=a1)
+        out.append({"id": tid + "_it1", "description": head + " Evaluated at the FIRST iterate aw0 = rh_pc*0.01 the "
+                    "Fortran started from: aw_next = aw0/K(aw0) must be the second iterate it moved to (its final "
+                    "ah2o_a)" + ("; and kelvin is the K the Fortran left in kelvin(ibin) when the second iterate "
+                    "turned out solid" if solid_late else "") + "." + tail,
+                    "parameter_overrides": dict(base, ah2o_a=aw0), "time_span": {"start": 0, "end": 1},
+                    "assertions": a1})
+    return out
 
 
 def main(dump_dir, drv):
@@ -114,11 +147,11 @@ def main(dump_dir, drv):
         for step, lev, b1, slot, why in COL:
             if step not in cache:
                 cache[step] = load(os.path.join(dump_dir, f"esm_dump_mosaic_{step}.json"))["vars"]
-            tests.append(build(cache[step], lev - 1, b1 - 1, slot, f"col_s{step}_lev{lev}_bin{b1}_{slot}",
+            tests.extend(build(cache[step], lev - 1, b1 - 1, slot, f"col_s{step}_lev{lev}_bin{b1}_{slot}",
                                f"{why}; model step {step}, level {lev}, section {b1} of 8, the {'first' if slot == 'c1' else 'last'} call of the step", SRC_COL))
     v = load(drv)["vars"]
     for i, c in enumerate(json.load(open(os.path.join(os.path.dirname(drv), "cases_ps.json")))):
-        tests.append(build(v, i, 0, "c1", f"r_{c['id']}", f"hand-specified bin '{c['id']}': {c['intent']}", SRC_DRV))
+        tests.extend(build(v, i, 0, "c1", f"r_{c['id']}", f"hand-specified bin '{c['id']}': {c['intent']}", SRC_DRV))
     doc = json.load(open(COMP))
     doc["models"]["MosaicAerosolPhaseState"]["tests"] = tests
     with open(COMP, "w") as f:
