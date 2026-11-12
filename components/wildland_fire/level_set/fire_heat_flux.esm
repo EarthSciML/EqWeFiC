@@ -24,7 +24,7 @@
  "models": {
   "FireHeatFlux": {
    "reference": {
-    "notes": "source_ref: WildlandFire.jl@126976f2508ceacca6c486b21ae6da5b168c6f46:src/level_set_fire_spread.jl:295\nUpstream `FireHeatFlux` is an MTK `@component` whose three driving inputs (w_l, h_fuel, M_f) are `@parameters`, whose `fuel_burn_rate(t)` is a `@variables` driven externally (in the parent system, the FuelConsumption component supplies it as is_burning*F/T_f, the magnitude of -dF/dt), and whose two outputs (phi_h, phi_q) are time-indexed `@variables` defined by the two algebraic equations. The standalone .esm here folds `fuel_burn_rate` into the parameter set so the component is well-posed without a parent — matching the pattern used elsewhere in the rig (see components/aerosol/aq_eq/water.esm and components/wildland_fire/rothermel/live_fuel_moisture_extinction.esm) where externally-driven `@variables` and `@constants` are unified into ESM `parameter` declarations. The three upstream `@constants` (one=1.0, water_combustion_ratio=0.56, L_water=2.5e6) are likewise preserved as parameters with the upstream defaults.\n\nThe equations are the Mandel et al. (2011) closed-form sensible/latent heat flux densities:\n  phi_h = fuel_burn_rate * w_l * h_fuel / (one + M_f)             (Eq. 4)\n  phi_q = fuel_burn_rate * (M_f + water_combustion_ratio) / (one + M_f) * L_water * w_l   (Eq. 5)\n— preserved verbatim (the ordering of the multiplications inside phi_q matches the upstream Julia source so float64 roundoff is bit-identical).\n\nTolerance rationale (model-level rel=1e-12): observed-only algebraic system (no ODE integration); both equations are short chains of multiply/divide on hardware-supported intrinsics, so float64 roundoff is at the ULP level (~1e-15). 1e-12 is comfortably above that and below any plausible physical-discrimination scale on heat-flux quantities (fluxes range ~1e2 to ~1e5 W/m² across realistic Anderson fuel models)."
+    "notes": "source_ref: WildlandFire.jl@126976f2508ceacca6c486b21ae6da5b168c6f46:src/level_set_fire_spread.jl:295\nUpstream `FireHeatFlux` is an MTK `@component` whose three driving inputs (w_l, h_fuel, M_f) are `@parameters`, whose `fuel_burn_rate(t)` is a `@variables` driven externally (in the parent system, the FuelConsumption component supplies it as is_burning*F/T_f, the magnitude of -dF/dt), and whose two outputs (phi_h, phi_q) are time-indexed `@variables` defined by the two algebraic equations. The standalone .esm here folds `fuel_burn_rate` into the parameter set so the component is well-posed without a parent — matching the pattern used elsewhere in the rig (see components/aerosol/aq_eq/water.esm and components/wildland_fire/rothermel/live_fuel_moisture_extinction.esm) where externally-driven `@variables` and `@constants` are unified into ESM `parameter` declarations. The three upstream `@constants` (one=1.0, water_combustion_ratio=0.56, L_water=2.5e6) are likewise preserved as parameters with the upstream defaults.\n\nThe equations are the Mandel et al. (2011) closed-form sensible/latent heat flux densities:\n  phi_h = fuel_burn_rate * w_l * h_fuel / (one + M_f)             (Eq. 4)\n  phi_q = fuel_burn_rate * (M_f + water_combustion_ratio) / (one + M_f) * L_water * w_l   (Eq. 5)\n— preserved verbatim (the ordering of the multiplications inside phi_q matches the upstream Julia source so float64 roundoff is bit-identical).\n\nTolerance rationale (model-level rel=1e-12): observed-only algebraic system (no ODE integration); both equations are short chains of multiply/divide on hardware-supported intrinsics, so float64 roundoff is at the ULP level (~1e-15). 1e-12 is comfortably above that and below any plausible physical-discrimination scale on heat-flux quantities (the hand-computed tests span ~1e2 to ~1e5 W/m^2; the fire_behavior cells below reach ~1.7e6 W/m^2). The four fire_behavior_* tests override this with a test-level rel=1e-5, because their expected values were written by a single-precision (real32) Fortran build; re-evaluating eqs 4-5 in float64 on the same real32 inputs reproduces them to within 8e-7 relative.\n\nfire_behavior_* tests (shared provenance). Reference: NCAR's Community Fire Behavior Model (fire_behavior, develop @ eb77580, the WRF-Fire/SFIRE physics of WRF 4.8's phys/fire_behavior submodule; default real32 build, gfortran 13.3 -O2), running its own tests/test7 case (real Colorado domain, 80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1). Values were dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; the instrumented run's summary output is bit-identical to the uninstrumented build). Calc_fire_fluxes (physics/fire_physics_mod.F90) computes grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M). Since 1 - bmst = 1/(1 + M_f) and bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f), these are algebraically identical to eqs 4-5 as written here, with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g (the Anderson category load), h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not this component's 1.8608e7 default), M_f = fmc_g, water_combustion_ratio = 0.56 and L_water = XLV = 2.5e6 J/kg; the overrides carry the real32 values as stored. test7 has a uniform fmc_g = 0.08, so every dumped cell has the same phi_q/phi_h = (M_f + 0.56) L_water / h_fuel = 0.0918; the dumped cells therefore check the product fuel_burn_rate * w_l and the constants, and fire_behavior_constants_moist_fuel holds the moisture dependence under fire_behavior's constants. fire_behavior is the WRF-Fire physics used by EqWeFiC (https://github.com/EarthSciML/EqWeFiC), whose PLAN.md item 1.3 added these tests."
    },
    "tolerance": {
     "rel": 1e-12
@@ -329,7 +329,7 @@
     },
     {
      "id": "fire_behavior_step20_strongest_cell_cat2",
-     "description": "fire_behavior-derived test (EqWeFiC Phase 1, PLAN.md 1.3). Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: Calc_fire_fluxes (physics/fire_physics_mod.F90) at cell (i,j) = (17, 62) of the 20th step: grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M) are ALGEBRAICALLY IDENTICAL to Mandel et al. (2011) eqs 4-5 as written here (1 - bmst = 1/(1 + M_f); bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f)) with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g, h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not the 1.8608e7 default), M_f = fmc_g = 0.08, L_water = XLV = 2.5e6 J/kg.",
+     "description": "Strongest burning cell of the dump: (i,j) = (17, 62) at step 20, fuel category 2 (w_l = 0.896 kg/m^2). Expected phi_h, phi_q are fire_behavior's grnhft, grnqft at that cell (real32, hence rel 1e-5); provenance and the eqs 4-5 identity are in the model reference notes.",
      "parameter_overrides": {
       "fuel_burn_rate": 0.11735081672668457,
       "w_l": 0.8960000276565552,
@@ -339,8 +339,8 @@
       "water_combustion_ratio": 0.5600000023841858
      },
      "time_span": {
-      "start": 0,
-      "end": 1
+      "start": 0.0,
+      "end": 1.0
      },
      "tolerance": {
       "rel": 1e-05
@@ -349,24 +349,18 @@
       {
        "variable": "phi_h",
        "time": 0.0,
-       "expected": 1697237.0,
-       "tolerance": {
-        "rel": 1e-05
-       }
+       "expected": 1697237.0
       },
       {
        "variable": "phi_q",
        "time": 0.0,
-       "expected": 155772.34375,
-       "tolerance": {
-        "rel": 1e-05
-       }
+       "expected": 155772.34375
       }
      ]
     },
     {
      "id": "fire_behavior_step20_cat2_cell",
-     "description": "fire_behavior-derived test (EqWeFiC Phase 1, PLAN.md 1.3). Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: Calc_fire_fluxes (physics/fire_physics_mod.F90) at cell (i,j) = (18, 64) of the 20th step: grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M) are ALGEBRAICALLY IDENTICAL to Mandel et al. (2011) eqs 4-5 as written here (1 - bmst = 1/(1 + M_f); bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f)) with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g, h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not the 1.8608e7 default), M_f = fmc_g = 0.08, L_water = XLV = 2.5e6 J/kg.",
+     "description": "A second fuel-category-2 cell (w_l = 0.896 kg/m^2): (i,j) = (18, 64) at step 20. Expected phi_h, phi_q are fire_behavior's grnhft, grnqft at that cell (real32, hence rel 1e-5); provenance and the eqs 4-5 identity are in the model reference notes.",
      "parameter_overrides": {
       "fuel_burn_rate": 0.10704100131988525,
       "w_l": 0.8960000276565552,
@@ -376,8 +370,8 @@
       "water_combustion_ratio": 0.5600000023841858
      },
      "time_span": {
-      "start": 0,
-      "end": 1
+      "start": 0.0,
+      "end": 1.0
      },
      "tolerance": {
       "rel": 1e-05
@@ -386,24 +380,18 @@
       {
        "variable": "phi_h",
        "time": 0.0,
-       "expected": 1548126.875,
-       "tolerance": {
-        "rel": 1e-05
-       }
+       "expected": 1548126.875
       },
       {
        "variable": "phi_q",
        "time": 0.0,
-       "expected": 142087.03125,
-       "tolerance": {
-        "rel": 1e-05
-       }
+       "expected": 142087.03125
       }
      ]
     },
     {
      "id": "fire_behavior_step20_weak_edge_cell_cat1",
-     "description": "fire_behavior-derived test (EqWeFiC Phase 1, PLAN.md 1.3). Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: Calc_fire_fluxes (physics/fire_physics_mod.F90) at cell (i,j) = (26, 64) of the 20th step: grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M) are ALGEBRAICALLY IDENTICAL to Mandel et al. (2011) eqs 4-5 as written here (1 - bmst = 1/(1 + M_f); bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f)) with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g, h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not the 1.8608e7 default), M_f = fmc_g = 0.08, L_water = XLV = 2.5e6 J/kg.",
+     "description": "Weakly burning cell at the fire edge, fuel category 1 (w_l = 0.166 kg/m^2): (i,j) = (26, 64) at step 20. Expected phi_h, phi_q are fire_behavior's grnhft, grnqft at that cell (real32, hence rel 1e-5); provenance and the eqs 4-5 identity are in the model reference notes.",
      "parameter_overrides": {
       "fuel_burn_rate": 0.0007721185684204102,
       "w_l": 0.16599999368190765,
@@ -413,8 +401,8 @@
       "water_combustion_ratio": 0.5600000023841858
      },
      "time_span": {
-      "start": 0,
-      "end": 1
+      "start": 0.0,
+      "end": 1.0
      },
      "tolerance": {
       "rel": 1e-05
@@ -423,24 +411,18 @@
       {
        "variable": "phi_h",
        "time": 0.0,
-       "expected": 2068.904541015625,
-       "tolerance": {
-        "rel": 1e-05
-       }
+       "expected": 2068.904541015625
       },
       {
        "variable": "phi_q",
        "time": 0.0,
-       "expected": 189.88397216796875,
-       "tolerance": {
-        "rel": 1e-05
-       }
+       "expected": 189.88397216796875
       }
      ]
     },
     {
-     "id": "fire_behavior_step10_early_cell",
-     "description": "fire_behavior-derived test (EqWeFiC Phase 1, PLAN.md 1.3). Reference: NCAR fire_behavior (develop @ eb77580, default real32 build, gfortran 13.3 -O2 in the EqWeFiC container) running its test7 case (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, c9dda02, -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single-precision source: rel 1e-5 (CLAUDE.md contract), abs 1e-7 where a value is exactly 0 or 1. Regime: Calc_fire_fluxes (physics/fire_physics_mod.F90) at cell (i,j) = (19, 61) of the 10th step: grnhft = (dmass/dt)(1 - bmst) CMBCNST and grnqft = (bmst + (1 - bmst) 0.56)(dmass/dt) XLV with dmass = fuel_load_g fuel_frac_burnt_dt and bmst = M/(1 + M) are ALGEBRAICALLY IDENTICAL to Mandel et al. (2011) eqs 4-5 as written here (1 - bmst = 1/(1 + M_f); bmst + (1 - bmst) 0.56 = (M_f + 0.56)/(1 + M_f)) with fuel_burn_rate = fuel_frac_burnt_dt/dt, w_l = fuel_load_g, h_fuel = CMBCNST = 1.7433e7 J/kg (fire_behavior's value, not the 1.8608e7 default), M_f = fmc_g = 0.08, L_water = XLV = 2.5e6 J/kg.",
+     "id": "fire_behavior_step10_early_cell_cat1",
+     "description": "Early burning cell, fuel category 1 (w_l = 0.166 kg/m^2): (i,j) = (19, 61) at step 10. Expected phi_h, phi_q are fire_behavior's grnhft, grnqft at that cell (real32, hence rel 1e-5); provenance and the eqs 4-5 identity are in the model reference notes.",
      "parameter_overrides": {
       "fuel_burn_rate": 0.0662459135055542,
       "w_l": 0.16599999368190765,
@@ -450,8 +432,8 @@
       "water_combustion_ratio": 0.5600000023841858
      },
      "time_span": {
-      "start": 0,
-      "end": 1
+      "start": 0.0,
+      "end": 1.0
      },
      "tolerance": {
       "rel": 1e-05
@@ -460,18 +442,40 @@
       {
        "variable": "phi_h",
        "time": 0.0,
-       "expected": 177507.015625,
-       "tolerance": {
-        "rel": 1e-05
-       }
+       "expected": 177507.015625
       },
       {
        "variable": "phi_q",
        "time": 0.0,
-       "expected": 16291.5869140625,
-       "tolerance": {
-        "rel": 1e-05
-       }
+       "expected": 16291.5869140625
+      }
+     ]
+    },
+    {
+     "id": "fire_behavior_constants_moist_fuel",
+     "description": "Moisture dependence under fire_behavior's constants, which the dumped cells cannot check (test7's fmc_g is uniformly 0.08). Same inputs as fire_behavior_step20_strongest_cell_cat2 but M_f = 0.3, evaluated in float64 from fire_behavior's own form: bmst = 0.3/1.3, grnhft = fbr w_l (1 - bmst) CMBCNST = 1410012.353 W/m^2, grnqft = (bmst + (1 - bmst) 0.56) fbr w_l XLV = 173895.8623 W/m^2. Against the M_f = 0.08 cell, phi_h falls by 1.08/1.3 and phi_q/phi_h rises from 0.0918 to (0.3 + 0.56) 2.5e6/1.7433e7 = 0.1233; a regression in either moisture term (the 1/(1 + M_f) damping or the M_f + 0.56 numerator) fails here.",
+     "parameter_overrides": {
+      "fuel_burn_rate": 0.11735081672668457,
+      "w_l": 0.8960000276565552,
+      "h_fuel": 17433000.0,
+      "M_f": 0.3,
+      "L_water": 2500000.0,
+      "water_combustion_ratio": 0.5600000023841858
+     },
+     "time_span": {
+      "start": 0.0,
+      "end": 1.0
+     },
+     "assertions": [
+      {
+       "variable": "phi_h",
+       "time": 0.0,
+       "expected": 1410012.352787551
+      },
+      {
+       "variable": "phi_q",
+       "time": 0.0,
+       "expected": 173895.8622668252
       }
      ]
     }

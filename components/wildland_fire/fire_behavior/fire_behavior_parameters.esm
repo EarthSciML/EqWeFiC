@@ -2,7 +2,7 @@
  "esm": "1.0.0",
  "metadata": {
   "name": "FireBehaviorParameters",
-  "description": "Scheme constants and unit conversions of NCAR's Community Fire Behavior Model (fire_behavior, the WRF-Fire/SFIRE physics line: physics/ros_wrffire_mod.F90, fuel_anderson_mod.F90, fmc_wrffire_mod.F90, level_set_mod.F90, fire_physics_mod.F90, share/constants_mod.F90 and share/fuel_mod.F90), transcribed from the `parameter` declarations and in-line literals of the Fortran. Mounted by the fire_behavior components as subsystem `par` so that no tuning constant is written inline in the physics. The Rothermel (1972) fits are empirical formulae in US customary units (ft, lb, Btu, min); fire_behavior converts the SI fuel inputs to those units, evaluates the fits, and converts the spread rate back, so the conversion factors are scheme constants here (the Fortran literals 0.3048, 2.205, 196.850, 0.00508, 1055 -- note 196.850 ft/min per m/s and 0.00508 m/s per ft/min are each written independently in the source and are not exact reciprocals). The coefficients of the US-unit fits are dimensionless numbers whose implied units are recorded in their descriptions. Values are the nominal decimal values of the source; fire_behavior is a default-real (real32) code, so every test against it uses rel 1e-5 (CLAUDE.md single-precision contract).",
+  "description": "Scheme constants and unit conversions of NCAR's Community Fire Behavior Model (fire_behavior, the WRF-Fire/SFIRE physics line: physics/ros_wrffire_mod.F90, fuel_anderson_mod.F90, fmc_wrffire_mod.F90, level_set_mod.F90, fire_physics_mod.F90, share/constants_mod.F90 and share/fuel_mod.F90), transcribed from the `parameter` declarations and in-line literals of the Fortran, including the fuel-moisture fits and class tables of fmc_wrffire_mod and the single-precision tiny and epsilon. Mounted by the fire_behavior components as subsystem `par` so that no tuning constant is written inline in the physics. The Rothermel (1972) fits are empirical formulae in US customary units (ft, lb, Btu, min); fire_behavior converts the SI fuel inputs to those units, evaluates the fits, and converts the spread rate back, so the conversion factors are scheme constants here (the Fortran literals 0.3048, 2.205, 196.850, 0.00508, 1055 -- note 196.850 ft/min per m/s and 0.00508 m/s per ft/min are each written independently in the source and are not exact reciprocals). The coefficients of the US-unit fits are dimensionless numbers whose implied units are recorded in their descriptions. Values are the nominal decimal values of the source; fire_behavior is a default-real (real32) code, so every test against it uses rel 1e-5 (the tolerance contract for a single-precision reference).",
   "license": "MIT",
   "tags": [
    "wildland_fire",
@@ -305,17 +305,17 @@
      "default": 0.03333,
      "description": "Chaparral backing-fire spread rate floor, 0.033 m/s."
     },
-    "tiny_speed": {
-     "type": "parameter",
-     "units": "m/s",
-     "default": 1.1754944e-38,
-     "description": "tiny(real32) added to the wind speed so the wind-direction cosine is defined for calm air (Calc_ros_wrffire)."
-    },
-    "tiny_slope": {
+    "tiny_real32": {
      "type": "parameter",
      "units": "1",
      "default": 1.1754944e-38,
-     "description": "tiny(real32) added to the slope magnitude so the slope-direction cosine is defined on flat ground."
+     "description": "tiny(real32), the smallest normal single-precision number. fire_behavior adds it to the wind speed and the slope magnitude so the direction cosines are defined in calm air on flat ground (Calc_ros_wrffire), and floors the sum of |lfn| over a subcell's corners with it (Calc_fuel_left); multiply by a unit_* carrier where it is added to a dimensioned quantity."
+    },
+    "eps_real32": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.1920928955078125e-07,
+     "description": "epsilon(real32), the single-precision machine epsilon: Update_ignition_times nudges the step-end time up by |time_now| epsilon 2 so that cells the front has not reached carry tign > time_now."
     },
     "unit_speed": {
      "type": "parameter",
@@ -345,19 +345,7 @@
      "type": "parameter",
      "units": "1",
      "default": 0.85,
-     "description": "fuel_time = weight / 0.85 s (state_mod Init_fuel_vars; the EarthSciModels FuelConsumption default uses 0.8514)."
-    },
-    "fuel_time_no_fuel_weight": {
-     "type": "parameter",
-     "units": "s",
-     "default": 7.0,
-     "description": "Weight used for the no-fuel category's fuel_time (7/0.85 s)."
-    },
-    "water_fraction_of_cellulose": {
-     "type": "parameter",
-     "units": "1",
-     "default": 0.56,
-     "description": "Mass of water produced per unit dry fuel burnt (Calc_fire_fluxes: 56 % of the cellulose mass)."
+     "description": "fuel_time = weight / 0.85 s (state_mod Init_fuel_vars; the EarthSciModels FuelConsumption default uses 0.8514). Init_fuel_vars writes the no-fuel category's value as 7.0 / 0.85, which is weight(14) / 0.85."
     },
     "wind_ref_height": {
      "type": "parameter",
@@ -387,7 +375,7 @@
      "type": "parameter",
      "units": "1",
      "default": 0.15,
-     "description": "Wind adjustment factor when the flame does not top the vegetation (unreachable with the 2x flame ratio)."
+     "description": "Wind adjustment factor when the assumed flame does not top the vegetation (flame length <= fuel bed height, i.e. waf_flame_ratio <= 1; Calc_wind_adjustment_factor's else branch). Not reached with the default ratio 2."
     },
     "fmc_eps_mw": {
      "type": "parameter",
@@ -403,15 +391,21 @@
     },
     "fmep_decay_tlag_h": {
      "type": "parameter",
-     "units": "1",
+     "units": "h",
      "default": 999999.0,
-     "description": "FMEP_DECAY_TLAG: decay time (h) of the assimilated equilibrium adjustments."
+     "description": "FMEP_DECAY_TLAG: decay time of the assimilated equilibrium adjustments, in hours."
     },
     "s_per_h": {
      "type": "parameter",
-     "units": "1",
+     "units": "s/h",
      "default": 3600.0,
-     "description": "Seconds per hour (moisture time lags are given in hours; rain intensity in mm/h)."
+     "description": "Seconds per hour: converts the moisture time lags (h) to seconds and the rain-rate difference (mm/s) to mm/h."
+    },
+    "unit_rain_rate": {
+     "type": "parameter",
+     "units": "mm/h",
+     "default": 1.0,
+     "description": "One millimetre per hour: units carrier of the zero rain rate used when the moisture step has zero length."
     },
     "unit_kelvin": {
      "type": "parameter",
@@ -430,6 +424,198 @@
      "units": "1",
      "default": 294.25,
      "description": "21.1 + 273.15 K reference temperature of the Van Wagner & Pickett (1972) equilibrium moisture fits (written as 21.1 + 273.15 in the source)."
+    },
+    "mk_c0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 54.842763,
+     "description": "Murphy & Koop (2005) eq. 10 saturation vapour pressure over liquid water, ln(e_s/Pa) = c0 + c1/T + c2 ln T + c3 T + tanh(c_tanh (T - T_tanh)) (c4 + c5/T + c6 ln T + c7 T), T in K: constant c0."
+    },
+    "mk_c1": {
+     "type": "parameter",
+     "units": "1",
+     "default": -6763.22,
+     "description": "Murphy-Koop c1, coefficient of 1/T (K)."
+    },
+    "mk_c2": {
+     "type": "parameter",
+     "units": "1",
+     "default": -4.21,
+     "description": "Murphy-Koop c2, coefficient of ln T (written -4.210 in the source)."
+    },
+    "mk_c3": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.000367,
+     "description": "Murphy-Koop c3, coefficient of T (1/K)."
+    },
+    "mk_c_tanh": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0415,
+     "description": "Murphy-Koop coefficient of (T - T_tanh) in the tanh blending (1/K)."
+    },
+    "mk_t_tanh": {
+     "type": "parameter",
+     "units": "1",
+     "default": 218.8,
+     "description": "Murphy-Koop blending temperature T_tanh (K)."
+    },
+    "mk_c4": {
+     "type": "parameter",
+     "units": "1",
+     "default": 53.878,
+     "description": "Murphy-Koop c4, constant of the blended term."
+    },
+    "mk_c5": {
+     "type": "parameter",
+     "units": "1",
+     "default": -1331.22,
+     "description": "Murphy-Koop c5, coefficient of 1/T in the blended term (K)."
+    },
+    "mk_c6": {
+     "type": "parameter",
+     "units": "1",
+     "default": -9.44523,
+     "description": "Murphy-Koop c6, coefficient of ln T in the blended term."
+    },
+    "mk_c7": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.014025,
+     "description": "Murphy-Koop c7, coefficient of T in the blended term (1/K)."
+    },
+    "vwp_drying_c1": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.942,
+     "description": "Van Wagner & Pickett (1972) drying (desorption) equilibrium moisture, per cent, per Viney (1991) eq. 7: d = 0.942 H^0.679 + 0.000499 e^{0.1 H} + 0.18 (21.1 + 273.15 - T) (1 - e^{-0.115 H}), H the relative humidity in per cent: coefficient 0.942."
+    },
+    "vwp_drying_p1": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.679,
+     "description": "Exponent of H in the drying equilibrium."
+    },
+    "vwp_drying_c2": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.000499,
+     "description": "Coefficient of e^{0.1 H} in the drying equilibrium."
+    },
+    "vwp_wetting_c1": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.618,
+     "description": "Van Wagner & Pickett (1972) wetting (adsorption) equilibrium moisture, per cent, per Viney (1991) eq. 8: w = 0.618 H^0.753 + 0.000454 e^{0.1 H} + 0.18 (21.1 + 273.15 - T) (1 - e^{-0.115 H}): coefficient 0.618."
+    },
+    "vwp_wetting_p1": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.753,
+     "description": "Exponent of H in the wetting equilibrium."
+    },
+    "vwp_wetting_c2": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.000454,
+     "description": "Coefficient of e^{0.1 H} in the wetting equilibrium."
+    },
+    "vwp_exp_rh": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.1,
+     "description": "Coefficient of H in the e^{0.1 H} term of both equilibria."
+    },
+    "vwp_temp_coef": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.18,
+     "description": "Coefficient of the temperature correction (21.1 + 273.15 - T) of both equilibria (1/K)."
+    },
+    "vwp_temp_rh": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.115,
+     "description": "Coefficient of H in the (1 - e^{-0.115 H}) factor of the temperature correction."
+    },
+    "fmc_drying_lag_1": {
+     "type": "parameter",
+     "units": "h",
+     "default": 1.0,
+     "description": "Drying time lag of moisture class 1 (1-h fuel; fmc_wrffire_mod drying_lag)."
+    },
+    "fmc_drying_lag_2": {
+     "type": "parameter",
+     "units": "h",
+     "default": 10.0,
+     "description": "Drying time lag of moisture class 2 (10-h fuel; fmc_wrffire_mod drying_lag)."
+    },
+    "fmc_drying_lag_3": {
+     "type": "parameter",
+     "units": "h",
+     "default": 100.0,
+     "description": "Drying time lag of moisture class 3 (100-h fuel; fmc_wrffire_mod drying_lag)."
+    },
+    "fmc_drying_lag_4": {
+     "type": "parameter",
+     "units": "h",
+     "default": 1000.0,
+     "description": "Drying time lag of moisture class 4 (1000-h fuel; fmc_wrffire_mod drying_lag)."
+    },
+    "fmc_drying_lag_5": {
+     "type": "parameter",
+     "units": "h",
+     "default": 1000000000.0,
+     "description": "Drying time lag of moisture class 5 (live fuel; fmc_wrffire_mod drying_lag)."
+    },
+    "fmc_wetting_lag_1": {
+     "type": "parameter",
+     "units": "h",
+     "default": 1.4,
+     "description": "Wetting time lag in rain of moisture class 1 (1-h fuel; fmc_wrffire_mod wetting_lag)."
+    },
+    "fmc_wetting_lag_2": {
+     "type": "parameter",
+     "units": "h",
+     "default": 14.0,
+     "description": "Wetting time lag in rain of moisture class 2 (10-h fuel; fmc_wrffire_mod wetting_lag)."
+    },
+    "fmc_wetting_lag_3": {
+     "type": "parameter",
+     "units": "h",
+     "default": 140.0,
+     "description": "Wetting time lag in rain of moisture class 3 (100-h fuel; fmc_wrffire_mod wetting_lag)."
+    },
+    "fmc_wetting_lag_4": {
+     "type": "parameter",
+     "units": "h",
+     "default": 1400.0,
+     "description": "Wetting time lag in rain of moisture class 4 (1000-h fuel; fmc_wrffire_mod wetting_lag)."
+    },
+    "fmc_wetting_lag_5": {
+     "type": "parameter",
+     "units": "h",
+     "default": 1000000000.0,
+     "description": "Wetting time lag in rain of moisture class 5 (live fuel; fmc_wrffire_mod wetting_lag)."
+    },
+    "fmc_saturation_moisture": {
+     "type": "parameter",
+     "units": "1",
+     "default": 2.5,
+     "description": "Saturation moisture content reached in rain (fmc_wrffire_mod saturation_moisture, 2.5 for every class)."
+    },
+    "fmc_saturation_rain": {
+     "type": "parameter",
+     "units": "mm/h",
+     "default": 8.0,
+     "description": "Rain intensity scale of the wetting rate 1 - exp(-r/8 mm/h) (fmc_wrffire_mod saturation_rain, the same for every class)."
+    },
+    "fmc_rain_threshold": {
+     "type": "parameter",
+     "units": "mm/h",
+     "default": 0.05,
+     "description": "Rain intensity below which a class sees no rain (fmc_wrffire_mod rain_threshold, the same for every class)."
     },
     "pi": {
      "type": "parameter",

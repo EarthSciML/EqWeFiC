@@ -19,6 +19,11 @@
  },
  "models": {
   "IgnitionTimeWRFFire": {
+   "subsystems": {
+    "par": {
+     "ref": "./fire_behavior_parameters.esm"
+    }
+   },
    "variables": {
     "ts": {
      "type": "parameter",
@@ -53,7 +58,7 @@
     "time_now": {
      "type": "unknown",
      "units": "s",
-     "description": "End of the step, ts + dt, nudged up by 2 epsilon(real32) |ts + dt| as the Fortran does so that a node marked 'not yet ignited' compares strictly later than the step end."
+     "description": "Step-end time nudged up by |ts + dt| epsilon(real32) 2 (Update_ignition_times: time_now = ts + dt; time_now = time_now + abs(time_now) * epsilon(time_now) * 2.0), so that a cell the front has not reached carries tign > time_now and is not counted as burning, also for a negative time."
     },
     "crossing": {
      "type": "unknown",
@@ -64,19 +69,13 @@
      "type": "unknown",
      "units": "s",
      "description": "Ignition time after the step: ts + dt lfn_in/(lfn_in - lfn_out) (linear interpolation of the zero crossing) where the front crosses the cell, time_now where the cell is still unburnt (lfn_out > 0), otherwise unchanged."
-    },
-    "eps_real32": {
-     "type": "parameter",
-     "units": "1",
-     "default": 1.1920928955078125e-07,
-     "description": "epsilon(real32); the nudge of time_now is |time_now| epsilon 2 (Update_ignition_times)."
     }
    },
    "equations": [
     {
      "lhs": "time_now",
      "rhs": {
-      "op": "*",
+      "op": "+",
       "args": [
        {
         "op": "+",
@@ -86,16 +85,22 @@
         ]
        },
        {
-        "op": "+",
+        "op": "*",
         "args": [
-         1.0,
          {
-          "op": "*",
+          "op": "abs",
           "args": [
-           2.0,
-           "eps_real32"
+           {
+            "op": "+",
+            "args": [
+             "ts",
+             "dt"
+            ]
+           }
           ]
-         }
+         },
+         "par.eps_real32",
+         2.0
         ]
        }
       ]
@@ -186,129 +191,209 @@
     }
    ],
    "tests": [
-     {
-       "id": "step20_crossing_cell",
-       "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (-DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single precision: rel 1e-5 (CLAUDE.md contract). Regime: cell (i,j) = (16, 60), step 20 (ts = 10 s), the front crosses the cell during step 20 (lfn_in > 0 >= lfn_out): interpolated ignition time.",
-       "parameter_overrides": {
-         "ts": 10.0,
-         "dt": 0.5,
-         "lfn_in": 13.677032470703125,
-         "lfn_out": 13.668548583984375,
-         "tign_before": 10.000001907348633
-       },
-       "expression_template_imports": [
-         {
-           "ref": "./tests/step20_crossing_cell_inputs.esm"
-         }
-       ],
-       "time_span": {
-         "start": 0,
-         "end": 1
-       },
-       "tolerance": {
-         "rel": 1e-05
-       },
-       "assertions": [
-         {
-           "variable": "time_now",
-           "time": 0.0,
-           "expected": 10.50000286102295,
-           "tolerance": {
-             "rel": 1e-07
-           }
-         },
-         {
-           "variable": "tign",
-           "time": 0.0,
-           "expected": 10.50000286102295,
-           "tolerance": {
-             "rel": 1e-05
-           }
-         }
-       ]
+    {
+     "id": "step22_crossing_cell",
+     "description": "Reference: NCAR fire_behavior test7 with its end time moved from 10 s to 40 s (the run stops at 11 s, where the atmosphere frames of test7's wrf.nc end; the first 20 steps are those of the 10 s run) (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, based on NCAR fire_behavior eb77580, three commits before v1.0.0; -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single precision: rel 1e-5 (the tolerance contract for a single-precision reference). Regime: cell (i,j) = (25, 65), step 22 (ts = 11 s; ls_tign dump call 22), the front crosses the cell during the step (lfn_in = 0.3354 m > 0 >= lfn_out = -0.0924 m): tign is the linear interpolation of the zero crossing, ts + dt lfn_in / (lfn_in - lfn_out). The only crossing in the dumped steps of the default run.",
+     "parameter_overrides": {
+      "ts": 11.0,
+      "dt": 0.5,
+      "lfn_in": 0.3354034423828125,
+      "lfn_out": -0.09243237972259521,
+      "tign_before": 11.00000286102295
      },
-     {
-       "id": "step20_burning_cell",
-       "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (-DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single precision: rel 1e-5 (CLAUDE.md contract). Regime: cell (i,j) = (17, 60), step 20 (ts = 10 s), already burning (lfn_in <= 0): ignition time unchanged.",
-       "parameter_overrides": {
-         "ts": 10.0,
-         "dt": 0.5,
-         "lfn_in": -12.104354858398438,
-         "lfn_out": -12.11306381225586,
-         "tign_before": 8.99034309387207
-       },
-       "expression_template_imports": [
-         {
-           "ref": "./tests/step20_burning_cell_inputs.esm"
-         }
-       ],
-       "time_span": {
-         "start": 0,
-         "end": 1
-       },
-       "tolerance": {
-         "rel": 1e-05
-       },
-       "assertions": [
-         {
-           "variable": "time_now",
-           "time": 0.0,
-           "expected": 10.50000286102295,
-           "tolerance": {
-             "rel": 1e-07
-           }
-         },
-         {
-           "variable": "tign",
-           "time": 0.0,
-           "expected": 8.99034309387207,
-           "tolerance": {
-             "rel": 1e-05
-           }
-         }
-       ]
+     "time_span": {
+      "start": 0,
+      "end": 1
      },
-     {
-       "id": "step20_unburnt_cell",
-       "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (-DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single precision: rel 1e-5 (CLAUDE.md contract). Regime: cell (i,j) = (40, 40), step 20 (ts = 10 s), unburnt at the end of the step: tign = time_now.",
-       "parameter_overrides": {
-         "ts": 10.0,
-         "dt": 0.5,
-         "lfn_in": 646.3157348632812,
-         "lfn_out": 646.3075561523438,
-         "tign_before": 10.000001907348633
-       },
-       "expression_template_imports": [
-         {
-           "ref": "./tests/step20_unburnt_cell_inputs.esm"
-         }
-       ],
-       "time_span": {
-         "start": 0,
-         "end": 1
-       },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "time_now",
+       "time": 0.0,
+       "expected": 11.50000286102295,
        "tolerance": {
-         "rel": 1e-05
-       },
-       "assertions": [
-         {
-           "variable": "time_now",
-           "time": 0.0,
-           "expected": 10.50000286102295,
-           "tolerance": {
-             "rel": 1e-07
-           }
-         },
-         {
-           "variable": "tign",
-           "time": 0.0,
-           "expected": 10.50000286102295,
-           "tolerance": {
-             "rel": 1e-05
-           }
-         }
-       ]
-     }
+        "rel": 1e-07
+       }
+      },
+      {
+       "variable": "crossing",
+       "time": 0.0,
+       "expected": 1.0,
+       "tolerance": {
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "tign",
+       "time": 0.0,
+       "expected": 11.391976356506348,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    },
+    {
+     "id": "step20_unburnt_cell_near_front",
+     "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, based on NCAR fire_behavior eb77580, three commits before v1.0.0; -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single precision: rel 1e-5 (the tolerance contract for a single-precision reference). Regime: cell (i,j) = (16, 60), step 20 (ts = 10 s), 13.7 m outside the front at both ends of the step (lfn_in, lfn_out > 0): still unburnt, tign = time_now.",
+     "parameter_overrides": {
+      "ts": 10.0,
+      "dt": 0.5,
+      "lfn_in": 13.677032470703125,
+      "lfn_out": 13.668548583984375,
+      "tign_before": 10.000001907348633
+     },
+     "expression_template_imports": [
+      {
+       "ref": "./tests/step20_unburnt_cell_near_front_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "time_now",
+       "time": 0.0,
+       "expected": 10.50000286102295,
+       "tolerance": {
+        "rel": 1e-07
+       }
+      },
+      {
+       "variable": "tign",
+       "time": 0.0,
+       "expected": 10.50000286102295,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    },
+    {
+     "id": "step20_burning_cell",
+     "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, based on NCAR fire_behavior eb77580, three commits before v1.0.0; -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single precision: rel 1e-5 (the tolerance contract for a single-precision reference). Regime: cell (i,j) = (17, 60), step 20 (ts = 10 s), already burning (lfn_in <= 0): ignition time unchanged.",
+     "parameter_overrides": {
+      "ts": 10.0,
+      "dt": 0.5,
+      "lfn_in": -12.104354858398438,
+      "lfn_out": -12.11306381225586,
+      "tign_before": 8.99034309387207
+     },
+     "expression_template_imports": [
+      {
+       "ref": "./tests/step20_burning_cell_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "time_now",
+       "time": 0.0,
+       "expected": 10.50000286102295,
+       "tolerance": {
+        "rel": 1e-07
+       }
+      },
+      {
+       "variable": "tign",
+       "time": 0.0,
+       "expected": 8.99034309387207,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    },
+    {
+     "id": "step20_unburnt_cell",
+     "description": "Reference: NCAR fire_behavior test7 (80x80 fire cells of 25 m, dt = 0.5 s, num_tiles = 1), default real32 build, dumped in-model by the ctessum-claude/fire_behavior fork (branch earthsciml-instrumented, commit c9dda02, based on NCAR fire_behavior eb77580, three commits before v1.0.0; -DESM_DUMP=ON; summary output bit-identical to the uninstrumented build). Single precision: rel 1e-5 (the tolerance contract for a single-precision reference). Regime: cell (i,j) = (40, 40), step 20 (ts = 10 s), unburnt at the end of the step: tign = time_now.",
+     "parameter_overrides": {
+      "ts": 10.0,
+      "dt": 0.5,
+      "lfn_in": 646.3157348632812,
+      "lfn_out": 646.3075561523438,
+      "tign_before": 10.000001907348633
+     },
+     "expression_template_imports": [
+      {
+       "ref": "./tests/step20_unburnt_cell_inputs.esm"
+      }
+     ],
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "time_now",
+       "time": 0.0,
+       "expected": 10.50000286102295,
+       "tolerance": {
+        "rel": 1e-07
+       }
+      },
+      {
+       "variable": "tign",
+       "time": 0.0,
+       "expected": 10.50000286102295,
+       "tolerance": {
+        "rel": 1e-05
+       }
+      }
+     ]
+    },
+    {
+     "id": "negative_time_unburnt_cell",
+     "description": "Regime: a step ending before t = 0 (ts = -10 s, dt = 0.5 s; a simulation that starts at a negative time), at an unburnt cell. The nudge |time_now| epsilon 2 must move the step-end time UP, to -9.4999981 s, so that tign > ts + dt; scaling ts + dt by (1 + 2 epsilon) would move it down. The expected value is Update_ignition_times' real32 arithmetic evaluated directly (numpy float32), not a dump: no reference run starts at a negative time.",
+     "parameter_overrides": {
+      "ts": -10.0,
+      "dt": 0.5,
+      "lfn_in": 646.3157348632812,
+      "lfn_out": 646.3075561523438,
+      "tign_before": -10.0
+     },
+     "time_span": {
+      "start": 0,
+      "end": 1
+     },
+     "tolerance": {
+      "rel": 1e-05
+     },
+     "assertions": [
+      {
+       "variable": "time_now",
+       "time": 0.0,
+       "expected": -9.499998092651367,
+       "tolerance": {
+        "rel": 1e-07
+       }
+      },
+      {
+       "variable": "tign",
+       "time": 0.0,
+       "expected": -9.499998092651367,
+       "tolerance": {
+        "rel": 1e-07
+       }
+      }
+     ]
+    }
    ]
   }
  }

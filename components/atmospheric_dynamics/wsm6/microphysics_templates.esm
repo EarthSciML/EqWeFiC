@@ -1,8 +1,8 @@
 {
-  "esm": "1.0.0",
+  "esm": "1.2.0",
   "metadata": {
     "name": "wsm6_microphysics_templates",
-    "description": "Bulk warm-rain microphysics building blocks of the WSM single-moment schemes as pure expression templates, transcribed from phys/physics_mmm/mp_wsm6.F90 (WRF 4.8): the inverse slope of an exponential (Marshall-Palmer) hydrometeor size distribution, the thermodynamic denominator of diffusional growth, the ventilation factor, and the three warm-rain process rates of Hong, Dudhia and Chen (2004) and Hong and Lim (2006) -- autoconversion (HDC eq. 16), accretion of cloud water by rain (HL eq. A40, Lin et al. 1983 eq. 51) and evaporation/condensation of rain (HDC eq. 14) -- together with the per-process rate limiters the kernel applies. The rates are instantaneous (kg/kg/s) functions of the local state; the limiters are kept separate because they depend on the sub-time step dtcld (a rate may not remove more than the available mixing ratio, nor drive the vapor past saturation, within one step) and are therefore time-step artefacts rather than physics (FORTRAN_BUGS.md note N3). Every parameter is passed explicitly; the scheme constants are bound from wsm6_parameters.esm and the physical constants from lib/wrf_constants.esm by the consuming model.",
+    "description": "Bulk warm-rain microphysics building blocks of the WSM single-moment schemes as pure expression templates, transcribed from phys/physics_mmm/mp_wsm6.F90 (WRF 4.8): the inverse slope of an exponential (Marshall-Palmer) hydrometeor size distribution, the thermodynamic denominator of diffusional growth, the ventilation factor, and the three warm-rain process rates of Hong, Dudhia and Chen (2004) and Hong and Lim (2006) -- autoconversion (HDC eq. 16), accretion of cloud water by rain (HL eq. A40, Lin et al. 1983 eq. 51) and evaporation/condensation of rain (HDC eq. 14) -- together with the per-process rate limiters the kernel applies. The rates are instantaneous (kg/kg/s) functions of the local state; the limiters are kept separate because they depend on the sub-time step dtcld (a rate may not remove more than the available mixing ratio, nor drive the vapor past saturation, within one step) and are therefore time-step artefacts rather than physics (EqWeFiC FORTRAN_BUGS.md note N3). Every parameter is passed explicitly; the scheme constants are bound from wsm6_parameters.esm and the physical constants from lib/wrf_constants.esm by the consuming model. EqWeFiC, cited here for FORTRAN_BUGS.md and couplings/, is https://github.com/EarthSciML/EqWeFiC, where these components were developed and are coupled into a WRF column.",
     "license": "MIT",
     "tags": ["wrf", "microphysics", "wsm6", "warm-rain", "expression-templates"],
     "references": [
@@ -28,13 +28,7 @@
     "diffusional_growth_denominator": {
       "params": ["L", "T", "rho", "ka", "r_v", "qsat", "Dv"],
       "description": "Thermodynamic term of diffusional growth/evaporation, F = rho L^2 / (ka r_v T^2) + 1 / (qsat Dv), i.e. the heat-conduction plus vapor-diffusion resistance of Rutledge and Hobbs (1983) in mixing-ratio form (WSM6 diffac(xl, p, t, den, qsat) = den xl^2/(xka rv t^2) + 1/(qsat diffus(t, p)); units s/m^2).",
-      "body": {
-        "op": "+",
-        "args": [
-          { "op": "/", "args": [{ "op": "*", "args": ["rho", { "op": "^", "args": ["L", 2] }] }, { "op": "*", "args": ["ka", "r_v", { "op": "^", "args": ["T", 2] }] }] },
-          { "op": "/", "args": [1, { "op": "*", "args": ["qsat", "Dv"] }] }
-        ]
-      }
+      "body": { "op": "+", "args": [{ "op": "/", "args": [{ "op": "*", "args": ["rho", { "op": "^", "args": ["L", 2] }] }, { "op": "*", "args": ["ka", "r_v", { "op": "^", "args": ["T", 2] }] }] }, { "op": "/", "args": [{ "op": "const", "args": [], "value": 1, "units": "1" }, { "op": "*", "args": ["qsat", "Dv"] }] }] }
     },
     "ventilation_factor": {
       "params": ["nu", "Dv", "rho", "rho0"],
@@ -102,18 +96,7 @@
     "rain_evaporation_limiter": {
       "params": ["prevp", "qr", "satdt", "dt"],
       "description": "Time-step limiter of rain evaporation/condensation: evaporation (prevp < 0) may neither remove more rain than exists, -qr/dt, nor supply more than half the vapor deficit per step, satdt/2 = (qv - qsat)/(2 dt); condensation (prevp > 0) may not consume more than half the supersaturation, satdt/2 (WSM6 warm-rain block). Zero where there is no rain. A time-step artefact, not physics.",
-      "body": {
-        "op": "ifelse",
-        "args": [
-          { "op": ">", "args": ["qr", 0] },
-          { "op": "ifelse", "args": [
-            { "op": "<", "args": ["prevp", 0] },
-            { "op": "max", "args": ["prevp", { "op": "-", "args": [{ "op": "/", "args": ["qr", "dt"] }] }, { "op": "/", "args": ["satdt", 2] }] },
-            { "op": "min", "args": ["prevp", { "op": "/", "args": ["satdt", 2] }] }
-          ] },
-          0
-        ]
-      }
+      "body": { "op": "ifelse", "args": [{ "op": ">", "args": ["qr", 0] }, { "op": "ifelse", "args": [{ "op": "<", "args": ["prevp", 0] }, { "op": "max", "args": ["prevp", { "op": "-", "args": [{ "op": "/", "args": ["qr", "dt"] }] }, { "op": "/", "args": ["satdt", { "op": "const", "args": [], "value": 2, "units": "1" }] }] }, { "op": "min", "args": ["prevp", { "op": "/", "args": ["satdt", { "op": "const", "args": [], "value": 2, "units": "1" }] }] }] }, 0] }
     },
     "snow_intercept_factor": {
       "params": ["T", "t0", "alpha", "n0", "n0max"],
@@ -148,12 +131,12 @@
     "collection_kernel_ice_by_precipitation": {
       "params": ["D", "rslope", "rslope2", "rslope3"],
       "description": "Geometric collection kernel of monodisperse ice crystals of diameter D swept by an exponential precipitation distribution, the integral of (D_p + D)^2 over the distribution up to the constant: 2 lambda^-3 + 2 D lambda^-2 + D^2 lambda^-1 (Lin et al. 1983 eqs. 25, 26, 41; WSM6 acrfac for praci, psaci, pgaci).",
-      "body": { "op": "+", "args": [{ "op": "*", "args": [2, "rslope3"] }, { "op": "*", "args": [2, "D", "rslope2"] }, { "op": "*", "args": [{ "op": "^", "args": ["D", 2] }, "rslope"] }] }
+      "body": { "op": "+", "args": [{ "op": "*", "args": [{ "op": "const", "args": [], "value": 2, "units": "1" }, "rslope3"] }, { "op": "*", "args": [{ "op": "const", "args": [], "value": 2, "units": "1" }, "D", "rslope2"] }, { "op": "*", "args": [{ "op": "^", "args": ["D", 2] }, "rslope"] }] }
     },
     "collection_kernel_precipitation_by_precipitation": {
       "params": ["rslope_a", "rslope2_a", "rslope3_a", "rslope_b", "rslope2_b", "rslope3_b"],
       "description": "Collection kernel between two exponential precipitation distributions a (collected, mass-weighted) and b (collector): 5 lambda_a^-6 lambda_b^-1 + 2 lambda_a^-5 lambda_b^-2 + 0.5 lambda_a^-4 lambda_b^-3 (Lin et al. 1983 eqs. 27, 28, 42; WSM6 acrfac for pracs, psacr, pgacr).",
-      "body": { "op": "+", "args": [{ "op": "*", "args": [5, "rslope3_a", "rslope3_a", "rslope_b"] }, { "op": "*", "args": [2, "rslope3_a", "rslope2_a", "rslope2_b"] }, { "op": "*", "args": [0.5, "rslope2_a", "rslope2_a", "rslope3_b"] }] }
+      "body": { "op": "+", "args": [{ "op": "*", "args": [{ "op": "const", "args": [], "value": 5, "units": "1" }, "rslope3_a", "rslope3_a", "rslope_b"] }, { "op": "*", "args": [{ "op": "const", "args": [], "value": 2, "units": "1" }, "rslope3_a", "rslope2_a", "rslope2_b"] }, { "op": "*", "args": [{ "op": "const", "args": [], "value": 0.5, "units": "1" }, "rslope2_a", "rslope2_a", "rslope3_b"] }] }
     },
     "collection_efficiency_reduction": {
       "params": ["q_collector", "q_collected", "q_min", "expn"],
@@ -168,12 +151,12 @@
     "ice_deposition_rate": {
       "params": ["D", "xni", "rh_i", "f_diff_i"],
       "description": "Deposition (rh_i > 1) / sublimation (rh_i < 1) of vapor on monodisperse ice crystals, 4 D_i N_i (rh_i - 1)/F_i, with F_i the diffusional_growth_denominator over ice (Hong, Dudhia and Chen 2004 eq. 9; WSM6 pidep).",
-      "body": { "op": "/", "args": [{ "op": "*", "args": [4, "D", "xni", { "op": "-", "args": ["rh_i", 1] }] }, "f_diff_i"] }
+      "body": { "op": "/", "args": [{ "op": "*", "args": [{ "op": "const", "args": [], "value": 4, "units": "1" }, "D", "xni", { "op": "-", "args": ["rh_i", 1] }] }, "f_diff_i"] }
     },
     "saturation_limited_deposition": {
       "params": ["rate", "satdt", "supice", "q", "dt"],
       "description": "Time-step limiter of a deposition/sublimation rate in WSM6's sequential vapor budget: sublimation (rate < 0) may neither remove more than the species' mixing ratio q per step, nor exceed half the vapor deficit satdt/2 = (qv - qsat_i)/(2 dt), nor the deficit left after the processes evaluated before it, supice; deposition (rate > 0) may consume neither more than satdt/2 nor more than supice (WSM6 pidep, psdep, pgdep limiters). A time-step artefact, not physics.",
-      "body": { "op": "ifelse", "args": [{ "op": "<", "args": ["rate", 0] }, { "op": "max", "args": ["rate", { "op": "/", "args": ["satdt", 2] }, "supice", { "op": "-", "args": [{ "op": "/", "args": ["q", "dt"] }] }] }, { "op": "min", "args": ["rate", { "op": "/", "args": ["satdt", 2] }, "supice"] }] }
+      "body": { "op": "ifelse", "args": [{ "op": "<", "args": ["rate", 0] }, { "op": "max", "args": ["rate", { "op": "/", "args": ["satdt", { "op": "const", "args": [], "value": 2, "units": "1" }] }, "supice", { "op": "-", "args": [{ "op": "/", "args": ["q", "dt"] }] }] }, { "op": "min", "args": ["rate", { "op": "/", "args": ["satdt", { "op": "const", "args": [], "value": 2, "units": "1" }] }, "supice"] }] }
     },
     "ice_nucleation_target": {
       "params": ["T", "t0", "rho", "n_coef", "n_exp", "m_coef", "m_exp"],
@@ -232,7 +215,7 @@
     },
     "mass_conservation_factor": {
       "params": ["q", "q_floor", "source"],
-      "description": "Factor that rescales every process draining one species so that the total sink over a sub-step cannot exceed the mixing ratio available: with the available mass v = max(q_floor, q) and the total sink S = source (kg/kg, already multiplied by dt), the factor is v/max(S, v), i.e. v/S when the sink would overdraw (S > v) and 1 otherwise -- the branch-free form of WSM6's `if (source > value) factor = value/source` (mp_wsm6.F90, 'check mass conservation of generation terms and feedback to the large scale'). Nonpositive sinks give 1 because max(S, v) = v > 0. A time-step artefact of the explicit splitting, not physics (FORTRAN_BUGS.md note N3).",
+      "description": "Factor that rescales every process draining one species so that the total sink over a sub-step cannot exceed the mixing ratio available: with the available mass v = max(q_floor, q) and the total sink S = source (kg/kg, already multiplied by dt), the factor is v/max(S, v), i.e. v/S when the sink would overdraw (S > v) and 1 otherwise -- the branch-free form of WSM6's `if (source > value) factor = value/source` (mp_wsm6.F90, 'check mass conservation of generation terms and feedback to the large scale'). Nonpositive sinks give 1 because max(S, v) = v > 0. A time-step artefact of the explicit splitting, not physics (EqWeFiC FORTRAN_BUGS.md note N3).",
       "body": { "op": "/", "args": [{ "op": "max", "args": ["q_floor", "q"] }, { "op": "max", "args": ["source", { "op": "max", "args": ["q_floor", "q"] }] }] }
     }
   }
