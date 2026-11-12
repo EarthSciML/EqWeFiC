@@ -1,0 +1,5731 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "MosaicIonsToElectrolytes",
+    "description": "MOSAIC's liquid-phase electrolyte formation, SUBROUTINE ions_to_electrolytes(jliquid) of chem/module_mosaic_therm.F (WRF v4.8.0), with calculate_xt, form_caso4 and form_camsa2. It turns the ions a liquid phase holds into the electrolytes MOSAIC's activity model (compute_activities, mtem_activities.esm) and ZSR water (aerosol_water_zsr.esm) are written over, and is the first thing MESA's mesa_flux_salt does on every iteration.\n\nINPUT: the liquid species amounts a_in (`sp` order so4, no3, cl, nh4, msa, na, ca; nmol per m3 of air), clipped at zero.\n\nCALCIUM SULFATE first: min(Ca, SO4) forms CaSO4, which is insoluble, so the routine moves it straight to the solid (caso4 is reported for the consumer to add there).\n\nTHE DOMAIN is decided on X_T of what is left (template aerosol_xt): X_T >= 1.9999 or X_T < 0 is sulfate-POOR (the Fortran's own split here is 1.9999, not the 2 of compute_activities and mesa_estimate_eleliquid).\n\nSULFATE-POOR: the H+ needed for neutrality is the anion excess max(cat_net, 0), and every cation is paired with every anion in proportion to their charge equivalents (template ion_pair_electrolyte): E = (x_c n_a M_a + x_a n_c M_c)/M_E. No HSO4- exists here, so NH4HSO4, NaHSO4 and H2SO4 come out zero, as the Fortran sets them.\n\nSULFATE-RICH: Ca(MSA)2 forms first, then the remaining MSA takes Na and NH4 in proportion to their amounts (or, if MSA is in excess, all of them, the rest being free MSA acid). The cations left over, x_s per sulfate, apportion the sulfate: x_s <= 1 acid + bisulfate, 1 < x_s <= 1.5 bisulfate + letovicite, above that letovicite + neutral sulfate, each salt split between ammonium and sodium as f_nh4 : f_na. Nitrate and chloride are HNO3 and HCl. Without sulfate the Fortran leaves after the MSA salts (HNO3 and HCl stay zero).\n\nWritten as the closed-form apportionment (s_acid, s_bisulf, s_lvc, s_sulf) instead of the Fortran's three branches; each product keeps the Fortran's association ((x f) SO4), and a zero fraction gives the exact zero the Fortran leaves.\n\nPRECISION: double-precision arithmetic; the literal 1.9999 is binary32 (mosaic_mesa_parameters.esm), 2., 0.5, 3., 1.5 are exact.\n\nTESTS: the liquid at the start of a mesa_ptc iteration and the electrolytes mesa_flux_salt formed from it, from the MESA tape (WRF fork module_esm_mesa_tape, kernels/mosaic_therm_driver; data/eqwefic/chem170_scm/mesa64): column hand-offs of the chem170 capture replayed bit for bit, and hand-specified bins for the branches the column never reaches. Real64 at rel 1e-9. Mutations caught: the 1.9999 split moved to 2 (2), letovicite/sulfate split at 1.4 (1), no HNO3/HCl in the sulfate-rich domain (2; the hand bin keeps them through driver mode 5, since conform_electrolytes degasses them). Not reached by any pass: a CaSO4 move (calcium has already left as CaSO4 when a pass starts) and a negative liquid amount, so the clip and the CaSO4 transfer are untested.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "references": [
+      {
+        "citation": "Zaveri, R.A., Easter, R.C., Fast, J.D., Peters, L.K. (2008). Model for Simulating Aerosol Interactions and Chemistry (MOSAIC). J. Geophys. Res. 113, D13204."
+      },
+      {
+        "citation": "WRF v4.8.0 chem/module_mosaic_therm.F"
+      }
+    ]
+  },
+  "index_sets": {
+    "sp": {
+      "kind": "interval",
+      "size": 7
+    },
+    "el": {
+      "kind": "interval",
+      "size": 22
+    },
+    "ion": {
+      "kind": "interval",
+      "size": 9
+    }
+  },
+  "models": {
+    "MosaicIonsToElectrolytes": {
+      "expression_template_imports": [
+        {
+          "ref": "./mosaic_thermo_templates.esm"
+        }
+      ],
+      "subsystems": {
+        "tp": {
+          "ref": "./mosaic_thermo_parameters.esm"
+        },
+        "mp": {
+          "ref": "./mosaic_mesa_parameters.esm"
+        }
+      },
+      "variables": {
+        "a_in": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "sp"
+          ],
+          "default": 0.0,
+          "description": "The liquid phase's species amounts aer(:, jliquid) on entry, in the `sp` order so4, no3, cl, nh4, msa, na, ca (aer indices 1, 2, 3, 4, 5, 108, 109), nmol per m3 of air. Negative values (left by a flux update) are clipped to zero first, as the Fortran does in place."
+        },
+        "a0": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "sp"
+          ],
+          "description": "a_in clipped at zero."
+        },
+        "caso4": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Calcium sulfate formed from the liquid, min(Ca, SO4) (form_caso4): it is insoluble, so ions_to_electrolytes moves it to the SOLID phase at once (electrolyte(jcaso4, jsolid) and aer(ica_a/iso4_a, jsolid) grow by it). A consumer carrying the solid adds it there."
+        },
+        "a": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "sp"
+          ],
+          "description": "The liquid species after the CaSO4 has left: a0 less caso4 in so4 and ca. This is aer(:, jliquid) as the routine leaves it."
+        },
+        "x_t": {
+          "type": "unknown",
+          "units": "1",
+          "description": "calculate_xt of the liquid after the CaSO4 transfer."
+        },
+        "poor": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 in the sulfate-POOR (near-neutral) domain, X_T >= 1.9999 or X_T < 0 (icase 1), 0 in the sulfate-rich domain."
+        },
+        "cat_net": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Anion equivalents less cation equivalents, (2 SO4 + NO3 + Cl + MSA) - (2 Ca + NH4 + Na): the H+ the sulfate-poor liquid needs for neutrality."
+        },
+        "n_ion": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "ion"
+          ],
+          "description": "Ion amounts for the sulfate-poor pairing, `ion` order H+ (max(cat_net, 0)), NH4+, Na+, Ca++, HSO4- (none in this domain), SO4--, NO3-, Cl-, MSA-."
+        },
+        "cation_eq": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Cation charge equivalents, sum over H+, NH4+, Na+, Ca++ of n z (sum_nczc)."
+        },
+        "anion_eq": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Anion charge equivalents, sum over HSO4-, SO4--, NO3-, Cl-, MSA- of n z (sum_naza)."
+        },
+        "elec_poor": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "el"
+          ],
+          "description": "Electrolytes of the sulfate-poor domain: every paired electrolyte by equivalent fractions (template ion_pair_electrolyte); the bisulfates and H2SO4 come out zero because no HSO4- is present, letovicite and Na3H(SO4)2 are never formed."
+        },
+        "camsa2": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Ca(MSA)2 formed first in the sulfate-rich domain, min(Ca, MSA/2) (form_camsa2)."
+        },
+        "msa_r": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "MSA left after Ca(MSA)2, max(0, MSA - 2 Ca(MSA)2)."
+        },
+        "na_nh4": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Na + NH4, the cations left to share the remaining MSA and the sulfate."
+        },
+        "f_nh4": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Ammonium's share of Na + NH4 (0 when there is neither)."
+        },
+        "f_na": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sodium's share of Na + NH4."
+        },
+        "msa_short": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when Na + NH4 exceed the remaining MSA (MSA is shared in proportion f_nh4 : f_na and cations are left over for the sulfate), 0 when MSA is in excess (all Na and NH4 go to MSA salts and the rest is free MSA acid)."
+        },
+        "nh4msa": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "NH4MSA."
+        },
+        "namsa": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "NaMSA."
+        },
+        "msa_free": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Free MSA acid, the MSA beyond the cations."
+        },
+        "x_s": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Cations per sulfate left for the sulfate salts, (remaining NH4 + remaining Na)/SO4 (the Fortran reuses its xt for this); 0 without sulfate."
+        },
+        "s_acid": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Fraction of the sulfate held as H2SO4: 1 - x_s for x_s <= 1, else 0."
+        },
+        "s_bisulf": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Fraction held as bisulfate (NH4HSO4, NaHSO4): x_s for x_s <= 1, 3 - 2 x_s for 1 < x_s <= 1.5, else 0."
+        },
+        "s_lvc": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Fraction held as letovicite-type salts ((NH4)3H(SO4)2, Na3H(SO4)2): 0 for x_s <= 1, x_s - 1 up to 1.5, 2 - x_s above."
+        },
+        "s_sulf": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Fraction held as neutral sulfate ((NH4)2SO4, Na2SO4): 2 x_s - 3 above 1.5, else 0."
+        },
+        "elec_rich": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "el"
+          ],
+          "description": "Electrolytes of the sulfate-rich domain: Ca(MSA)2, the MSA salts and free MSA, the sulfate apportioned by x_s among acid, bisulfate, letovicite and sulfate with each split between ammonium and sodium in proportion f_nh4 : f_na, and all nitrate and chloride as HNO3 and HCl. With no sulfate the Fortran jumps out after the MSA salts, leaving HNO3 and HCl at zero."
+        },
+        "elec": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "el"
+          ],
+          "description": "The liquid electrolytes electrolyte(:, jliquid) (CaSO4 and CaCO3 are zero)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "a0",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "s"
+            ],
+            "args": [],
+            "ranges": {
+              "s": {
+                "from": "sp"
+              }
+            },
+            "expr": {
+              "op": "max",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "a_in",
+                    "s"
+                  ]
+                },
+                0.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "caso4",
+          "rhs": {
+            "op": "min",
+            "args": [
+              {
+                "op": "index",
+                "args": [
+                  "a0",
+                  7
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "a0",
+                  1
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "a",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "s"
+            ],
+            "args": [],
+            "ranges": {
+              "s": {
+                "from": "sp"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "or",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        "s",
+                        1
+                      ]
+                    },
+                    {
+                      "op": "==",
+                      "args": [
+                        "s",
+                        7
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "-",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "a0",
+                        "s"
+                      ]
+                    },
+                    "caso4"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "a0",
+                    "s"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "x_t",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "aerosol_xt",
+            "bindings": {
+              "so4": {
+                "op": "index",
+                "args": [
+                  "a",
+                  1
+                ]
+              },
+              "msa": {
+                "op": "index",
+                "args": [
+                  "a",
+                  5
+                ]
+              },
+              "nh4": {
+                "op": "index",
+                "args": [
+                  "a",
+                  4
+                ]
+              },
+              "na": {
+                "op": "index",
+                "args": [
+                  "a",
+                  6
+                ]
+              },
+              "ca": {
+                "op": "index",
+                "args": [
+                  "a",
+                  7
+                ]
+              }
+            }
+          }
+        },
+        {
+          "lhs": "poor",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": ">=",
+                    "args": [
+                      "x_t",
+                      "mp.xt_split_i2e"
+                    ]
+                  },
+                  {
+                    "op": "<",
+                    "args": [
+                      "x_t",
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "cat_net",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              2.0,
+                              {
+                                "op": "index",
+                                "args": [
+                                  "a",
+                                  1
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "index",
+                            "args": [
+                              "a",
+                              2
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "a",
+                          3
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "a",
+                      5
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          2.0,
+                          {
+                            "op": "index",
+                            "args": [
+                              "a",
+                              7
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "a",
+                          4
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "a",
+                      6
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "n_ion",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "ion"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "==",
+                  "args": [
+                    "i",
+                    1
+                  ]
+                },
+                {
+                  "op": "max",
+                  "args": [
+                    "cat_net",
+                    0.0
+                  ]
+                },
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        "i",
+                        2
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "a",
+                        4
+                      ]
+                    },
+                    {
+                      "op": "ifelse",
+                      "args": [
+                        {
+                          "op": "==",
+                          "args": [
+                            "i",
+                            3
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "a",
+                            6
+                          ]
+                        },
+                        {
+                          "op": "ifelse",
+                          "args": [
+                            {
+                              "op": "==",
+                              "args": [
+                                "i",
+                                4
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "a",
+                                7
+                              ]
+                            },
+                            {
+                              "op": "ifelse",
+                              "args": [
+                                {
+                                  "op": "==",
+                                  "args": [
+                                    "i",
+                                    6
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "a",
+                                    1
+                                  ]
+                                },
+                                {
+                                  "op": "ifelse",
+                                  "args": [
+                                    {
+                                      "op": "==",
+                                      "args": [
+                                        "i",
+                                        7
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "a",
+                                        2
+                                      ]
+                                    },
+                                    {
+                                      "op": "ifelse",
+                                      "args": [
+                                        {
+                                          "op": "==",
+                                          "args": [
+                                            "i",
+                                            8
+                                          ]
+                                        },
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "a",
+                                            3
+                                          ]
+                                        },
+                                        {
+                                          "op": "ifelse",
+                                          "args": [
+                                            {
+                                              "op": "==",
+                                              "args": [
+                                                "i",
+                                                9
+                                              ]
+                                            },
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "a",
+                                                5
+                                              ]
+                                            },
+                                            0.0
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "cation_eq",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [],
+            "reduce": "+",
+            "args": [],
+            "ranges": {
+              "i": [
+                1,
+                4
+              ]
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "n_ion",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "tp.z_ion",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "anion_eq",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [],
+            "reduce": "+",
+            "args": [],
+            "ranges": {
+              "i": [
+                5,
+                9
+              ]
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "n_ion",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "tp.z_ion",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "elec_poor",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "e"
+            ],
+            "args": [],
+            "ranges": {
+              "e": {
+                "from": "el"
+              }
+            },
+            "expr": {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "ion_pair_electrolyte",
+              "bindings": {
+                "e": "e"
+              }
+            }
+          }
+        },
+        {
+          "lhs": "camsa2",
+          "rhs": {
+            "op": "min",
+            "args": [
+              {
+                "op": "index",
+                "args": [
+                  "a",
+                  7
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  0.5,
+                  {
+                    "op": "index",
+                    "args": [
+                      "a",
+                      5
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "msa_r",
+          "rhs": {
+            "op": "max",
+            "args": [
+              0.0,
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "a",
+                      5
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      "camsa2"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "na_nh4",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "index",
+                "args": [
+                  "a",
+                  6
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "a",
+                  4
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "f_nh4",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "na_nh4",
+                  0.0
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "a",
+                      4
+                    ]
+                  },
+                  "na_nh4"
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "f_na",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "na_nh4",
+                  0.0
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "a",
+                      6
+                    ]
+                  },
+                  "na_nh4"
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "msa_short",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "na_nh4",
+                  "msa_r"
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "nh4msa",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "msa_short",
+                  0.5
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "f_nh4",
+                  "msa_r"
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "a",
+                  4
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "namsa",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "msa_short",
+                  0.5
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "f_na",
+                  "msa_r"
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "a",
+                  6
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "msa_free",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "msa_short",
+                  0.5
+                ]
+              },
+              0.0,
+              {
+                "op": "-",
+                "args": [
+                  "msa_r",
+                  "na_nh4"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "x_s",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "a",
+                      1
+                    ]
+                  },
+                  0.0
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "msa_short",
+                          0.5
+                        ]
+                      },
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "-",
+                            "args": [
+                              {
+                                "op": "index",
+                                "args": [
+                                  "a",
+                                  4
+                                ]
+                              },
+                              "nh4msa"
+                            ]
+                          },
+                          {
+                            "op": "-",
+                            "args": [
+                              {
+                                "op": "index",
+                                "args": [
+                                  "a",
+                                  6
+                                ]
+                              },
+                              "namsa"
+                            ]
+                          }
+                        ]
+                      },
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "a",
+                      1
+                    ]
+                  }
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "s_acid",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "x_s",
+                  1.0
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "x_s"
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "s_bisulf",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "x_s",
+                  1.0
+                ]
+              },
+              "x_s",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": "<=",
+                    "args": [
+                      "x_s",
+                      1.5
+                    ]
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      3.0,
+                      {
+                        "op": "*",
+                        "args": [
+                          2.0,
+                          "x_s"
+                        ]
+                      }
+                    ]
+                  },
+                  0.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "s_lvc",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "x_s",
+                  1.0
+                ]
+              },
+              0.0,
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": "<=",
+                    "args": [
+                      "x_s",
+                      1.5
+                    ]
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      "x_s",
+                      1.0
+                    ]
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      2.0,
+                      "x_s"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "s_sulf",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<=",
+                "args": [
+                  "x_s",
+                  1.5
+                ]
+              },
+              0.0,
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      "x_s"
+                    ]
+                  },
+                  3.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "elec_rich",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "e"
+            ],
+            "args": [],
+            "ranges": {
+              "e": {
+                "from": "el"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "==",
+                  "args": [
+                    "e",
+                    15
+                  ]
+                },
+                "camsa2",
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        "e",
+                        4
+                      ]
+                    },
+                    "nh4msa",
+                    {
+                      "op": "ifelse",
+                      "args": [
+                        {
+                          "op": "==",
+                          "args": [
+                            "e",
+                            10
+                          ]
+                        },
+                        "namsa",
+                        {
+                          "op": "ifelse",
+                          "args": [
+                            {
+                              "op": "==",
+                              "args": [
+                                "e",
+                                17
+                              ]
+                            },
+                            "msa_free",
+                            {
+                              "op": "ifelse",
+                              "args": [
+                                {
+                                  "op": ">",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "a",
+                                        1
+                                      ]
+                                    },
+                                    0.0
+                                  ]
+                                },
+                                {
+                                  "op": "ifelse",
+                                  "args": [
+                                    {
+                                      "op": "==",
+                                      "args": [
+                                        "e",
+                                        16
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        "s_acid",
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "a",
+                                            1
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "ifelse",
+                                      "args": [
+                                        {
+                                          "op": "==",
+                                          "args": [
+                                            "e",
+                                            3
+                                          ]
+                                        },
+                                        {
+                                          "op": "*",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "s_bisulf",
+                                                "f_nh4"
+                                              ]
+                                            },
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "a",
+                                                1
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "ifelse",
+                                          "args": [
+                                            {
+                                              "op": "==",
+                                              "args": [
+                                                "e",
+                                                9
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "*",
+                                                  "args": [
+                                                    "s_bisulf",
+                                                    "f_na"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "a",
+                                                    1
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "ifelse",
+                                              "args": [
+                                                {
+                                                  "op": "==",
+                                                  "args": [
+                                                    "e",
+                                                    2
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "*",
+                                                  "args": [
+                                                    {
+                                                      "op": "*",
+                                                      "args": [
+                                                        "s_lvc",
+                                                        "f_nh4"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "index",
+                                                      "args": [
+                                                        "a",
+                                                        1
+                                                      ]
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "ifelse",
+                                                  "args": [
+                                                    {
+                                                      "op": "==",
+                                                      "args": [
+                                                        "e",
+                                                        8
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "*",
+                                                      "args": [
+                                                        {
+                                                          "op": "*",
+                                                          "args": [
+                                                            "s_lvc",
+                                                            "f_na"
+                                                          ]
+                                                        },
+                                                        {
+                                                          "op": "index",
+                                                          "args": [
+                                                            "a",
+                                                            1
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "ifelse",
+                                                      "args": [
+                                                        {
+                                                          "op": "==",
+                                                          "args": [
+                                                            "e",
+                                                            1
+                                                          ]
+                                                        },
+                                                        {
+                                                          "op": "*",
+                                                          "args": [
+                                                            {
+                                                              "op": "*",
+                                                              "args": [
+                                                                "s_sulf",
+                                                                "f_nh4"
+                                                              ]
+                                                            },
+                                                            {
+                                                              "op": "index",
+                                                              "args": [
+                                                                "a",
+                                                                1
+                                                              ]
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "op": "ifelse",
+                                                          "args": [
+                                                            {
+                                                              "op": "==",
+                                                              "args": [
+                                                                "e",
+                                                                7
+                                                              ]
+                                                            },
+                                                            {
+                                                              "op": "*",
+                                                              "args": [
+                                                                {
+                                                                  "op": "*",
+                                                                  "args": [
+                                                                    "s_sulf",
+                                                                    "f_na"
+                                                                  ]
+                                                                },
+                                                                {
+                                                                  "op": "index",
+                                                                  "args": [
+                                                                    "a",
+                                                                    1
+                                                                  ]
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "op": "ifelse",
+                                                              "args": [
+                                                                {
+                                                                  "op": "==",
+                                                                  "args": [
+                                                                    "e",
+                                                                    18
+                                                                  ]
+                                                                },
+                                                                {
+                                                                  "op": "index",
+                                                                  "args": [
+                                                                    "a",
+                                                                    2
+                                                                  ]
+                                                                },
+                                                                {
+                                                                  "op": "ifelse",
+                                                                  "args": [
+                                                                    {
+                                                                      "op": "==",
+                                                                      "args": [
+                                                                        "e",
+                                                                        19
+                                                                      ]
+                                                                    },
+                                                                    {
+                                                                      "op": "index",
+                                                                      "args": [
+                                                                        "a",
+                                                                        3
+                                                                      ]
+                                                                    },
+                                                                    0.0
+                                                                  ]
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                0.0
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "elec",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "e"
+            ],
+            "args": [],
+            "ranges": {
+              "e": {
+                "from": "el"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": ">",
+                  "args": [
+                    "poor",
+                    0.5
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "elec_poor",
+                    "e"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "elec_rich",
+                    "e"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "hand_nh4no3_nacl70_c1_it1",
+          "description": "Covers: poor_so4free. Source: hand-specified bin 'nh4no3_nacl70' (sulfate-free NH4NO3 + NaCl (X_T = -1): the sodium/nitrate/chloride salts; chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              0.0,
+              2.0,
+              1.0,
+              2.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 1.3333333333333333,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.6666666666666666,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.6666666666666665,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.3333333333333333,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_as_nano3_75_c1_it1",
+          "description": "Covers: poor. Source: hand-specified bin 'as_nano3_75' (sulfate-poor (X_T = 3) ammonium sulfate + sodium nitrate; chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              1.0,
+              1.0,
+              0.0,
+              2.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.6666666666666666,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.6666666666666666,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.3333333333333333,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.33333333333333326,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_na2so4_rich_c1_it1",
+          "description": "Covers: rich_lvc. Source: hand-specified bin 'na2so4_rich' (sulfate-rich with sodium only, X_T = 1.5 (estimate: no NH4, X_T > 1); chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              2.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              3.0,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 3.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_na2so4_rich_c1_it2",
+          "description": "Covers: rich_bisulf_lvc. Source: hand-specified bin 'na2so4_rich' (sulfate-rich with sodium only, X_T = 1.5 (estimate: no NH4, X_T > 1); chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 2: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              1.6816515522700932,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.3633031045401864,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 1.6816515522700932,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 2.3633031045401864,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.6816515522700933,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.31834844772990667,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3633031045401864e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_nahso4_rich_c1_it1",
+          "description": "Covers: rich_acid_bisulf. Source: hand-specified bin 'nahso4_rich' (sulfate-rich with sodium only, X_T = 0.75 (estimate: no NH4, X_T <= 1); chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              2.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.5,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 1.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 1.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_lvc_na_195_c1_it1",
+          "description": "Covers: rich_lvc_sulf. Source: hand-specified bin 'lvc_na_195' (sulfate-rich X_T = 1.95: letovicite + sulfate in ions_to_electrolytes; estimate X_NH4 >= 5/3; chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              2.0,
+              0.0,
+              0.0,
+              3.8000000000000003,
+              0.0,
+              0.1,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 3.8000000000000003,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 0.1,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 1.7538461538461545,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.09743589743589709,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.04615384615384617,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.002564102564102555,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.8e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_msa_excess_c1_it1",
+          "description": "Covers: rich_acid_freemsa_msa. Source: hand-specified bin 'msa_excess' (MSA beyond the cations (ions_to_electrolytes forms free MSA); chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              3.0,
+              0.0,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 3.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_caso4_h2so4_c1_it1",
+          "description": "Covers: rich_acid. Source: hand-specified bin 'caso4_h2so4' (sulfate with calcium only: CaSO4 is no salt, so mass_dry_salt = 0; chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              1.5,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 1.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 1.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_ca_liquid70_c1_it1",
+          "description": "Covers: poor_ca_so4free. Source: hand-specified bin 'ca_liquid70' (sulfate-free with calcium: Ca(NO3)2 / CaCl2 dissolved, the calcium heaviside conditions; chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              0.0,
+              2.0,
+              0.5,
+              1.0,
+              0.0,
+              0.5,
+              0.5
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 0.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.8,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.2,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.4,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.1,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.39999999999999997,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.10000000000000002,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_rich_no3cl_m5_c1_it1",
+          "description": "Covers: rich_lvc_hno3hcl. Source: hand-specified bin 'rich_no3cl_m5' (sulfate-rich with nitrate and chloride KEPT (driver mode 5: the electrolytes are given, as ASTEM can leave them between its conform and the phase state; conform_electrolytes itself would degas them): HNO3 and HCl in ions_to_electrolytes' sulfate-rich branch; chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              2.0,
+              0.5,
+              0.3,
+              3.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 0.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.3,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 3.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.5,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.3,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3e-12
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand_split_band_m5_c1_it1",
+          "description": "Covers: split_band. Source: hand-specified bin 'split_band_m5' (X_T = 1.999925, between ions_to_electrolytes' 1.9999 split (sulfate-poor there) and the estimate's 2 (sulfate-rich there); electrolytes given (mode 5) as letovicite + ammonium sulfate; chem170_scm/mesa64/make_mesa_hand.py), mesa_ptc call 1, pass 1: the liquid at the top of the pass (TOP record) in, the liquid and electrolytes mesa_flux_salt's ions_to_electrolytes left (THERM record) out. Real64 MESA tape (WRF's own compiled ions_to_electrolytes via kernels/mosaic_therm_driver); rel 1e-9 with an absolute floor of 1e-12 of the largest liquid amount.",
+          "parameter_overrides": {
+            "a_in": [
+              2.0,
+              0.0,
+              0.0,
+              3.99985,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 1
+              },
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 4
+              },
+              "time": 0.0,
+              "expected": 3.99985,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "a",
+              "coords": {
+                "sp": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "caso4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 1
+              },
+              "time": 0.0,
+              "expected": 1.999925,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 2
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 3
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 4
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 5
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 6
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 7
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 8
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 9
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 10
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 11
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 12
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 13
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 14
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 15
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 16
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 17
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 18
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 19
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 20
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 21
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            },
+            {
+              "variable": "elec",
+              "coords": {
+                "el": 22
+              },
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.99985e-12
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
