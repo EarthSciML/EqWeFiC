@@ -2340,6 +2340,18 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     for `fire_atmosphere_column_lastchance.esm`. Status, sanity checks and the
     stage-3 proposal: `data/eqwefic/notes/lastchance_reference_run.md`.
 
+    **Instrumented rerun (submitted 2026-11-11).** 16Z to 18:31Z from the same
+    16Z input, built with `-DESM_DUMP` (WRF fork `earthsciml-instrumented-fire`
+    @ `2ba0985`, fire_behavior fork @ `497375b`, which add a location mode to
+    `module_esm_dump`: domain, step, column and fire-box gating, so a 40-rank
+    nested run can dump at named points). It dumps the six reference-suite
+    kernels at the 18:10/18:20/18:30 fire-head columns and an upwind control
+    column, and the level-set/ROS/flux hooks over the head region, at the
+    three radiation steps and their neighbours, plus the PBL/radiation/fire
+    tendencies of all of d05 every 10 min from 18Z. Job 12344598 runs only if
+    the smoke job 12344597 reproduces `runs/full`'s 16:10 state and dumps every
+    scheme. Setup, columns and file layout: the note above.
+
 ## 6. Test and authoring conventions (normative; summarized in CLAUDE.md)
 
 - Tendencies are observeds; assert at `time: 0.0`. Trajectory assertions only
