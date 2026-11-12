@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "MosaicAstemRates",
-    "description": "MOSAIC's gas-particle condensation rates for a whole size distribution (WRF v4.8.0 chem/module_mosaic_therm.F, SUBROUTINE ASTEM: aerosolmtc, ASTEM_non_volatiles, ASTEM_semi_volatiles with ASTEM_flux_dry / ASTEM_flux_wet), assembled from the per-bin physics and summed into the tendencies of the five condensing gases and of the matching aerosol ions in every bin. It is the right-hand side ASTEM integrates; ASTEM's integration (the analytical exponential of the non-volatile stage, the semi-implicit liquid update, the explicit solid update, the adaptive sub-step, the 1% equilibrium skips, the step cap) is solver and is not written here (CLAUDE.md: numerical solvers belong to EarthSciIntegrator).\n\nPARTS, mounted by reference: AstemRates (astem_rate_assembly.esm: ASTEM_semi_volatiles' dispatch, the rates on the gas axis and their sums), and, lifted pointwise beside it (esm-spec 10.5), Mtc (gas_particle_mass_transfer.esm) over lev x bin x gas for the mass-transfer coefficient kg of every gas to every bin and the non-volatile rate gas kg, Liq (astem_liquid_surface_equilibrium.esm) and Sol (astem_solid_surface_equilibrium.esm) over lev x bin for each bin's surface equilibrium and its HNO3, HCl and NH3 rates for a liquid and for a solid particle, and Const (mosaic_gas_equilibrium_constants.esm) over lev for the cell's equilibrium constants. The tests sit on the inline model Tests.\n\nWHICH PHYSICS A BIN GETS is ASTEM_semi_volatiles' dispatch on jaerosolstate (state: 0 no aerosol, 1 all solid, 2 all liquid, 3 mixed): all solid -> the solid surface; all liquid, or mixed without solid NH4NO3 or NH4Cl -> the liquid surface (ASTEM_flux_wet; its CaCO3 case puts the acids into the solid, still the bin's total); mixed WITH solid NH4NO3 or NH4Cl -> ASTEM_flux_mix, which is NOT transcribed (the chem_opt = 170 column never reaches it): route_mix flags such a bin and its semi-volatile rates are set to zero, so a consumer must not use this document where route_mix is 1. H2SO4 and MSA condense on every bin that holds aerosol, at gas kg (the dt -> 0 limit of ASTEM_non_volatiles' exponential, shared over bins as kg/sum kg).\n\nTHE TENDENCIES. Each gas condenses into its own ion: H2SO4 -> SO4, HNO3 -> NO3, HCl -> Cl, NH3 -> NH4, MSA -> MSA, one nmol for one nmol in MOSAIC's units (nmol per m3 of air), into the bin's TOTAL phase (aer(:,jtotal)); how the condensed amount divides between solid and liquid is the phase equilibrium's business (aerosol_phase_state.esm, mesa_salt_equilibrium.esm). daer_<ion>[bin] is the rate into each bin, dgas_<gas> = -sum over bins of it. CONSERVATION: gas plus particles is conserved species by species, balance_<gas> = dgas_<gas> + sum_bins daer_<ion> = 0, which is ASTEM's own invariant total_species(iv) = gas(iv) + sum_bins aer(iv, jtotal) in rate form.\n\nNOT IN THE RATES. (a) The NH3 co-uptake of ASTEM_non_volatiles (each bin free of Na and Ca salts takes up min(2 delta_SO4 + delta_MSA, delta_NH3_max) of NH3 alongside the acid): it is an operator-split neutralisation of the finite non-volatile step whose dt -> 0 limit, min(2 r_SO4 + r_MSA, kg_NH3 g_NH3), would ADD to the semi-volatile NH3 flux kg_NH3 (g_NH3 - surface) and so exceed the diffusion limit kg_NH3 g_NH3 that bounds NH3 transfer; the semi-volatile flux already neutralises the acid in the continuous system. (b) The 1e-14 gas threshold below which ASTEM_non_volatiles skips its step. (c) The N2O5 heterogeneous uptake in the same routine, off in this configuration (n2o5_hetchem = 0). (d) The tiny absorptions and equilibrate_acids of ASTEM_flux_wet and the instantaneous solid equilibrations of ASTEM_flux_dry (state edits, see the component descriptions): a consumer applies the rates to the state after them. (e) ASTEM_flux_wet's equilibrium test, which skips a liquid bin when EVERY gas's relative driving force is <= 0.01 -- a signed test, so a bin from which every gas would evaporate is skipped too (FORTRAN_BUGS.md B31): the rates here evaporate it.\n\nINPUTS are the cell's temperature, pressure, the five gases and the two solid-solution constants Kp_nh4no3_0 / Kp_nh4cl_0 of update_thermodynamic_constants (not yet transcribed), and per bin: state, number, wet diameter, Kelvin factors kel[bin, gas] (aerosol_phase_state.esm), the solid and liquid ions aer_s / aer_l[bin, ion] (ion = SO4, NO3, Cl, NH4, MSA, CO3, Na, Ca, OIN), the solid electrolytes elec_s[bin, el] (MOSAIC's 22, in its order) and the liquid's activities (mtem_activities.esm: H+ and NH4+ molalities mc_h / mc_nh4, NO3- and Cl- molalities ma_no3 / ma_cl, activity coefficients gam[bin, el], gam_ratio, electrolyte activities activity[bin, el]). HERE THE PHASE STATE AND THE ACTIVITIES ARE GIVEN (the taped values), so every route ASTEM takes -- including the hand-specified bins, which have no phase-state capture -- is tested on the rates alone; couplings/mosaic_column.esm mounts the same assembly with aerosol_phase_state, ions_to_electrolytes, aerosol_water_zsr, mtem_activities, mtem_binary_log_gamma and mesa_salt_equilibrium and computes them.\n\nTESTS: states ASTEM visited, from the ASTEM tape (WRF fork earthsciml-instrumented-chem170, module_esm_mesa_tape; data/eqwefic/notes/chem170_mosaic_astem_capture.md), real64: the column's first sub-steps in which all eight bins formed their fluxes at ONE state (the same gas in every bin and no state edit between bins; in the other sub-steps a solid bin's flux routine edits HCl and NH3 before the next bin forms its flux, so no single state reproduces them), and the hand-specified bins of kernels/mosaic_therm_driver mode 6 put in bin 1 of an otherwise empty distribution (the empty bins carry a number, so their kg is nonzero and only the dispatch keeps their rates at zero). Inputs are the FXO records (each bin's state where its flux was formed), kg's inputs from the AIN/BIN records; expected: kg (BIN), each bin's semi-volatile rate -- flux_s for a solid bin, flux_s + kg df_gas_l where ASTEM integrates the liquid (its liquid update is kg (gas - Heff aer_l) with Heff aer_l = surface) --, gas kg for H2SO4 and MSA, and the gas tendencies as minus the sum over bins of those taped rates (all at t = 0 on an empty time_span, one cell: NLEV = 1). A bin ASTEM skipped as in equilibrium (the solid 1% deadband, or B31) is never in a test. rel 1e-9 with an absolute floor of 1e-12 of the largest rate of the species in that test; route flags and balances exactly. 311 of the column's 944 first sub-steps qualify (tools/fill_mosaic_astem_rates_tests.py picks 21 covering every route pattern and branch, then an even spread); 15 of the 18 hand bins (one is equilibrate_acids, two are B31). Deliberate breakages each turn tests red (route_solid on state 2, 470 failures; mixed bins not routed to the liquid, 463; a gas sum over the wrong ion, 72; kg, Kelvin, molality, activity or electrolyte slices taken at a neighbouring index, 3 to 431; a swapped constant or gas on a mount edge, 24 to 1284). What no taped state can see: route_mix (ASTEM_flux_mix is never reached), the has_aer gate on the H2SO4/MSA rates (no empty bin sits under nonzero H2SO4 or MSA gas; the has_aer flag itself is asserted), NaCl read as NaNO3 (every solid column bin with one holds the other) and salt_s summed over all electrolytes (it only matters with solid NH4NO3/NH4Cl, which never share a bin with CaSO4).\n\nIndex sets: lev (NLEV cells, 1 in the tests), bin (NBIN sections), gas (H2SO4, HNO3, HCl, NH3, MSA: ngas_ioa in MOSAIC's order), ion (the nine inorganic aerosol species above), el (NEL electrolytes), salt (the first NSALT electrolytes, the soluble salts).\n\nRESHAPED 2026-11-12: the assembly moved to components/aerosol/mosaic/astem_rate_assembly.esm and onto the cell axes [lev, bin]; the five per-ion rates daer_<ion> became daer[lev, bin, gas] and the gas tendencies and balances dgas/balance[lev, gas], with the same 3213 assertions.",
+    "description": "MOSAIC's gas-particle condensation rates for a whole size distribution (WRF v4.8.0 chem/module_mosaic_therm.F, SUBROUTINE ASTEM: aerosolmtc, ASTEM_non_volatiles, ASTEM_semi_volatiles with ASTEM_flux_dry / ASTEM_flux_wet), assembled from the per-bin physics and summed into the tendencies of the five condensing gases and of the matching aerosol ions in every bin. It is the right-hand side ASTEM integrates; ASTEM's integration (the analytical exponential of the non-volatile stage, the semi-implicit liquid update, the explicit solid update, the adaptive sub-step, the 1% equilibrium skips, the step cap) is solver and is not written here (CLAUDE.md: numerical solvers belong to EarthSciIntegrator).\n\nPARTS, mounted by reference: AstemRates (astem_rate_assembly.esm: ASTEM_semi_volatiles' dispatch, the rates on the gas axis and their sums), and, lifted pointwise beside it (esm-spec 10.5), Mtc (gas_particle_mass_transfer.esm) over lev x bin x gas for the mass-transfer coefficient kg of every gas to every bin and the non-volatile rate gas kg, Liq (astem_liquid_surface_equilibrium.esm) and Sol (astem_solid_surface_equilibrium.esm) over lev x bin for each bin's surface equilibrium and its HNO3, HCl and NH3 rates for a liquid and for a solid particle, and Const (mosaic_gas_equilibrium_constants.esm) over lev for the cell's equilibrium constants. The tests sit on the inline model Tests.\n\nWHICH PHYSICS A BIN GETS is ASTEM_semi_volatiles' dispatch on jaerosolstate (state: 0 no aerosol, 1 all solid, 2 all liquid, 3 mixed): all solid -> the solid surface; all liquid, or mixed without solid NH4NO3 or NH4Cl -> the liquid surface (ASTEM_flux_wet; its CaCO3 case puts the acids into the solid, still the bin's total); mixed WITH solid NH4NO3 or NH4Cl -> ASTEM_flux_mix, which is NOT transcribed (the chem_opt = 170 column never reaches it): route_mix flags such a bin and its semi-volatile rates are set to zero, so a consumer must not use this document where route_mix is 1. H2SO4 and MSA condense on every bin that holds aerosol, at gas kg (the dt -> 0 limit of ASTEM_non_volatiles' exponential, shared over bins as kg/sum kg).\n\nTHE TENDENCIES. Each gas condenses into its own ion: H2SO4 -> SO4, HNO3 -> NO3, HCl -> Cl, NH3 -> NH4, MSA -> MSA, one nmol for one nmol in MOSAIC's units (nmol per m3 of air), into the bin's TOTAL phase (aer(:,jtotal)); how the condensed amount divides between solid and liquid is the phase equilibrium's business (aerosol_phase_state.esm, mesa_salt_equilibrium.esm). daer_<ion>[bin] is the rate into each bin, dgas_<gas> = -sum over bins of it. CONSERVATION: gas plus particles is conserved species by species, balance_<gas> = dgas_<gas> + sum_bins daer_<ion> = 0, which is ASTEM's own invariant total_species(iv) = gas(iv) + sum_bins aer(iv, jtotal) in rate form.\n\nNOT IN THE RATES. (a) The NH3 co-uptake of ASTEM_non_volatiles (each bin free of Na and Ca salts takes up min(2 delta_SO4 + delta_MSA, delta_NH3_max) of NH3 alongside the acid): it is an operator-split neutralisation of the finite non-volatile step whose dt -> 0 limit, min(2 r_SO4 + r_MSA, kg_NH3 g_NH3), would ADD to the semi-volatile NH3 flux kg_NH3 (g_NH3 - surface) and so exceed the diffusion limit kg_NH3 g_NH3 that bounds NH3 transfer; the semi-volatile flux already neutralises the acid in the continuous system. (b) The 1e-14 gas threshold below which ASTEM_non_volatiles skips its step. (c) The N2O5 heterogeneous uptake in the same routine, off in this configuration (n2o5_hetchem = 0). (d) The tiny absorptions and equilibrate_acids of ASTEM_flux_wet and the instantaneous solid equilibrations of ASTEM_flux_dry (state edits, see the component descriptions): a consumer applies the rates to the state after them. (e) ASTEM_flux_wet's equilibrium test, which skips a liquid bin when EVERY gas's relative driving force is <= 0.01 -- a signed test, so a bin from which every gas would evaporate is skipped too (FORTRAN_BUGS.md B31): the rates here evaporate it.\n\nINPUTS are the cell's temperature, pressure, relative humidity (relhumclm) and the five gases -- the cell's equilibrium constants, Kp_nh4no3_0 / Kp_nh4cl_0 included, are computed from them (Const), and per bin: state, number, wet diameter, Kelvin factors kel[bin, gas] (aerosol_phase_state.esm), the solid and liquid ions aer_s / aer_l[bin, ion] (ion = SO4, NO3, Cl, NH4, MSA, CO3, Na, Ca, OIN), the solid electrolytes elec_s[bin, el] (MOSAIC's 22, in its order) and the liquid's activities (mtem_activities.esm: H+ and NH4+ molalities mc_h / mc_nh4, NO3- and Cl- molalities ma_no3 / ma_cl, activity coefficients gam[bin, el], gam_ratio, electrolyte activities activity[bin, el]). HERE THE PHASE STATE AND THE ACTIVITIES ARE GIVEN (the taped values), so every route ASTEM takes -- including the hand-specified bins, which have no phase-state capture -- is tested on the rates alone; couplings/mosaic_column.esm mounts the same assembly with aerosol_phase_state, ions_to_electrolytes, aerosol_water_zsr, mtem_activities, mtem_binary_log_gamma and mesa_salt_equilibrium and computes them.\n\nTESTS: states ASTEM visited, from the ASTEM tape (WRF fork earthsciml-instrumented-chem170, module_esm_mesa_tape; data/eqwefic/notes/chem170_mosaic_astem_capture.md), real64: the column's first sub-steps in which all eight bins formed their fluxes at ONE state (the same gas in every bin and no state edit between bins; in the other sub-steps a solid bin's flux routine edits HCl and NH3 before the next bin forms its flux, so no single state reproduces them), and the hand-specified bins of kernels/mosaic_therm_driver mode 6 put in bin 1 of an otherwise empty distribution (the empty bins carry a number, so their kg is nonzero and only the dispatch keeps their rates at zero). Inputs are the FXO records (each bin's state where its flux was formed), kg's inputs from the AIN/BIN records; expected: kg (BIN), each bin's semi-volatile rate -- flux_s for a solid bin, flux_s + kg df_gas_l where ASTEM integrates the liquid (its liquid update is kg (gas - Heff aer_l) with Heff aer_l = surface) --, gas kg for H2SO4 and MSA, and the gas tendencies as minus the sum over bins of those taped rates (all at t = 0 on an empty time_span, one cell: NLEV = 1). A bin ASTEM skipped as in equilibrium (the solid 1% deadband, or B31) is never in a test. rel 1e-9 with an absolute floor of 1e-12 of the largest rate of the species in that test; route flags and balances exactly. 311 of the column's 944 first sub-steps qualify (tools/fill_mosaic_astem_rates_tests.py picks 21 covering every route pattern and branch, then an even spread); 15 of the 18 hand bins (one is equilibrate_acids, two are B31). Deliberate breakages each turn tests red (route_solid on state 2, 470 failures; mixed bins not routed to the liquid, 463; a gas sum over the wrong ion, 72; kg, Kelvin, molality, activity or electrolyte slices taken at a neighbouring index, 3 to 431; a swapped constant or gas on a mount edge, 24 to 1284). What no taped state can see: route_mix (ASTEM_flux_mix is never reached), the has_aer gate on the H2SO4/MSA rates (no empty bin sits under nonzero H2SO4 or MSA gas; the has_aer flag itself is asserted), NaCl read as NaNO3 (every solid column bin with one holds the other) and salt_s summed over all electrolytes (it only matters with solid NH4NO3/NH4Cl, which never share a bin with CaSO4).\n\nIndex sets: lev (NLEV cells, 1 in the tests), bin (NBIN sections), gas (H2SO4, HNO3, HCl, NH3, MSA: ngas_ioa in MOSAIC's order), ion (the nine inorganic aerosol species above), el (NEL electrolytes), salt (the first NSALT electrolytes, the soluble salts).\n\nRESHAPED 2026-11-12: the assembly moved to components/aerosol/mosaic/astem_rate_assembly.esm and onto the cell axes [lev, bin]; the five per-ion rates daer_<ion> became daer[lev, bin, gas] and the gas tendencies and balances dgas/balance[lev, gas], with the same 3213 assertions.",
     "authors": [
       "EqWeFiC"
     ],
@@ -93,8 +93,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 306.1650695800781,
             "AstemRates.p_atm": 0.9656776283914729,
-            "AstemRates.kp_nh4no3_0": 598424.5234009445,
-            "AstemRates.kp_nh4cl_0": 6179318.037578871,
+            "AstemRates.relhum": 0.44145864248275757,
             "AstemRates.state": [
               [
                 2.0,
@@ -2360,8 +2359,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 305.6279296875,
             "AstemRates.p_atm": 0.9586640019379845,
-            "AstemRates.kp_nh4no3_0": 528447.8305009617,
-            "AstemRates.kp_nh4cl_0": 5303231.96097679,
+            "AstemRates.relhum": 0.4515012204647064,
             "AstemRates.state": [
               [
                 2.0,
@@ -4627,8 +4625,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 263.89263916015625,
             "AstemRates.p_atm": 0.5104818313953489,
-            "AstemRates.kp_nh4no3_0": 23.63102761712014,
-            "AstemRates.kp_nh4cl_0": 122.07775357745811,
+            "AstemRates.relhum": 0.638942301273346,
             "AstemRates.state": [
               [
                 3.0,
@@ -6894,8 +6891,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 241.22348022460938,
             "AstemRates.p_atm": 0.3276027737403101,
-            "AstemRates.kp_nh4no3_0": 0.06294836688406645,
-            "AstemRates.kp_nh4cl_0": 0.501585799418922,
+            "AstemRates.relhum": 0.464682012796402,
             "AstemRates.state": [
               [
                 3.0,
@@ -9161,8 +9157,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.09866886203972869,
-            "AstemRates.kp_nh4no3_0": 0.006516471988390298,
-            "AstemRates.kp_nh4cl_0": 0.06702921286521189,
+            "AstemRates.relhum": 0.23905082046985626,
             "AstemRates.state": [
               [
                 3.0,
@@ -11428,8 +11423,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 265.0640869140625,
             "AstemRates.p_atm": 0.5104674781976745,
-            "AstemRates.kp_nh4no3_0": 46.62312751236928,
-            "AstemRates.kp_nh4cl_0": 338.3423741618404,
+            "AstemRates.relhum": 0.5201748013496399,
             "AstemRates.state": [
               [
                 2.0,
@@ -13695,8 +13689,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.1266901117369186,
-            "AstemRates.kp_nh4no3_0": 0.006510968677649086,
-            "AstemRates.kp_nh4cl_0": 0.06701727591110242,
+            "AstemRates.relhum": 0.24078595638275146,
             "AstemRates.state": [
               [
                 3.0,
@@ -15962,8 +15955,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 246.20028686523438,
             "AstemRates.p_atm": 0.3499467659883721,
-            "AstemRates.kp_nh4no3_0": 0.123748105217754,
-            "AstemRates.kp_nh4cl_0": 0.4879778973379406,
+            "AstemRates.relhum": 0.7164939641952515,
             "AstemRates.state": [
               [
                 2.0,
@@ -18229,8 +18221,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.0986498531371124,
-            "AstemRates.kp_nh4no3_0": 0.006516705209594974,
-            "AstemRates.kp_nh4cl_0": 0.06692173086456489,
+            "AstemRates.relhum": 0.22796718776226044,
             "AstemRates.state": [
               [
                 3.0,
@@ -20496,8 +20487,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 243.66424560546875,
             "AstemRates.p_atm": 0.3275381237887597,
-            "AstemRates.kp_nh4no3_0": 0.06361218321350175,
-            "AstemRates.kp_nh4cl_0": 0.26465198975647164,
+            "AstemRates.relhum": 0.6961259245872498,
             "AstemRates.state": [
               [
                 2.0,
@@ -22763,8 +22753,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 261.4305419921875,
             "AstemRates.p_atm": 0.4540417272286822,
-            "AstemRates.kp_nh4no3_0": 22.374494704795197,
-            "AstemRates.kp_nh4cl_0": 216.4230410729816,
+            "AstemRates.relhum": 0.40962648391723633,
             "AstemRates.state": [
               [
                 2.0,
@@ -25030,8 +25019,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 262.1957702636719,
             "AstemRates.p_atm": 0.45407582364341087,
-            "AstemRates.kp_nh4no3_0": 29.27944361508523,
-            "AstemRates.kp_nh4cl_0": 311.09372876991733,
+            "AstemRates.relhum": 0.36494794487953186,
             "AstemRates.state": [
               [
                 2.0,
@@ -27297,8 +27285,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 257.9042663574219,
             "AstemRates.p_atm": 0.4140021499515504,
-            "AstemRates.kp_nh4no3_0": 8.98057807627366,
-            "AstemRates.kp_nh4cl_0": 90.50790993997994,
+            "AstemRates.relhum": 0.3866155743598938,
             "AstemRates.state": [
               [
                 2.0,
@@ -29564,8 +29551,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.06989704457364342,
-            "AstemRates.kp_nh4no3_0": 0.006310059061009118,
-            "AstemRates.kp_nh4cl_0": 0.06589389624192511,
+            "AstemRates.relhum": 0.2085108458995819,
             "AstemRates.state": [
               [
                 3.0,
@@ -31831,8 +31817,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 254.55926513671875,
             "AstemRates.p_atm": 0.39315225290697675,
-            "AstemRates.kp_nh4no3_0": 1.0427871581370856,
-            "AstemRates.kp_nh4cl_0": 3.585700674595513,
+            "AstemRates.relhum": 0.768371045589447,
             "AstemRates.state": [
               [
                 2.0,
@@ -34098,8 +34083,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.1540449067344961,
-            "AstemRates.kp_nh4no3_0": 0.004380466358936059,
-            "AstemRates.kp_nh4cl_0": 0.03223445372213895,
+            "AstemRates.relhum": 0.4870739281177521,
             "AstemRates.state": [
               [
                 2.0,
@@ -36365,8 +36349,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.25686791424418604,
-            "AstemRates.kp_nh4no3_0": 0.003139998520382343,
-            "AstemRates.kp_nh4cl_0": 0.016492865363488648,
+            "AstemRates.relhum": 0.6059614419937134,
             "AstemRates.state": [
               [
                 2.0,
@@ -38632,8 +38615,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.12669441921027133,
-            "AstemRates.kp_nh4no3_0": 0.00614041182060732,
-            "AstemRates.kp_nh4cl_0": 0.06457748889385224,
+            "AstemRates.relhum": 0.2843991816043854,
             "AstemRates.state": [
               [
                 3.0,
@@ -40899,8 +40881,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 256.8538818359375,
             "AstemRates.p_atm": 0.4139553355135659,
-            "AstemRates.kp_nh4no3_0": 3.141601385619518,
-            "AstemRates.kp_nh4cl_0": 14.449351120415832,
+            "AstemRates.relhum": 0.6729257702827454,
             "AstemRates.state": [
               [
                 2.0,
@@ -43166,8 +43147,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.15405277979651164,
-            "AstemRates.kp_nh4no3_0": 0.004663708922363397,
-            "AstemRates.kp_nh4cl_0": 0.0374157500257145,
+            "AstemRates.relhum": 0.45578083395957947,
             "AstemRates.state": [
               [
                 2.0,
@@ -45433,8 +45413,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 233.0,
             "AstemRates.p_atm": 0.06989497789486435,
-            "AstemRates.kp_nh4no3_0": 0.00636176737463781,
-            "AstemRates.kp_nh4cl_0": 0.0661186734946375,
+            "AstemRates.relhum": 0.21139836311340332,
             "AstemRates.state": [
               [
                 3.0,
@@ -47700,8 +47679,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 3626.0858459610295,
-            "AstemRates.kp_nh4cl_0": 10586.02391137136,
+            "AstemRates.relhum": 0.8500000238418579,
             "AstemRates.state": [
               [
                 3.0,
@@ -49694,8 +49672,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 3626.0858459610295,
-            "AstemRates.kp_nh4cl_0": 10586.02391137136,
+            "AstemRates.relhum": 0.8500000238418579,
             "AstemRates.state": [
               [
                 2.0,
@@ -51688,8 +51665,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 3626.0858459610295,
-            "AstemRates.kp_nh4cl_0": 10586.02391137136,
+            "AstemRates.relhum": 0.8500000238418579,
             "AstemRates.state": [
               [
                 2.0,
@@ -53682,8 +53658,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 3626.0858459610295,
-            "AstemRates.kp_nh4cl_0": 10586.02391137136,
+            "AstemRates.relhum": 0.8500000238418579,
             "AstemRates.state": [
               [
                 2.0,
@@ -55676,8 +55651,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 26419.719345989535,
-            "AstemRates.kp_nh4cl_0": 329874.2564852783,
+            "AstemRates.relhum": 0.20000000298023224,
             "AstemRates.state": [
               [
                 1.0,
@@ -57670,8 +57644,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 26419.719345989535,
-            "AstemRates.kp_nh4cl_0": 329874.2564852783,
+            "AstemRates.relhum": 0.20000000298023224,
             "AstemRates.state": [
               [
                 3.0,
@@ -59664,8 +59637,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 26419.719345989535,
-            "AstemRates.kp_nh4cl_0": 329874.2564852783,
+            "AstemRates.relhum": 0.20000000298023224,
             "AstemRates.state": [
               [
                 1.0,
@@ -61658,8 +61630,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 26419.719345989535,
-            "AstemRates.kp_nh4cl_0": 329874.2564852783,
+            "AstemRates.relhum": 0.20000000298023224,
             "AstemRates.state": [
               [
                 1.0,
@@ -63652,8 +63623,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 26419.719345989535,
-            "AstemRates.kp_nh4cl_0": 329874.2564852783,
+            "AstemRates.relhum": 0.20000000298023224,
             "AstemRates.state": [
               [
                 1.0,
@@ -65646,8 +65616,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 26419.719345989535,
-            "AstemRates.kp_nh4cl_0": 329874.2564852783,
+            "AstemRates.relhum": 0.20000000298023224,
             "AstemRates.state": [
               [
                 1.0,
@@ -67640,8 +67609,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 26419.719345989535,
-            "AstemRates.kp_nh4cl_0": 329874.2564852783,
+            "AstemRates.relhum": 0.20000000298023224,
             "AstemRates.state": [
               [
                 1.0,
@@ -69634,8 +69602,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 26419.719345989535,
-            "AstemRates.kp_nh4cl_0": 329874.2564852783,
+            "AstemRates.relhum": 0.20000000298023224,
             "AstemRates.state": [
               [
                 1.0,
@@ -71628,8 +71595,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 9347.361563838662,
-            "AstemRates.kp_nh4cl_0": 44029.24580092123,
+            "AstemRates.relhum": 0.699999988079071,
             "AstemRates.state": [
               [
                 3.0,
@@ -73622,8 +73588,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 14802.840023431796,
-            "AstemRates.kp_nh4cl_0": 98034.47109397956,
+            "AstemRates.relhum": 0.5799999833106995,
             "AstemRates.state": [
               [
                 1.0,
@@ -75616,8 +75581,7 @@
           "parameter_overrides": {
             "AstemRates.t_k": 290.0,
             "AstemRates.p_atm": 0.8999999761581421,
-            "AstemRates.kp_nh4no3_0": 11548.28338752478,
-            "AstemRates.kp_nh4cl_0": 62767.754740047254,
+            "AstemRates.relhum": 0.6499999761581421,
             "AstemRates.state": [
               [
                 1.0,
@@ -77618,6 +77582,14 @@
     },
     {
       "type": "variable_map",
+      "from": "AstemRates.relhum",
+      "to": "Const.a_w",
+      "transform": "param_to_var",
+      "lifting": "pointwise",
+      "description": "Kp_nh4no3_0 / Kp_nh4cl_0 at the relative humidity update_thermodynamic_constants runs at (relhumclm, N118)"
+    },
+    {
+      "type": "variable_map",
       "from": "AstemRates.t_bg",
       "to": "Mtc.t_k",
       "transform": "param_to_var",
@@ -78073,17 +78045,19 @@
     },
     {
       "type": "variable_map",
-      "from": "AstemRates.kp_nh4no3_0",
+      "from": "Const.kp_nh4no3_0",
       "to": "Sol.kp_nh4no3_0",
       "transform": "param_to_var",
-      "lifting": "pointwise"
+      "lifting": "pointwise",
+      "description": "Kp_nh4no3_0 of the cell, from its temperature and relative humidity"
     },
     {
       "type": "variable_map",
-      "from": "AstemRates.kp_nh4cl_0",
+      "from": "Const.kp_nh4cl_0",
       "to": "Sol.kp_nh4cl_0",
       "transform": "param_to_var",
-      "lifting": "pointwise"
+      "lifting": "pointwise",
+      "description": "Kp_nh4cl_0 of the cell, from its temperature and relative humidity"
     },
     {
       "type": "variable_map",

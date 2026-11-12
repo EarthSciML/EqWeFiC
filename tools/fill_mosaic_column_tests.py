@@ -10,10 +10,10 @@ chem170_mosaic_astem_capture.md), real(kind=8) values:
     call of each bin of the step (ps_*_c2: the recompute at the end of ASTEM_non_volatiles,
     which is the state ASTEM's first semi-volatile sub-step forms its fluxes at -- checked
     bit-identical against the tape's SVB records on all 7552 bins: state, water, totals,
-    Kelvin factors), relhumclm and Keq_ll;
+    Kelvin factors), relhumclm;
   * chem170_scm/mosaic_astem/astem.tape.gz: AIN (the cell), BIN (num, dp_wet, kg), the first
     sub-step's SVT gas, SVB state and FXO records (each bin's flux, activities, ions).
-Inputs: the cell (T, p, RH, the gases after the non-volatile stage, Keq_ll(1), Kp0), and per
+Inputs: the cell (T, p, RH, the gases after the non-volatile stage), and per
 bin the totals, number, dp_wet, water_a_hyst, and the two equilibrium states the solvers
 reached -- ah2o_a (Kelvin) and the solid electrolytes (MESA) -- as the Fortran left them.
 Only numbers are written; the document's equations and structure are hand-authored.
@@ -84,9 +84,6 @@ def build(step, call_of_lev, v):
         po['Column.p_atm'].append(ain['p_atm'])
         po['Column.rh_pc'].append(ain['rh_pc'])
         po['Column.relhum'].append(float(v['relhumclm'][k - 1]))
-        po['Column.keq_hso4'].append(ain['keq_ll'][0])
-        po['Column.kp_nh4no3_0'].append(ain['kp_nh4no3_0'])
-        po['Column.kp_nh4cl_0'].append(ain['kp_nh4cl_0'])
         po['Column.gas'].append(list(sb['gas']))
         rows = collections.defaultdict(list)
         for b in range(1, NBIN + 1):
@@ -202,7 +199,7 @@ def build(step, call_of_lev, v):
 
 def main():
     d = Path(sys.argv[1])
-    steps = [int(x) for x in sys.argv[2:]] or [917, 1620]
+    steps = [int(x) for x in sys.argv[2:]] or [0, 917]
     calls = far.load(d / 'chem170_scm' / 'mosaic_astem')[0]
     by = collections.defaultdict(dict)
     for c in calls:
@@ -214,8 +211,9 @@ def main():
         print(f'step {st}: {len(asr)} assertions;', dict(sorted(census.items(), key=str)))
         desc = (f"The whole chem_opt = 170 column (59 levels x 8 sections), model step {st + 1}, at the state ASTEM's first "
                 "semi-volatile sub-step forms its fluxes at (after ASTEM_non_volatiles and its phase-state recompute). "
-                "Inputs: the cell (T, p, RH, the five gases after the non-volatile stage, Keq_ll(1), Kp0) from the ASTEM "
-                "tape (AIN, SVT); per bin the totals, number, dp_wet and water_a_hyst, and the two equilibrium states the "
+                "Inputs: the cell (T, p, RH, the five gases after the non-volatile stage) from the ASTEM tape (AIN, SVT) and "
+                "the dump (relhumclm), the cell's equilibrium constants -- Keq_ll(1) and Kp0 included -- computed from "
+                "them; per bin the totals, number, dp_wet and water_a_hyst, and the two equilibrium states the "
                 "Fortran's solvers stopped at, ah2o_a (Kelvin) and the solid electrolytes (MESA, read on path 6 only), "
                 "from the ASTEM capture's last aerosol_phase_state call (dumps/chem170_mosaic_astem, ps_*_c2, bit-identical "
                 "to the tape's SVB records). Expected, real64: "

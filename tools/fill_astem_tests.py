@@ -78,23 +78,59 @@ def write_tests(fname, model, tests, keep=None):
           f'{sum(len(t["assertions"]) for t in m["tests"])} assertions')
 
 
-def constants_tests(calls, pick):
-    """One test per (step, level) picked: t_k in, keq_gl/keq_ll/kp out."""
+def relhumclm(dirpath, step, lev, _cache={}):
+    """The cell's relative humidity update_thermodynamic_constants ran at (relhumclm, N118),
+    from the dump of the same capture (dumps/chem170_mosaic_astem, beside the tape's run dir)."""
+    if step < 0:
+        raise ValueError('hand calls carry no dump; use cell_relhum')
+    if step not in _cache:
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from esm_dump import load as dload
+        dump = Path(dirpath).parents[1] / 'dumps' / 'chem170_mosaic_astem' / f'esm_dump_mosaic_{step + 1}.json'
+        _cache[step] = dload(str(dump))['vars']['relhumclm']
+    return float(_cache[step][lev - 1])
+
+
+def cell_relhum(dirpath, c):
+    """relhumclm of a column call (from the dump), or of a hand call: the driver holds it as a
+    default REAL, so it is the binary32 of the case's RH, recovered from the taped rh_pc =
+    100*relhumclm."""
+    if c['step'] >= 0:
+        return relhumclm(dirpath, c['step'], c['lev'])
+    import numpy as np
+    return float(np.float32(np.float32(c['ain']['rh_pc']) / np.float32(100.0)))
+
+
+def constants_tests(calls, pick, dirpath):
+    """One test per (step, level) picked: t_k and the cell's relative humidity in,
+    keq_gl/keq_ll/kp/Kp0 out."""
     tests = []
     for c in pick:
         ain = c['ain']
+        rh = cell_relhum(dirpath, c)
+        if c['step'] >= 0:
+            tid = f"astem64_s{c['step']}_k{c['lev']}"
+            where_ = (f"ASTEM tape, chem_opt = 170 column, model step {c['step'] + 1}, level {c['lev']}: "
+                      f"T = {ain['t_k']:.2f} K, relative humidity {rh:.4f} (relhumclm from dumps/chem170_mosaic_astem).")
+        else:
+            name = HAND_NAMES[c['lev']][0]
+            tid = f"astem64_hand_{name}"
+            where_ = (f"Hand-specified case '{name}' (chem170_scm/mosaic_astem/hand.tape, WRF's own compiled "
+                      f"update_thermodynamic_constants via kernels/mosaic_therm_driver mode 6): T = {ain['t_k']:.2f} K, "
+                      f"relative humidity {rh:.8f} (the driver's binary32 relhumclm).")
         tests.append({
-            'id': f"astem64_s{c['step']}_k{c['lev']}",
-            'description': (f"ASTEM tape, chem_opt = 170 column, model step {c['step'] + 1}, level {c['lev']}: "
-                            f"T = {ain['t_k']:.2f} K. The real64 constants ASTEM held after "
+            'id': tid,
+            'description': (where_ + " The real64 constants ASTEM held after "
                             "update_thermodynamic_constants (AIN record). rel 1e-9."),
-            'parameter_overrides': {'t_k': ain['t_k']},
+            'parameter_overrides': {'t_k': ain['t_k'], 'a_w': rh},
             'time_span': {'start': 0, 'end': 1},
             'tolerance': TOL,
             'assertions': [a('keq_nh3_gl', ain['keq_gl'][1]), a('keq_hno3_gl', ain['keq_gl'][2]),
-                           a('keq_hcl_gl', ain['keq_gl'][3]), a('keq_nh3_ll', ain['keq_ll'][1]),
+                           a('keq_hcl_gl', ain['keq_gl'][3]), a('keq_hso4', ain['keq_ll'][0]),
+                           a('keq_nh3_ll', ain['keq_ll'][1]),
                            a('k_w', ain['keq_ll'][2]), a('kp_nh4no3', ain['kp_nh4no3']),
-                           a('kp_nh4cl', ain['kp_nh4cl'])]})
+                           a('kp_nh4cl', ain['kp_nh4cl']), a('kp_nh4no3_0', ain['kp_nh4no3_0']),
+                           a('kp_nh4cl_0', ain['kp_nh4cl_0'])]})
     return tests
 
 
@@ -372,9 +408,20 @@ def main():
     # constants: one test per dumped step at three levels (surface, mid, top of the
     # aerosol column), so 240-310 K is spanned
     pick = [c for c in calls if c['lev'] in (1, 20, 40)]
-    t = constants_tests(calls, pick)
-    for x in t:   # also the solid-gas constants
-        c = next(c for c in calls if f"astem64_s{c['step']}_k{c['lev']}" == x['id'])
+    # plus the driest and the most humid cell of the capture, for Kp_nh4no3_0/Kp_nh4cl_0
+    by_rh = sorted(calls, key=lambda c: relhumclm(d, c['step'], c['lev']))
+    pick += [c for c in (by_rh[0], by_rh[-1]) if c not in pick]
+    # plus one hand case per relative humidity the hand cases use (0.2-0.85: Kp0 above and
+    # below keq_sg)
+    hand = load(d, hand=True)
+    seen = set()
+    for c in hand:
+        rh = cell_relhum(d, c)
+        if rh not in seen:
+            seen.add(rh)
+            pick.append(c)
+    t = constants_tests(calls, pick, d)
+    for x, c in zip(t, pick):   # also the solid-gas constants
         x['assertions'] += [a('keq_sg_nh4no3', c['ain']['keq_sg'][0]),
                             a('keq_sg_nh4cl', c['ain']['keq_sg'][1])]
     write_tests('mosaic_gas_equilibrium_constants.esm', 'MosaicGasEquilibriumConstants', t)
@@ -385,7 +432,6 @@ def main():
     rows = spread(rows, 40)
     write_tests('gas_particle_mass_transfer.esm', 'MosaicGasParticleMassTransfer',
                 mtc_tests(calls, rows), keep=lambda t: not t['id'].startswith('astem64_'))
-    hand = load(d, hand=True)
     wt, cen = wet_tests(calls + hand)
     write_tests('astem_liquid_surface_equilibrium.esm', 'MosaicAstemLiquidSurfaceEquilibrium', wt)
     write_tests('astem_solid_surface_equilibrium.esm', 'MosaicAstemSolidSurfaceEquilibrium',

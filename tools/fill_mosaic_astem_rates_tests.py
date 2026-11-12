@@ -143,8 +143,7 @@ def build_test(tid, desc, c, sb, bins):
     ain = c['ain']
     g = next(iter(bins.values()))['gas']   # the gas the fluxes were formed at (= SVT gas in a clean column sub-step)
     assert all(fx['gas'] == g for fx in bins.values())
-    over = {'t_k': ain['t_k'], 'p_atm': ain['p_atm'],
-            'kp_nh4no3_0': ain['kp_nh4no3_0'], 'kp_nh4cl_0': ain['kp_nh4cl_0']}
+    over = {'t_k': ain['t_k'], 'p_atm': ain['p_atm'], 'relhum': fat.cell_relhum(ASTEM_DIR, c)}
     for k, name in enumerate(GASES):
         over[f'gas_{name}'] = g[k]
     arr = collections.defaultdict(list)
@@ -218,8 +217,13 @@ def build_test(tid, desc, c, sb, bins):
             'time_span': {'start': 0, 'end': 0}, 'assertions': asr}
 
 
+ASTEM_DIR = None
+
+
 def main():
+    global ASTEM_DIR
     d = Path(sys.argv[1])
+    ASTEM_DIR = d
     calls, hand, names = load(d)
 
     # ---- column: census of usable first sub-steps
