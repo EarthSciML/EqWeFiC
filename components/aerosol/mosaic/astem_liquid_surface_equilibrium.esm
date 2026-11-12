@@ -1,0 +1,5410 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "MosaicAstemLiquidSurfaceEquilibrium",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "description": "The PHYSICS of MOSAIC's gas-particle partitioning of the semi-volatile inorganic gases HNO3, HCl and NH3 onto ONE liquid (or CaCO3-bearing) size bin: the equilibrium vapour concentration each gas has at the particle surface, and the instantaneous condensation rate kg (gas - surface) that follows from it. It is what SUBROUTINE ASTEM_flux_wet and its cases 1-4 (chem/module_mosaic_therm.F, WRF v4.8.0) compute before ASTEM integrates anything; ASTEM's integrator (its semi-implicit sub-step, the adaptive step choice of ASTEM_calculate_dtmax, the 1% equilibrium test that skips a bin, the 200-step cap) is deliberately NOT here. EqWeFiC writes rates and constraints; EarthSciIntegrator integrates them.\n\nINPUTS. The gases and their mass-transfer coefficients kg (gas_particle_mass_transfer.esm), the Kelvin factors (aerosol_phase_state.esm), the liquid ions that set the sulfate ratio X_T (template aerosol_xt), the ion molalities, activity coefficients and electrolyte activities of compute_activities (mtem_activities.esm) and the equilibrium constants (mosaic_gas_equilibrium_constants.esm).\n\nTHE FOUR SURFACES. Which equilibrium holds at the surface depends on the particle:\n  1. solid CaCO3 present: the particle is a perfect acid sink. HNO3 and HCl have zero surface concentration (each only above 1e-5 nmol/m3, as the Fortran writes it) and condense into the SOLID; NH3 does not exchange.\n  2. sulfate-rich, 0 <= X_T < 1.9999: each gas is in Henry's-law equilibrium with the solution separately -- [HNO3]s = kel [H+][NO3-] gamma_HNO3^2 / K_HNO3, [HCl]s likewise, and [NH3]s = kel gamma_ratio [NH4+] K_w / ([H+] K_b K_H,NH3).\n  3. sulfate-poor with ammonia: the surface holds NH4NO3 and NH4Cl in solution equilibrium, [NH3]s [HNO3]s = K_NH4NO3 and [NH3]s [HCl]s = K_NH4Cl (K = kel kel a_salt kp), and the three fluxes carry no net charge, kg_NH3 (g_NH3 - [NH3]s) = kg_HNO3 (g_HNO3 - [HNO3]s) + kg_HCl (g_HCl - [HCl]s). Eliminating the acids gives kg_NH3 [NH3]s^2 + b [NH3]s + c = 0, whose larger root is [NH3]s. This is an exact algebraic solution of the two constraints, not an iteration; FUNCTION quadratic's series form for |4ac/b^2| < 1e-6 is kept, as mtem_activities.esm keeps compute_activities'. H+ is then diagnosed from [HNO3]s (or [HCl]s) through Henry's law.\n  4. sulfate-poor without ammonia: HNO3 and HCl share one H+, so [HNO3]s/[HCl]s is fixed by the solution, and the two fluxes balance, kg_HNO3 (g_HNO3 - [HNO3]s) + kg_HCl (g_HCl - [HCl]s) = 0. Without both nitrate and chloride in solution nothing exchanges and H+ is sqrt(K_w).\nWhere a bin does not exchange a gas its surface value is the gas value itself, so its rate is zero.\n\nTHE RATES. cond_x = kg_x (g_x - [x]s) per bin, nmol/m3/s, positive into the particle; a consumer subtracts the sum over bins from the gas and adds each bin's share to its liquid (to its solid in case 1). In case 2-4 this is the same flux ASTEM forms: its linearised surface value Heff aer_l equals [x]s at the state the fluxes are formed from, because Heff = [x]s/aer_l by construction.\n\nNOT TRANSCRIBED. (a) The 'tiny' adjustments ASTEM_flux_wet makes before cases 3 and 4 (absorb_tiny_nh4no3/nh4cl/hno3/hcl move about 1e-6 of a gas into an empty solution so that its activity is defined): they are state edits, so the tests feed the state AFTER them. (b) equilibrate_acids, the instantaneous gas-liquid projection case 3 falls back to when the solution holds neither nitrate nor chloride: a state rewrite; flagged by acids_equilibrate, and not asserted. (c) Heff, the phi relative driving forces and the integrate flags, which only steer ASTEM's integrator.\n\nReference: the ASTEM tape of the chem_opt = 170 column (fork branch earthsciml-instrumented-chem170; data/eqwefic/notes/chem170_mosaic_astem_capture.md), the real(kind=8) values the Fortran held at every flux call of every ASTEM sub-step, rel 1e-9.",
+    "references": [
+      {
+        "citation": "Zaveri, R.A., Easter, R.C., Peters, L.K., Wexler, A.S. (2004). Adaptive step time-split Euler method (ASTEM) for gas-particle partitioning. JGR, and Zaveri et al. (2008), MOSAIC, J. Geophys. Res. 113, D13204."
+      },
+      {
+        "citation": "WRF v4.8.0 chem/module_mosaic_therm.F, ASTEM_flux_wet and ASTEM_flux_wet_case1/2/3/4, FUNCTION quadratic"
+      }
+    ]
+  },
+  "models": {
+    "MosaicAstemLiquidSurfaceEquilibrium": {
+      "expression_template_imports": [
+        {
+          "ref": "./mosaic_thermo_templates.esm"
+        }
+      ],
+      "subsystems": {
+        "ap": {
+          "ref": "./mosaic_astem_parameters.esm"
+        }
+      },
+      "variables": {
+        "gas_hno3": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Gas-phase HNO3, gas(ihno3_g), as the bin's flux routine sees it (after ASTEM_flux_wet's tiny-absorption adjustments)."
+        },
+        "gas_hcl": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Gas-phase HCl, gas(ihcl_g)."
+        },
+        "gas_nh3": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Gas-phase NH3, gas(inh3_g)."
+        },
+        "kg_hno3": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Gas-particle mass-transfer coefficient of HNO3 to this bin, kg(ihno3_g, ibin) (gas_particle_mass_transfer.esm)."
+        },
+        "kg_hcl": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "kg(ihcl_g, ibin)."
+        },
+        "kg_nh3": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "kg(inh3_g, ibin)."
+        },
+        "kel_hno3": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "Kelvin factor of HNO3 over this bin, kel(ihno3_g, ibin) (aerosol_phase_state.esm)."
+        },
+        "kel_hcl": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "kel(ihcl_g, ibin)."
+        },
+        "kel_nh3": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "kel(inh3_g, ibin)."
+        },
+        "so4_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid-phase sulfate aer(iso4_a, jliquid, ibin): with msa, nh4, na and ca it sets the sulfate ratio X_T that decides the case."
+        },
+        "msa_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid-phase methanesulfonate aer(imsa_a, jliquid, ibin)."
+        },
+        "nh4_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid-phase ammonium aer(inh4_a, jliquid, ibin)."
+        },
+        "na_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid-phase sodium aer(ina_a, jliquid, ibin)."
+        },
+        "ca_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid-phase calcium aer(ica_a, jliquid, ibin)."
+        },
+        "caco3_s": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Solid CaCO3 electrolyte(jcaco3, jsolid, ibin): any at all makes the particle an acid sink."
+        },
+        "mc_h_act": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "default": 0.0,
+          "description": "H+ molality from compute_activities (mtem_activities.esm mc_h), mc(jc_h, ibin) on entry."
+        },
+        "mc_nh4": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "default": 0.0,
+          "description": "NH4+ molality mc(jc_nh4, ibin) (mtem_activities.esm)."
+        },
+        "ma_no3": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "default": 0.0,
+          "description": "NO3- molality ma(ja_no3, ibin)."
+        },
+        "ma_cl": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "default": 0.0,
+          "description": "Cl- molality ma(ja_cl, ibin)."
+        },
+        "gam_hno3": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "Activity coefficient of HNO3 in the mixture, gam(jhno3, ibin)."
+        },
+        "gam_hcl": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "Activity coefficient of HCl, gam(jhcl, ibin)."
+        },
+        "gam_ratio": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "gam_ratio(ibin): gamma_NH4NO3^2/gamma_HNO3^2 (sulfate-poor) or gamma_NH4HSO4^2/gamma_HHSO4^2 (sulfate-rich), mtem_activities.esm."
+        },
+        "act_nh4no3": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "Activity of NH4NO3 in the liquid, activity(jnh4no3, ibin)."
+        },
+        "act_nh4cl": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "Activity of NH4Cl in the liquid, activity(jnh4cl, ibin)."
+        },
+        "keq_nh3_gl": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "keq_gl(2) (mosaic_gas_equilibrium_constants.esm)."
+        },
+        "keq_hno3_gl": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "keq_gl(3)."
+        },
+        "keq_hcl_gl": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "keq_gl(4)."
+        },
+        "keq_nh3_ll": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "keq_ll(2)."
+        },
+        "k_w": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "keq_ll(3), water's ion product."
+        },
+        "kp_nh4no3": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "kp_nh4no3 (mosaic_gas_equilibrium_constants.esm)."
+        },
+        "kp_nh4cl": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "kp_nh4cl."
+        },
+        "x_t": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sulfate ratio of the liquid, template aerosol_xt (calculate_xt via ions_to_electrolytes(jliquid))."
+        },
+        "case1": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when the particle holds solid CaCO3: an acid sink (ASTEM_flux_wet_case1)."
+        },
+        "case2": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when sulfate-rich, 0 <= X_T < 1.9999, and no CaCO3 (case 2)."
+        },
+        "has_nh3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 unless gas NH3 + liquid NH4 < 1e-25: the system holds ammonia."
+        },
+        "case3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when sulfate-poor with ammonia: NH4NO3 and NH4Cl may both exchange (case 3)."
+        },
+        "case4": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 when sulfate-poor without ammonia: only HNO3 and HCl exchange, against each other (case 4)."
+        },
+        "s2_nh3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case-2 surface NH3 over a sulfate-rich solution, kel gam_ratio [NH4+] K_w/([H+] K_b K_H)."
+        },
+        "s2_hno3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case-2 surface HNO3, kel [H+][NO3-] gamma_HNO3^2/K_HNO3."
+        },
+        "s2_hcl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case-2 surface HCl, kel [H+][Cl-] gamma_HCl^2/K_HCl."
+        },
+        "keq_nh4no3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 3: [NH3]s [HNO3]s over this solution, kel_NH3 kel_HNO3 a_NH4NO3 kp_nh4no3, (nmol/m3)^2."
+        },
+        "keq_nh4cl": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 3: [NH3]s [HCl]s, kel_NH3 kel_HCl a_NH4Cl kp_nh4cl, (nmol/m3)^2."
+        },
+        "qa": {
+          "type": "unknown",
+          "units": "1/s",
+          "description": "Case 3: quadratic coefficient a = kg_NH3 of the surface-NH3 balance."
+        },
+        "qb": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Case 3: b = -kg_NH3 g_NH3 + kg_HNO3 g_HNO3 + kg_HCl g_HCl."
+        },
+        "qc": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 3: c = -(kg_HNO3 K_NH4NO3 + kg_HCl K_NH4Cl)."
+        },
+        "qx": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 3: 4 (a/b)(c/b), the series variable of FUNCTION quadratic (1e6 when b = 0)."
+        },
+        "s3_series": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 3: series form of the root, (-b/2a)(x/2 + x^2/8 + x^3/16), folded to -b/a minus itself where negative."
+        },
+        "s3_closed": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 3: the larger closed-form root, max of (-b +- sqrt(b^2 - 4ac))/2a."
+        },
+        "s3_nh3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 3 surface NH3: FUNCTION quadratic, the series form where |x| < 1e-6."
+        },
+        "s3_hno3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 3 surface HNO3, K_NH4NO3/max([NH3]s, 1e-20)."
+        },
+        "s3_hcl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 3 surface HCl, K_NH4Cl/max([NH3]s, 1e-20)."
+        },
+        "eq4_num": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 4: kel_HNO3 K_HCl [NO3-] gamma_HNO3^2."
+        },
+        "eq4_den": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 4: kel_HCl K_HNO3 [Cl-] gamma_HCl^2."
+        },
+        "eq4_on": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 4 exchanges only with both nitrate and chloride in solution (numerator and denominator nonzero)."
+        },
+        "eq4_ratio": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 4: [HNO3]s/[HCl]s fixed by the common H+, numerator/denominator (1 when off)."
+        },
+        "s4_hcl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 4 surface HCl from the balance kg_HNO3 (g_HNO3 - s_HNO3) + kg_HCl (g_HCl - s_HCl) = 0."
+        },
+        "sfc_hno3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Equilibrium HNO3 vapour concentration at the particle surface, sfc_a(ihno3_g); the gas value itself where this bin does not exchange HNO3 (no driving force)."
+        },
+        "sfc_hcl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Surface HCl, sfc_a(ihcl_g)."
+        },
+        "sfc_nh3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Surface NH3, sfc_a(inh3_g)."
+        },
+        "mc_h_from_no3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 where H+ is diagnosed from the surface HNO3 (cases 3 and 4)."
+        },
+        "mc_h_from_cl": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 where it is diagnosed from the surface HCl instead."
+        },
+        "mc_h": {
+          "type": "unknown",
+          "units": "mol/kg",
+          "description": "The bin's H+ molality after its flux routine: compute_activities' value in case 2, sqrt(K_w) in case 1, and in cases 3 and 4 the value consistent with the surface HNO3 (or HCl) through Henry's law and the activity coefficients."
+        },
+        "df_hno3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "HNO3 driving force gas - surface (df_gas_l, or df_gas_s for a CaCO3 bin)."
+        },
+        "df_hcl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "HCl driving force."
+        },
+        "df_nh3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "NH3 driving force."
+        },
+        "cond_hno3": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Instantaneous HNO3 condensation rate onto this bin, kg (gas - surface); negative is evaporation. The gas tendency is minus the sum over bins, and the bin's nitrate (solid for a CaCO3 bin, else liquid) gains it."
+        },
+        "cond_hcl": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Instantaneous HCl condensation rate onto this bin."
+        },
+        "cond_nh3": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Instantaneous NH3 condensation rate onto this bin."
+        },
+        "acids_equilibrate": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 in case 3 when the liquid holds neither nitrate nor chloride, where the Fortran calls equilibrate_acids, an instantaneous gas-liquid projection that rewrites the bin's state; that projection is not transcribed here, so the surface values and H+ this component gives there are not the Fortran's."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "x_t",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "aerosol_xt",
+            "bindings": {
+              "so4": "so4_l",
+              "msa": "msa_l",
+              "nh4": "nh4_l",
+              "na": "na_l",
+              "ca": "ca_l"
+            }
+          }
+        },
+        {
+          "lhs": "case1",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "caco3_s",
+                  0.0
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "case2",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "case1",
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "<",
+                        "args": [
+                          "x_t",
+                          "ap.xt_rich"
+                        ]
+                      },
+                      {
+                        "op": ">=",
+                        "args": [
+                          "x_t",
+                          0.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "has_nh3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      "gas_nh3",
+                      "nh4_l"
+                    ]
+                  },
+                  "ap.nh3_none"
+                ]
+              },
+              0.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "case3",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "case1"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "case2"
+                ]
+              },
+              "has_nh3"
+            ]
+          }
+        },
+        {
+          "lhs": "case4",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "case1"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "case2"
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "has_nh3"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "s2_nh3",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "kel_nh3",
+                  "gam_ratio",
+                  "mc_nh4",
+                  "k_w"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "mc_h_act",
+                  "keq_nh3_ll",
+                  "keq_nh3_gl"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "s2_hno3",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "kel_hno3",
+                  "mc_h_act",
+                  "ma_no3",
+                  {
+                    "op": "^",
+                    "args": [
+                      "gam_hno3",
+                      2.0
+                    ]
+                  }
+                ]
+              },
+              "keq_hno3_gl"
+            ]
+          }
+        },
+        {
+          "lhs": "s2_hcl",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "kel_hcl",
+                  "mc_h_act",
+                  "ma_cl",
+                  {
+                    "op": "^",
+                    "args": [
+                      "gam_hcl",
+                      2.0
+                    ]
+                  }
+                ]
+              },
+              "keq_hcl_gl"
+            ]
+          }
+        },
+        {
+          "lhs": "keq_nh4no3",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "kel_nh3",
+                  "kel_hno3"
+                ]
+              },
+              "act_nh4no3",
+              "kp_nh4no3"
+            ]
+          }
+        },
+        {
+          "lhs": "keq_nh4cl",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "kel_nh3",
+                  "kel_hcl"
+                ]
+              },
+              "act_nh4cl",
+              "kp_nh4cl"
+            ]
+          }
+        },
+        {
+          "lhs": "qa",
+          "rhs": "kg_nh3"
+        },
+        {
+          "lhs": "qb",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "kg_nh3",
+                          "gas_nh3"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "kg_hno3",
+                      "gas_hno3"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "kg_hcl",
+                  "gas_hcl"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "qc",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "kg_hno3",
+                      "keq_nh4no3"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "kg_hcl",
+                      "keq_nh4cl"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "qx",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "==",
+                "args": [
+                  "qb",
+                  0.0
+                ]
+              },
+              1000000.0,
+              {
+                "op": "*",
+                "args": [
+                  4.0,
+                  {
+                    "op": "/",
+                    "args": [
+                      "qa",
+                      "qb"
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      "qc",
+                      "qb"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "s3_series",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              -0.5,
+                              "qb"
+                            ]
+                          },
+                          "qa"
+                        ]
+                      },
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              0.5,
+                              "qx"
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              0.125,
+                              {
+                                "op": "^",
+                                "args": [
+                                  "qx",
+                                  2.0
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              0.0625,
+                              {
+                                "op": "^",
+                                "args": [
+                                  "qx",
+                                  3.0
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  0.0
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "qb"
+                        ]
+                      },
+                      "qa"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              -0.5,
+                              "qb"
+                            ]
+                          },
+                          "qa"
+                        ]
+                      },
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              0.5,
+                              "qx"
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              0.125,
+                              {
+                                "op": "^",
+                                "args": [
+                                  "qx",
+                                  2.0
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              0.0625,
+                              {
+                                "op": "^",
+                                "args": [
+                                  "qx",
+                                  3.0
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          -0.5,
+                          "qb"
+                        ]
+                      },
+                      "qa"
+                    ]
+                  },
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          0.5,
+                          "qx"
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          0.125,
+                          {
+                            "op": "^",
+                            "args": [
+                              "qx",
+                              2.0
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          0.0625,
+                          {
+                            "op": "^",
+                            "args": [
+                              "qx",
+                              3.0
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "s3_closed",
+          "rhs": {
+            "op": "max",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "qb"
+                        ]
+                      },
+                      {
+                        "op": "sqrt",
+                        "args": [
+                          {
+                            "op": "-",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "qb",
+                                  "qb"
+                                ]
+                              },
+                              {
+                                "op": "*",
+                                "args": [
+                                  4.0,
+                                  "qa",
+                                  "qc"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      "qa"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "qb"
+                        ]
+                      },
+                      {
+                        "op": "sqrt",
+                        "args": [
+                          {
+                            "op": "-",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "qb",
+                                  "qb"
+                                ]
+                              },
+                              {
+                                "op": "*",
+                                "args": [
+                                  4.0,
+                                  "qa",
+                                  "qc"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      "qa"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "s3_nh3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<",
+                "args": [
+                  {
+                    "op": "abs",
+                    "args": [
+                      "qx"
+                    ]
+                  },
+                  "ap.series_x"
+                ]
+              },
+              "s3_series",
+              "s3_closed"
+            ]
+          }
+        },
+        {
+          "lhs": "s3_hno3",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "keq_nh4no3",
+              {
+                "op": "max",
+                "args": [
+                  "s3_nh3",
+                  "ap.sfc_floor"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "s3_hcl",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "keq_nh4cl",
+              {
+                "op": "max",
+                "args": [
+                  "s3_nh3",
+                  "ap.sfc_floor"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "eq4_num",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "kel_hno3",
+              "keq_hcl_gl",
+              "ma_no3",
+              {
+                "op": "^",
+                "args": [
+                  "gam_hno3",
+                  2.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "eq4_den",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "kel_hcl",
+              "keq_hno3_gl",
+              "ma_cl",
+              {
+                "op": "^",
+                "args": [
+                  "gam_hcl",
+                  2.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "eq4_on",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "eq4_den",
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "eq4_num",
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              0.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "eq4_ratio",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "eq4_on",
+                  0.0
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  "eq4_num",
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "eq4_on",
+                          0.0
+                        ]
+                      },
+                      "eq4_den",
+                      1.0
+                    ]
+                  }
+                ]
+              },
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "s4_hcl",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "kg_hno3",
+                      "gas_hno3"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "kg_hcl",
+                      "gas_hcl"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  "kg_hcl",
+                  {
+                    "op": "*",
+                    "args": [
+                      "eq4_ratio",
+                      "kg_hno3"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "sfc_hno3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "case1",
+                  0.0
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "gas_hno3",
+                      "ap.gas_min"
+                    ]
+                  },
+                  0.0,
+                  "gas_hno3"
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "case2",
+                      0.0
+                    ]
+                  },
+                  "s2_hno3",
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "case3",
+                          0.0
+                        ]
+                      },
+                      "s3_hno3",
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": ">",
+                            "args": [
+                              "eq4_on",
+                              0.0
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              "eq4_ratio",
+                              "s4_hcl"
+                            ]
+                          },
+                          "gas_hno3"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "sfc_hcl",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "case1",
+                  0.0
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "gas_hcl",
+                      "ap.gas_min"
+                    ]
+                  },
+                  0.0,
+                  "gas_hcl"
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "case2",
+                      0.0
+                    ]
+                  },
+                  "s2_hcl",
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "case3",
+                          0.0
+                        ]
+                      },
+                      "s3_hcl",
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": ">",
+                            "args": [
+                              "eq4_on",
+                              0.0
+                            ]
+                          },
+                          "s4_hcl",
+                          "gas_hcl"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "sfc_nh3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "case2",
+                  0.0
+                ]
+              },
+              "s2_nh3",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "case3",
+                      0.0
+                    ]
+                  },
+                  "s3_nh3",
+                  "gas_nh3"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "mc_h_from_no3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "sfc_hno3",
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": ">",
+                    "args": [
+                      "ma_no3",
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "mc_h_from_cl",
+          "rhs": {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  "mc_h_from_no3"
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "sfc_hcl",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": ">",
+                        "args": [
+                          "ma_cl",
+                          0.0
+                        ]
+                      }
+                    ]
+                  },
+                  1.0,
+                  0.0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "mc_h",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "case1",
+                  0.0
+                ]
+              },
+              {
+                "op": "sqrt",
+                "args": [
+                  "k_w"
+                ]
+              },
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "case2",
+                      0.0
+                    ]
+                  },
+                  "mc_h_act",
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": "and",
+                        "args": [
+                          {
+                            "op": ">",
+                            "args": [
+                              "case4",
+                              0.0
+                            ]
+                          },
+                          {
+                            "op": "==",
+                            "args": [
+                              "eq4_on",
+                              0.0
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "sqrt",
+                        "args": [
+                          "k_w"
+                        ]
+                      },
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": ">",
+                            "args": [
+                              "mc_h_from_no3",
+                              0.0
+                            ]
+                          },
+                          {
+                            "op": "/",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "keq_hno3_gl",
+                                  "sfc_hno3"
+                                ]
+                              },
+                              {
+                                "op": "*",
+                                "args": [
+                                  "kel_hno3",
+                                  {
+                                    "op": "^",
+                                    "args": [
+                                      "gam_hno3",
+                                      2.0
+                                    ]
+                                  },
+                                  {
+                                    "op": "ifelse",
+                                    "args": [
+                                      {
+                                        "op": ">",
+                                        "args": [
+                                          "mc_h_from_no3",
+                                          0.0
+                                        ]
+                                      },
+                                      "ma_no3",
+                                      1.0
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "ifelse",
+                            "args": [
+                              {
+                                "op": ">",
+                                "args": [
+                                  "mc_h_from_cl",
+                                  0.0
+                                ]
+                              },
+                              {
+                                "op": "/",
+                                "args": [
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      "keq_hcl_gl",
+                                      "sfc_hcl"
+                                    ]
+                                  },
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      "kel_hcl",
+                                      {
+                                        "op": "^",
+                                        "args": [
+                                          "gam_hcl",
+                                          2.0
+                                        ]
+                                      },
+                                      {
+                                        "op": "ifelse",
+                                        "args": [
+                                          {
+                                            "op": ">",
+                                            "args": [
+                                              "mc_h_from_cl",
+                                              0.0
+                                            ]
+                                          },
+                                          "ma_cl",
+                                          1.0
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "sqrt",
+                                "args": [
+                                  "k_w"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "df_hno3",
+          "rhs": {
+            "op": "-",
+            "args": [
+              "gas_hno3",
+              "sfc_hno3"
+            ]
+          }
+        },
+        {
+          "lhs": "df_hcl",
+          "rhs": {
+            "op": "-",
+            "args": [
+              "gas_hcl",
+              "sfc_hcl"
+            ]
+          }
+        },
+        {
+          "lhs": "df_nh3",
+          "rhs": {
+            "op": "-",
+            "args": [
+              "gas_nh3",
+              "sfc_nh3"
+            ]
+          }
+        },
+        {
+          "lhs": "cond_hno3",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "kg_hno3",
+              "df_hno3"
+            ]
+          }
+        },
+        {
+          "lhs": "cond_hcl",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "kg_hcl",
+              "df_hcl"
+            ]
+          }
+        },
+        {
+          "lhs": "cond_nh3",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "kg_nh3",
+              "df_nh3"
+            ]
+          }
+        },
+        {
+          "lhs": "acids_equilibrate",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "case3",
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  {
+                    "op": "+",
+                    "args": [
+                      "mc_h_from_no3",
+                      "mc_h_from_cl"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "astem64_case2_nh4_s0_k1_b1_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 1, level 1, bin 1, ASTEM sub-step 1 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 2.7401189482771793,
+            "gas_hcl": 15.890206017824458,
+            "gas_nh3": 0.19403283541130453,
+            "kg_hno3": 3.3673903796449005e-06,
+            "kg_hcl": 4.418784537364801e-06,
+            "kg_nh3": 6.470936241201361e-06,
+            "kel_hno3": 1.0225062481359508,
+            "kel_hcl": 1.0149436551942042,
+            "kel_nh3": 1.0171511149484043,
+            "so4_l": 0.02733006702609397,
+            "msa_l": 0.0,
+            "nh4_l": 0.02708938629751517,
+            "na_l": 1.9801364744043818e-11,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 5.031986958656032,
+            "mc_nh4": 23.28786845515266,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 1.3085079807583966,
+            "gam_hcl": 4.572031351020498,
+            "gam_ratio": 0.021992857681653,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 1.0111667916733886e-09,
+            "keq_hno3_gl": 3.0607515529794676e-05,
+            "keq_hcl_gl": 2.2632126133016462e-05,
+            "keq_nh3_ll": 1.859746412451171e-05,
+            "k_w": 1.8041888666864685e-14,
+            "kp_nh4no3": 31345.658093740734,
+            "kp_nh4cl": 42391.62998902617
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.740118948277179e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 2.7401189482771793,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.740118948277179e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 9.227050185511276e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.227050185511275e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5890206017824458e-11
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 15.890206017824458,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5890206017824458e-11
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 7.021539664710382e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.021539664710383e-17
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.09932597718705907,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.9403283541130454e-13
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": 0.09470685822424546,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.9403283541130454e-13
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 6.12842041173589e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.2555741066460692e-18
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 5.031986958656032,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s59_k26_b5_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 60, level 26, bin 5, ASTEM sub-step 1 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 2.207406964627762,
+            "gas_hcl": 3.6623008611137764,
+            "gas_nh3": 0.01064376085629875,
+            "kg_hno3": 1.3891469988539423e-05,
+            "kg_hcl": 1.782231064080697e-05,
+            "kg_nh3": 2.5816863195222723e-05,
+            "kel_hno3": 1.0009332415121908,
+            "kel_hcl": 1.0006218663787456,
+            "kel_nh3": 1.0007129833300947,
+            "so4_l": 1.8072433750615111,
+            "msa_l": 0.0,
+            "nh4_l": 1.800555216165076,
+            "na_l": 0.007983023846293603,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 3.8736133432450544,
+            "mc_nh4": 11.891939473668563,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 0.9230309950770538,
+            "gam_hcl": 2.191290976287039,
+            "gam_ratio": 0.09513921920776984,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 2.556749264766873e-09,
+            "keq_hno3_gl": 0.00023138249357766596,
+            "keq_hcl_gl": 0.0001839129343915569,
+            "keq_nh3_ll": 1.6386890729209265e-05,
+            "k_w": 3.4859472311257367e-15,
+            "kp_nh4no3": 359.58835091614947,
+            "kp_nh4cl": 452.4012928819819
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.207406964627762e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 2.207406964627762,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.207406964627762e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 3.066412760161946e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.066412760161946e-17
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.662300861113776e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 3.6623008611137764,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.662300861113776e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 6.527066360686459e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.527066360686458e-17
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.024318772528760964,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.4318772528760964e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.013675011672462215,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.4318772528760964e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -3.530459055410309e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.278344234507623e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 3.8736133432450544,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s229_k49_b5_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 230, level 49, bin 5, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.1512561873704719,
+            "gas_hcl": 1.9224013881319924,
+            "gas_nh3": 8.407680112538488e-08,
+            "kg_hno3": 1.4230401277638336e-05,
+            "kg_hcl": 1.8441026885961327e-05,
+            "kg_nh3": 2.6840551942637943e-05,
+            "kel_hno3": 1.0008310999233234,
+            "kel_hcl": 1.0005538136606253,
+            "kel_nh3": 1.0006349562451606,
+            "so4_l": 1.344014368783868,
+            "msa_l": 0.0,
+            "nh4_l": 1.1263936998672,
+            "na_l": 0.007888303128654368,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 5.445930932479852,
+            "mc_nh4": 6.540624266106659,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 0.8991407552446676,
+            "gam_hcl": 1.6778949218390156,
+            "gam_ratio": 0.16335456824999436,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 2.8777648677109884e-08,
+            "keq_hno3_gl": 0.025544816032703338,
+            "keq_hcl_gl": 0.02288111574893101,
+            "keq_nh3_ll": 7.1214512515383375e-06,
+            "k_w": 3.5339188109754625e-17,
+            "kp_nh4no3": 0.006750407277758574,
+            "kp_nh4cl": 0.007536254523087262
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1512561873704718e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.1512561873704719,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1512561873704718e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 1.6382837519645802e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.6382837519645803e-17
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.922401388131992e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 1.9224013881319924,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.922401388131992e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 3.5451055684151446e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.5451055684151443e-17
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 3.3852190984406e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.3852190984406e-17
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -3.3768114183280614e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.3852190984406e-17
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -9.063548227412724e-10,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.086114904890492e-22
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 5.445930932479852,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s600_k16_b5_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 601, level 16, bin 5, ASTEM sub-step 1 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 2.0732380729666686,
+            "gas_hcl": 9.816402509516177,
+            "gas_nh3": 0.018846086284820856,
+            "kg_hno3": 1.430848017981083e-05,
+            "kg_hcl": 1.8305843803882037e-05,
+            "kg_nh3": 2.6482322231286004e-05,
+            "kel_hno3": 1.0008509082692405,
+            "kel_hcl": 1.0005670113236877,
+            "kel_nh3": 1.0006500882056557,
+            "so4_l": 1.8998327778022845,
+            "msa_l": 0.0,
+            "nh4_l": 1.7154186839725716,
+            "na_l": 0.0076771095862110846,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 3.895472190526096,
+            "mc_nh4": 9.694311155965405,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 1.010358742433201,
+            "gam_hcl": 2.273265952193657,
+            "gam_ratio": 0.09487530261334697,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 1.472322794463154e-09,
+            "keq_hno3_gl": 7.07438683226919e-05,
+            "keq_hcl_gl": 5.3983728903536434e-05,
+            "keq_nh3_ll": 1.7956253189098253e-05,
+            "k_w": 9.360457511070106e-15,
+            "kp_nh4no3": 5004.832143197753,
+            "kp_nh4cl": 6558.664866375384
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.0732380729666687e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 2.0732380729666686,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.0732380729666687e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 2.9664885875072777e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.9664885875072777e-17
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.816402509516177e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 9.816402509516177,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.816402509516177e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.00017969753105523878,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.796975310552388e-16
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.08365089246860707,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.365089246860707e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.06480480618378621,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.365089246860707e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.7161817594950624e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.215269889288308e-18
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 3.895472190526096,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s638_k45_b2_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 639, level 45, bin 2, ASTEM sub-step 1 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.319949923418717,
+            "gas_hcl": 2.312043901413436,
+            "gas_nh3": 0.0019228066462000743,
+            "kg_hno3": 1.1785006285331193e-05,
+            "kg_hcl": 1.5461550353471878e-05,
+            "kg_nh3": 2.263987800214332e-05,
+            "kel_hno3": 1.0136292815140007,
+            "kel_hcl": 1.0090627764599456,
+            "kel_nh3": 1.0103970754505507,
+            "so4_l": 0.23107678199114934,
+            "msa_l": 0.0,
+            "nh4_l": 0.15295420516818925,
+            "na_l": 1.1610301566634518e-08,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 12.132243842118303,
+            "mc_nh4": 11.480473145442934,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 2.1693692561775917,
+            "gam_hcl": 7.458235949037866,
+            "gam_ratio": 0.012528124856262033,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 1.1135340317693533e-08,
+            "keq_hno3_gl": 0.004382407404245089,
+            "keq_hcl_gl": 0.003782882463253863,
+            "keq_nh3_ll": 1.0610586160644006e-05,
+            "k_w": 2.2337349230679853e-16,
+            "kp_nh4no3": 0.4313959015176749,
+            "kp_nh4cl": 0.49976508954123744
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.319949923418717e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.319949923418717,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.319949923418717e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 1.5555618143812008e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5555618143812007e-17
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3120439014134357e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 2.312043901413436,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.3120439014134357e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 3.574778320114141e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.574778320114141e-17
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 2.264569081058842e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.9228066462000744e-15
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": 0.001900160955389486,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.9228066462000744e-15
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 4.301941221445406e-08,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.353210789168004e-20
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 12.132243842118303,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s917_k15_b2_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 918, level 15, bin 2, ASTEM sub-step 1 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 2.0067938456690353,
+            "gas_hcl": 9.69849128342546,
+            "gas_nh3": 0.026012464053472833,
+            "kg_hno3": 2.2091640269581256e-05,
+            "kg_hcl": 2.891999419076007e-05,
+            "kg_nh3": 4.2300360200457025e-05,
+            "kel_hno3": 1.005834711136505,
+            "kel_hcl": 1.003884796287703,
+            "kel_nh3": 1.0044550663584582,
+            "so4_l": 0.38712522950534595,
+            "msa_l": 0.0,
+            "nh4_l": 0.21078188969014433,
+            "na_l": 1.0951098420070474e-08,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 5.831396686050729,
+            "mc_nh4": 4.530226357709949,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 1.4092903191883124,
+            "gam_hcl": 2.820352106932876,
+            "gam_ratio": 0.07881545587602742,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 1.439990037474543e-09,
+            "keq_hno3_gl": 6.73759785036394e-05,
+            "keq_hcl_gl": 5.1322677837516125e-05,
+            "keq_nh3_ll": 1.8005115229732617e-05,
+            "k_w": 9.734337853239216e-15,
+            "kp_nh4no3": 5572.446881056478,
+            "kp_nh4cl": 7315.461255926242
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.0067938456690354e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 2.0067938456690353,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.0067938456690354e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 4.433336773372989e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.433336773372989e-17
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.69849128342546e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 9.69849128342546,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.69849128342546e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.0002804803115758015,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.804803115758015e-16
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.023090867286087138,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.601246405347283e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": 0.002921596767385695,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.601246405347283e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 1.2358459562090577e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1003365991633411e-18
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 5.831396686050729,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s1079_k43_b1_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 1080, level 43, bin 1, ASTEM sub-step 1 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.3957374957884356,
+            "gas_hcl": 2.6092557951384725,
+            "gas_nh3": 0.00035009840436179873,
+            "kg_hno3": 0.00011528716026174701,
+            "kg_hcl": 0.00015138142891978407,
+            "kg_nh3": 0.00022175774539147809,
+            "kel_hno3": 1.0324541292207057,
+            "kel_hcl": 1.0215138156438235,
+            "kel_nh3": 1.0247035550848516,
+            "so4_l": 0.9954306190225701,
+            "msa_l": 0.0,
+            "nh4_l": 0.18581630962320747,
+            "na_l": 1.652860204691383e-11,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 13.287238018100929,
+            "mc_nh4": 2.117469485372785,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 3.3547628332978943,
+            "gam_hcl": 10.200453600611734,
+            "gam_ratio": 0.010894860452762401,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 8.72459121854116e-09,
+            "keq_hno3_gl": 0.0027427684060874124,
+            "keq_hcl_gl": 0.002340746251311332,
+            "keq_nh3_ll": 1.1595498220171397e-05,
+            "k_w": 3.558266487633168e-16,
+            "kp_nh4no3": 1.2823743743037117,
+            "kp_nh4cl": 1.5026216176340768
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.3957374957884356e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.3957374957884356,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.3957374957884356e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.00016091061236029081,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.609106123602908e-16
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.6092557951384723e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 2.6092557951384725,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.6092557951384723e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.0003949928706852893,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.949928706852893e-16
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 6.257578835840385e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.500984043617987e-16
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": 0.00034384082552595834,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.500984043617987e-16
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 7.624936624218111e-08,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.76370328164265e-20
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 13.287238018100929,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s1729_k12_b6_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 1730, level 12, bin 6, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.5535432813310783,
+            "gas_hcl": 7.300657140903446,
+            "gas_nh3": 0.023954788957941845,
+            "kg_hno3": 3.0883865450944752e-06,
+            "kg_hcl": 3.882137843509842e-06,
+            "kg_nh3": 5.570467650139976e-06,
+            "kel_hno3": 1.0004563490508351,
+            "kel_hcl": 1.000304112802493,
+            "kel_nh3": 1.0003486638318306,
+            "so4_l": 0.7540156962416501,
+            "msa_l": 0.0,
+            "nh4_l": 0.6512661274474612,
+            "na_l": 0.10275004269832608,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 2.8629077561358414,
+            "mc_nh4": 9.616197386045492,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 1.0428604833522441,
+            "gam_hcl": 2.504092830735875,
+            "gam_ratio": 0.08127758343390905,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 1.317091990974828e-09,
+            "keq_hno3_gl": 5.533550227892281e-05,
+            "keq_hcl_gl": 4.184732600627469e-05,
+            "keq_nh3_ll": 1.8188291851663167e-05,
+            "k_w": 1.1387682843407709e-14,
+            "kp_nh4no3": 8590.59972139752,
+            "kp_nh4cl": 11359.510769921804
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5535432813310784e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.5535432813310783,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5535432813310784e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 4.797942167284824e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.7979421672848236e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.300657140903446e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 7.300657140903446,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.300657140903446e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 2.8342157369191633e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.834215736919163e-17
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.12982117424428652,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.2982117424428652e-13
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.10586638528634468,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.2982117424428652e-13
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -5.897252744748378e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.231646514309831e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 2.8629077561358414,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s1800_k38_b5_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 1801, level 38, bin 5, ASTEM sub-step 1 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.5448400954563297,
+            "gas_hcl": 3.0525991360937494,
+            "gas_nh3": 0.00010305028765558407,
+            "kg_hno3": 1.1845774790035502e-05,
+            "kg_hcl": 1.528510895978421e-05,
+            "kg_nh3": 2.2201675965488516e-05,
+            "kel_hno3": 1.0016531726533722,
+            "kel_hcl": 1.0011014610555546,
+            "kel_nh3": 1.001262893390495,
+            "so4_l": 1.78798988059796,
+            "msa_l": 0.0,
+            "nh4_l": 1.7767479977675147,
+            "na_l": 0.00785326790053911,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 8.226134726659062,
+            "mc_nh4": 25.72294721813846,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 1.3774021975021333,
+            "gam_hcl": 5.14679233432622,
+            "gam_ratio": 0.01705519707200641,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 5.327429286257456e-09,
+            "keq_hno3_gl": 0.0010403744321093734,
+            "keq_hcl_gl": 0.0008653934355055125,
+            "keq_nh3_ll": 1.361143200836479e-05,
+            "k_w": 9.017298576944327e-16,
+            "kp_nh4no3": 11.952679310643818,
+            "kp_nh4cl": 14.369489575261872
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5448400954563298e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.5448400954563297,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5448400954563298e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 1.829982785739263e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.829982785739263e-17
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.0525991360937494e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 3.0525991360937494,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.0525991360937494e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 4.66593104057361e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.66593104057361e-17
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.000664025427805899,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.640254278058991e-16
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.000560975140150315,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.640254278058991e-16
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.24545882863118e-08,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.474247738099146e-20
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 8.226134726659062,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s2133_k8_b2_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 2134, level 8, bin 2, ASTEM sub-step 1 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.4472411065180486,
+            "gas_hcl": 6.411041945020476,
+            "gas_nh3": 0.017065689357974204,
+            "kg_hno3": 2.1187319045473426e-05,
+            "kg_hcl": 2.773799871560418e-05,
+            "kg_nh3": 4.0572829665899015e-05,
+            "kel_hno3": 1.0082384505950874,
+            "kel_hcl": 1.0054830375088966,
+            "kel_nh3": 1.006288655779323,
+            "so4_l": 0.43212001927508303,
+            "msa_l": 0.0,
+            "nh4_l": 0.255702733443211,
+            "na_l": 1.1055764322832331e-08,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 7.31026695213386,
+            "mc_nh4": 7.256896855195672,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 1.8491605152861483,
+            "gam_hcl": 4.943471673862117,
+            "gam_ratio": 0.02910371490480867,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 1.1059010853363015e-09,
+            "keq_hno3_gl": 3.7464705263080106e-05,
+            "keq_hcl_gl": 2.791951961373576e-05,
+            "keq_nh3_ll": 1.8482363959421134e-05,
+            "k_w": 1.5449591072726088e-14,
+            "kp_nh4no3": 20175.340170002757,
+            "kp_nh4cl": 27072.92902989873
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.4472411065180486e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.4472411065180486,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.4472411065180486e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 3.066315905952189e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.0663159059521884e-17
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.411041945020476e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 6.411041945020476,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.411041945020476e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.00017782947323666248,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.778294732366625e-16
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.021975152838751656,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.1975152838751656e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.004909463480777452,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.1975152838751656e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.9919082555653524e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.915941330087681e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 7.31026695213386,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_s2399_k32_b6_sub1",
+          "description": "Branch case2_nh4. ASTEM tape (real64), chem_opt = 170 column, model step 2400, level 32, bin 6, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.7296781234125904,
+            "gas_hcl": 3.4972519010195553,
+            "gas_nh3": 0.0007366530385205029,
+            "kg_hno3": 2.98910786998458e-06,
+            "kg_hcl": 3.7871086918101027e-06,
+            "kg_nh3": 5.453864164540491e-06,
+            "kel_hno3": 1.000649582689632,
+            "kel_hcl": 1.0004328705150796,
+            "kel_nh3": 1.0004962885944708,
+            "so4_l": 0.7113561244679061,
+            "msa_l": 0.0,
+            "nh4_l": 0.6839581205610511,
+            "na_l": 0.10457430914532365,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 3.1970204741626382,
+            "mc_nh4": 15.409307667855687,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 0.9286069960341722,
+            "gam_hcl": 2.7751719140796993,
+            "gam_ratio": 0.06710962269126988,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 3.3307233409971144e-09,
+            "keq_hno3_gl": 0.00040124061723297895,
+            "keq_hcl_gl": 0.0003245389713098442,
+            "keq_nh3_ll": 1.5448149669522742e-05,
+            "k_w": 2.1519051215750704e-15,
+            "kp_nh4no3": 104.23251104789075,
+            "kp_nh4cl": 128.86685657443073
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.7296781234125904e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.7296781234125904,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.7296781234125904e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 5.170194491232734e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.170194491232734e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.497251901019555e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 3.4972519010195553,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.497251901019555e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 1.3244473071800563e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.3244473071800562e-17
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.013534620351180244,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.3534620351180243e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.01279796731265974,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.3534620351180243e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -6.979837530547553e-08,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.381598091396236e-20
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 3.1970204741626382,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case2_nh4_hand_dry_rich",
+          "description": "Branch case2_nh4. Hand-specified bin 'dry_rich' (acidic solid: NH3 sink (dry case 2); chem170_scm/mosaic_astem/make_astem_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 1.0,
+            "gas_nh3": 1.0,
+            "kg_hno3": 0.00017437354880345414,
+            "kg_hcl": 0.0002286834232684905,
+            "kg_nh3": 0.00033478880787957864,
+            "kel_hno3": 1.024550798194137,
+            "kel_hcl": 1.0162957284286642,
+            "kel_nh3": 1.0187047481873115,
+            "so4_l": 1.288310723363448,
+            "msa_l": 0.0,
+            "nh4_l": 0.2883107233634481,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 16.618483482446997,
+            "mc_nh4": 3.880781040733685,
+            "ma_no3": 0.0,
+            "ma_cl": 0.0,
+            "gam_hno3": 5.212364191089821,
+            "gam_hcl": 28.24649801870796,
+            "gam_ratio": 0.0015234089769082888,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 2.0251115991496595e-09,
+            "keq_hno3_gl": 0.000141141675680105,
+            "keq_hcl_gl": 0.00011035253056846738,
+            "keq_nh3_ll": 1.7125265168514455e-05,
+            "k_w": 5.3079758516306834e-15,
+            "kp_nh4no3": 1084.3947421344735,
+            "kp_nh4cl": 1386.9486292259896
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case2",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.00017437354880345414,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.7437354880345414e-16
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.0002286834232684905,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.2868342326849047e-16
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 5.546707486424188e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-12
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": 0.9999445329251357,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-12
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 0.0003347702381237083,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.3478880787957865e-16
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 16.618483482446997,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_cl_hand_wet_poor_hcl",
+          "description": "Branch case3_closed_h_cl. Hand-specified bin 'wet_poor_hcl' (sulfate-poor liquid with chloride but no nitrate: H+ from the surface HCl (case 3); chem170_scm/mosaic_astem/make_astem_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 0.0,
+            "gas_hcl": 0.5,
+            "gas_nh3": 1.0,
+            "kg_hno3": 0.0002789836002178426,
+            "kg_hcl": 0.0003656511166607036,
+            "kg_nh3": 0.0005351435202528817,
+            "kel_hno3": 1.00361236058061,
+            "kel_hcl": 1.0024060264483659,
+            "kel_nh3": 1.0027589217724306,
+            "so4_l": 1.0,
+            "msa_l": 0.0,
+            "nh4_l": 3.0,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.02455544092799371,
+            "mc_nh4": 7.07006627377416,
+            "ma_no3": 0.0,
+            "ma_cl": 2.35668875792472,
+            "gam_hno3": 0.2906741859222117,
+            "gam_hcl": 0.4112207895887197,
+            "gam_ratio": 0.0,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 3.9147240736003943,
+            "keq_nh3_gl": 2.0251115991496595e-09,
+            "keq_hno3_gl": 0.000141141675680105,
+            "keq_hcl_gl": 0.00011035253056846738,
+            "keq_nh3_ll": 1.7125265168514455e-05,
+            "k_w": 5.3079758516306834e-15,
+            "kp_nh4no3": 1084.3947421344735,
+            "kp_nh4cl": 1386.9486292259896
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-42
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-42
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.7898360021784264e-46
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 88.89175171429127,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.889175171429127e-11
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -88.39175171429127,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.889175171429127e-11
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.03232054271792627,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.2503368276256615e-14
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 61.39602741083965,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.139602741083965e-11
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -60.39602741083965,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.139602741083965e-11
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.03232054271792626,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.2855686238179144e-14
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.02455544092799371,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s917_k46_b7_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 918, level 46, bin 7, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.2388666203659808,
+            "gas_hcl": 2.2582955792382666,
+            "gas_nh3": 0.00032586184315885165,
+            "kg_hno3": 1.2472061164563234e-06,
+            "kg_hcl": 1.5595962288380493e-06,
+            "kg_nh3": 2.232547565759828e-06,
+            "kel_hno3": 1.0001534700786758,
+            "kel_hcl": 1.0001022782290965,
+            "kel_nh3": 1.0001172597534136,
+            "so4_l": 0.1144629692502614,
+            "msa_l": 0.0,
+            "nh4_l": 0.09424293587858226,
+            "na_l": 0.5090173724028761,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.0022057287029026646,
+            "mc_nh4": 1.0014563461444501,
+            "ma_no3": 0.6673165070165616,
+            "ma_cl": 3.3104832792727437,
+            "gam_hno3": 0.9419612714626953,
+            "gam_hcl": 1.5806328362093773,
+            "gam_ratio": 0.18170046679820823,
+            "act_nh4no3": 0.10774224692580527,
+            "act_nh4cl": 1.5035495025744214,
+            "keq_nh3_gl": 1.3709176053973317e-08,
+            "keq_hno3_gl": 0.006499408078914564,
+            "keq_hcl_gl": 0.005661373519508706,
+            "keq_nh3_ll": 9.791956552287772e-06,
+            "k_w": 1.4979107508241237e-16,
+            "kp_nh4no3": 0.17168458396157507,
+            "kp_nh4cl": 0.1970984900006704
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.2009753979026208,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.2388666203659807e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.03789122246336,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.2388666203659807e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 1.2944642808726333e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5451220263940252e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 3.2196181525536103,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.21961815255361e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.9613225733153437,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.21961815255361e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -1.499275060039499e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.021304329021138e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.09206445783457552,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.206445783457552e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.09173859599141668,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.206445783457552e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -2.048107791668616e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.0553828123157988e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.0022057287029026646,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s917_k47_b7_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 918, level 47, bin 7, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.176292609774248,
+            "gas_hcl": 2.153227713521299,
+            "gas_nh3": 0.00022007825185370102,
+            "kg_hno3": 1.236764723128775e-06,
+            "kg_hcl": 1.5491156601399146e-06,
+            "kg_nh3": 2.219222777563909e-06,
+            "kel_hno3": 1.0001657045005137,
+            "kel_hcl": 1.0001104314823843,
+            "kel_nh3": 1.0001266073556347,
+            "so4_l": 0.10648904851069133,
+            "msa_l": 0.0,
+            "nh4_l": 0.10388746082830061,
+            "na_l": 0.4915466690714399,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.0022104957302320895,
+            "mc_nh4": 1.1721894113254177,
+            "ma_no3": 0.6930071859766398,
+            "ma_cl": 3.6223443344390924,
+            "gam_hno3": 0.975093965571828,
+            "gam_hcl": 1.6859324675734837,
+            "gam_ratio": 0.16461687358662241,
+            "act_nh4no3": 0.12714603423005275,
+            "act_nh4cl": 1.9847781243606977,
+            "keq_nh3_gl": 1.5819012913855107e-08,
+            "keq_hno3_gl": 0.008501957789721962,
+            "keq_hcl_gl": 0.007449646847731634,
+            "keq_nh3_ll": 9.243369068258413e-06,
+            "k_w": 1.1360498693275786e-16,
+            "kp_nh4no3": 0.0913837082307267,
+            "kp_nh4cl": 0.1042922498108053
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.17134576310120012,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1762926097742482e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.004946846673048,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1762926097742482e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 1.2428828085847277e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.4547972038458723e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 3.052402309393035,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.052402309393035e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.8991745958717359,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.052402309393035e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -1.392925447664885e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.7285242185279905e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.06783052304228855,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.783052304228855e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.06761044479043485,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.783052304228855e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.5004263908016016e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5053104174952033e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.0022104957302320895,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s1079_k46_b7_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 1080, level 46, bin 7, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.2236090035003275,
+            "gas_hcl": 2.2775603586922237,
+            "gas_nh3": 0.0004848292128312025,
+            "kg_hno3": 1.2466535644986942e-06,
+            "kg_hcl": 1.5589095932702304e-06,
+            "kg_nh3": 2.2315674574793185e-06,
+            "kel_hno3": 1.000151577288471,
+            "kel_hcl": 1.0001010168344415,
+            "kel_nh3": 1.000115813581323,
+            "so4_l": 0.11440098486617754,
+            "msa_l": 0.0,
+            "nh4_l": 0.09121433359448088,
+            "na_l": 0.5086757699244978,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.0023394311264429775,
+            "mc_nh4": 0.9709940149123735,
+            "ma_no3": 0.7948567879374736,
+            "ma_cl": 3.1554473223105663,
+            "gam_hno3": 0.9307511063734324,
+            "gam_hcl": 1.5587773921218424,
+            "gam_ratio": 0.18266588652786722,
+            "act_nh4no3": 0.12213215257393702,
+            "act_nh4cl": 1.3586217323535648,
+            "keq_nh3_gl": 1.3681113120597098e-08,
+            "keq_hno3_gl": 0.006474364646127413,
+            "keq_hcl_gl": 0.005639070944988788,
+            "keq_nh3_ll": 9.799904998562147e-06,
+            "k_w": 1.5038390506262274e-16,
+            "kp_nh4no3": 0.17324507715648382,
+            "kp_nh4cl": 0.19890719829554918
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.24884845109296191,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.2236090035003276e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 0.9747605524073656,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.2236090035003276e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 1.2151887171913586e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5254165257663785e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 3.17812613439123,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.17812613439123e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.9005657756990062,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.17812613439123e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -1.4039006271080273e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.954411319525322e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.08504956387240328,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.504956387240328e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.08456473465957208,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.504956387240328e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.8871190991667448e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.897938390104639e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.0023394311264429775,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s1079_k47_b7_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 1080, level 47, bin 7, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.1631610076517307,
+            "gas_hcl": 2.170415266843217,
+            "gas_nh3": 0.0004096207391074259,
+            "kg_hno3": 1.2492257815540039e-06,
+            "kg_hcl": 1.5646764711275593e-06,
+            "kg_nh3": 2.2414839274935647e-06,
+            "kel_hno3": 1.000164249258464,
+            "kel_hcl": 1.0001094616829236,
+            "kel_nh3": 1.0001254954921808,
+            "so4_l": 0.11041977057585776,
+            "msa_l": 0.0,
+            "nh4_l": 0.10333613310447677,
+            "na_l": 0.5017417814998393,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.0023256317386950807,
+            "mc_nh4": 1.1507899308213456,
+            "ma_no3": 0.7953630029841987,
+            "ma_cl": 3.483659618825794,
+            "gam_hno3": 0.965616790012068,
+            "gam_hcl": 1.6681983222813606,
+            "gam_ratio": 0.16553360629471128,
+            "act_nh4no3": 0.1412723705325344,
+            "act_nh4cl": 1.844995996025879,
+            "keq_nh3_gl": 1.580877254971519e-08,
+            "keq_hno3_gl": 0.008491675656984525,
+            "keq_hcl_gl": 0.007440442648276924,
+            "keq_nh3_ll": 9.245819692817767e-06,
+            "k_w": 1.1374747164046752e-16,
+            "kp_nh4no3": 0.09164415758015623,
+            "kp_nh4cl": 0.10459222640584251
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.203139265324044,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1631610076517307e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 0.9600217423276867,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1631610076517307e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 1.199283911368141e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.453050718856876e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 3.0276307427145808,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.0276307427145806e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.8572154758713637,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.0276307427145806e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -1.3412648857823367e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.737262586387961e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.06375202202635014,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.375202202635013e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.06334240128724271,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.375202202635013e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.4198097441420223e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.4289913271727955e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.0023256317386950807,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s1620_k46_b7_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 1621, level 46, bin 7, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.176436413278421,
+            "gas_hcl": 2.3363354639384246,
+            "gas_nh3": 0.00028439038382255483,
+            "kg_hno3": 1.2466330613776238e-06,
+            "kg_hcl": 1.55903650285682e-06,
+            "kg_nh3": 2.2318482745307944e-06,
+            "kel_hno3": 1.000148651911472,
+            "kel_hcl": 1.000099067300961,
+            "kel_nh3": 1.0001135784678048,
+            "so4_l": 0.11472586240389791,
+            "msa_l": 0.0,
+            "nh4_l": 0.08346953101643302,
+            "na_l": 0.5098765856687448,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.002626904908302607,
+            "mc_nh4": 0.9012403032462638,
+            "ma_no3": 1.180509591841515,
+            "ma_cl": 2.748544376613397,
+            "gam_hno3": 0.9082732289262646,
+            "gam_hcl": 1.524320006563889,
+            "gam_ratio": 0.18071785123108453,
+            "act_nh4no3": 0.1586149821363235,
+            "act_nh4cl": 1.0393128430745826,
+            "keq_nh3_gl": 1.3488546123972748e-08,
+            "keq_hno3_gl": 0.006303663538571418,
+            "keq_hcl_gl": 0.005487097336865118,
+            "keq_nh3_ll": 9.854960687364404e-06,
+            "k_w": 1.5454874255567496e-16,
+            "kp_nh4no3": 0.18443885353033382,
+            "kp_nh4cl": 0.2118862496358262
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.4058994183704565,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1764364132784211e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 0.7705369949079646,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1764364132784211e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 9.605768928668304e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.4665845274013896e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 3.055268234965287,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.055268234965287e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.7189327710268625,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.055268234965287e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -1.1208424331308827e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.76327470432981e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.07209282919794609,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.209282919794609e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.07180843881412353,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.209282919794609e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.6026554026405173e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.6090025645147926e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.002626904908302607,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s1620_k47_b7_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 1621, level 47, bin 7, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.1227697802806624,
+            "gas_hcl": 2.22824598493692,
+            "gas_nh3": 0.0001865018350092,
+            "kg_hno3": 1.2528470987544798e-06,
+            "kg_hcl": 1.5690804792880132e-06,
+            "kg_nh3": 2.2477070392399508e-06,
+            "kel_hno3": 1.0001609349588174,
+            "kel_hcl": 1.000107252972306,
+            "kel_nh3": 1.0001229632325295,
+            "so4_l": 0.11508178514052925,
+            "msa_l": 0.0,
+            "nh4_l": 0.09895061808194278,
+            "na_l": 0.5119190721821184,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.002861462116506245,
+            "mc_nh4": 1.1001259186400554,
+            "ma_no3": 1.1745617172359277,
+            "ma_cl": 3.05810178802238,
+            "gam_hno3": 0.9375921530520133,
+            "gam_hcl": 1.6204402993507514,
+            "gam_ratio": 0.16596854596353855,
+            "act_nh4no3": 0.1885263048907514,
+            "act_nh4cl": 1.4649286536166257,
+            "keq_nh3_gl": 1.625318312133291e-08,
+            "keq_hno3_gl": 0.008942862654353699,
+            "keq_hcl_gl": 0.007844521647567526,
+            "keq_nh3_ll": 9.141166115359469e-06,
+            "k_w": 1.0780212120785568e-16,
+            "kp_nh4no3": 0.08113546248094097,
+            "kp_nh4cl": 0.09249554401950255
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.3304342809053484,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1227697802806624e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 0.792335499375314,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1227697802806624e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 9.926752316325442e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.4066588617938327e-18
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 2.9269573862582496,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.9269573862582496e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.6987114013213298,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.9269573862582496e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -1.0963344204692714e-06,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.592631698485685e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.046304250735140016,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.6304250735140015e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.04611774890013082,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.6304250735140015e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.0365918883672454e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0407839032410588e-19
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.002861462116506245,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s1620_k47_b8_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 1621, level 47, bin 8, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.1227697802806624,
+            "gas_hcl": 2.22824598493692,
+            "gas_nh3": 0.0001865018350092,
+            "kg_hno3": 4.133122473000548e-07,
+            "kg_hcl": 5.057277912460751e-07,
+            "kg_nh3": 7.169463762400588e-07,
+            "kel_hno3": 1.0000790244592428,
+            "kel_hcl": 1.0000526655238378,
+            "kel_nh3": 1.0000603796522118,
+            "so4_l": 0.007334212180738829,
+            "msa_l": 0.0,
+            "nh4_l": 0.0028446950775176116,
+            "na_l": 0.4612330987830968,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.0011398132831111076,
+            "mc_nh4": 0.032987928336924245,
+            "ma_no3": 0.4424400717210004,
+            "ma_cl": 4.76904434787337,
+            "gam_hno3": 1.2534256928786711,
+            "gam_hcl": 2.108319724811741,
+            "gam_ratio": 0.1159517378502576,
+            "act_nh4no3": 0.0026587894322640912,
+            "act_nh4cl": 0.08098713820890041,
+            "keq_nh3_gl": 1.625318312133291e-08,
+            "keq_hno3_gl": 0.008942862654353699,
+            "keq_hcl_gl": 0.007844521647567526,
+            "keq_nh3_ll": 9.141166115359469e-06,
+            "k_w": 1.0780212120785568e-16,
+            "kp_nh4no3": 0.08113546248094097,
+            "kp_nh4cl": 0.09249554401950255
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.0886019154684425,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1227697802806624e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.03416786481222,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1227697802806624e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 4.2743424429103787e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.640545010883893e-19
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 3.0766200649943896,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.0766200649943893e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.8483740800574697,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.0766200649943893e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -4.290463496578851e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5559322699729686e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.002435073583498757,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.4350735834987568e-15
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.0022485717484895568,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.4350735834987568e-15
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -1.6121053667953606e-09,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.745817181567328e-21
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.0011398132831111076,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s1729_k46_b8_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 1730, level 46, bin 8, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.1575871085122265,
+            "gas_hcl": 2.3464880415436853,
+            "gas_nh3": 8.086888484266293e-08,
+            "kg_hno3": 4.368682948780835e-07,
+            "kg_hcl": 5.32939241316119e-07,
+            "kg_nh3": 7.545210208572984e-07,
+            "kel_hno3": 1.0000732600959232,
+            "kel_hcl": 1.0000488239346916,
+            "kel_nh3": 1.0000559753545037,
+            "so4_l": 0.007371346850423295,
+            "msa_l": 0.0,
+            "nh4_l": 0.0006326524580677617,
+            "na_l": 0.6243069737726504,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.0008170917493198929,
+            "mc_nh4": 0.005548100666434017,
+            "ma_no3": 0.40803294453056094,
+            "ma_cl": 4.9431420408077065,
+            "gam_hno3": 1.2510253677134617,
+            "gam_hcl": 2.0866644335738447,
+            "gam_ratio": 0.1184553748399912,
+            "act_nh4no3": 0.00041968801337971784,
+            "act_nh4cl": 0.014127823517220495,
+            "keq_nh3_gl": 1.3429870218481258e-08,
+            "keq_hno3_gl": 0.006252048753807408,
+            "keq_hcl_gl": 0.005441160944011812,
+            "keq_nh3_ll": 9.871917051348981e-06,
+            "k_w": 1.5585229784619478e-16,
+            "kp_nh4no3": 0.188025841234171,
+            "kp_nh4cl": 0.21604704188458504
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.08346564354286558,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1575871085122264e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.074121464969361,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1575871085122264e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 4.692496128931138e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.057131062685873e-19
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 3.2283202766484673,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.2283202766484674e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.881832235104782,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.2283202766484674e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -4.6996300234484e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.7204985589624777e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.0009455673855475024,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.455673855475024e-16
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.0009454865166626598,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.455673855475024e-16
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -7.133894517591212e-10,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.134504690326682e-22
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.0008170917493198929,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s1800_k18_b8_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 1801, level 18, bin 8, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 2.1379260965114937,
+            "gas_hcl": 9.601350264320905,
+            "gas_nh3": 0.015614863571683613,
+            "kg_hno3": 2.464882483283003e-07,
+            "kg_hcl": 2.969207646089033e-07,
+            "kg_nh3": 4.18072319737551e-07,
+            "kel_hno3": 1.0000963698658976,
+            "kel_hcl": 1.0000642251125478,
+            "kel_nh3": 1.0000736324821073,
+            "so4_l": 0.008817434940258877,
+            "msa_l": 0.0,
+            "nh4_l": 3.4135199159706425e-07,
+            "na_l": 0.2503247229149018,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 1.731868174680216e-05,
+            "mc_nh4": 9.094294262113137e-06,
+            "ma_no3": 1.306251609490007,
+            "ma_cl": 4.893076801506746,
+            "gam_hno3": 1.5158431856249672,
+            "gam_hcl": 3.046061838321041,
+            "gam_ratio": 0.06040875592732074,
+            "act_nh4no3": 1.6489378400746594e-06,
+            "act_nh4cl": 2.4918581809688427e-05,
+            "keq_nh3_gl": 1.6727631316777072e-09,
+            "keq_hno3_gl": 9.347817407508677e-05,
+            "keq_hcl_gl": 7.204769606558248e-05,
+            "keq_nh3_ll": 1.7651496453432523e-05,
+            "k_w": 7.466850145399202e-15,
+            "kp_nh4no3": 2705.273866009762,
+            "kp_nh4cl": 3509.9534777274775
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.5561370794439555,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.1379260965114935e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.5817890170675382,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.1379260965114935e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 3.898924040419214e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.269736585844788e-19
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 10.903779315694619,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.090377931569462e-11
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -1.3024290513737142,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.090377931569462e-11
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -3.867182297827318e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.2375584915427908e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.008022458838480977,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.561486357168361e-14
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": 0.007592404733202636,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.561486357168361e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 3.174174259196388e-09,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.5281422357991486e-21
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 1.731868174680216e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_s1800_k46_b8_sub1",
+          "description": "Branch case3_closed_h_no3. ASTEM tape (real64), chem_opt = 170 column, model step 1801, level 46, bin 8, ASTEM sub-step 1 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.141573176107135,
+            "gas_hcl": 2.353219660316233,
+            "gas_nh3": 6.608418658714569e-08,
+            "kg_hno3": 4.123167274168995e-07,
+            "kg_hcl": 5.036410203505176e-07,
+            "kg_nh3": 7.134471461272388e-07,
+            "kel_hno3": 1.0000780768038877,
+            "kel_hcl": 1.000052033971071,
+            "kel_nh3": 1.000059655590645,
+            "so4_l": 0.007386364062660605,
+            "msa_l": 0.0,
+            "nh4_l": 0.0005939097616083355,
+            "na_l": 0.506060731233327,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.0007798983211445907,
+            "mc_nh4": 0.006470964051172397,
+            "ma_no3": 0.5261683978555204,
+            "ma_cl": 4.833147749738362,
+            "gam_hno3": 1.265796910141308,
+            "gam_hcl": 2.147234759204927,
+            "gam_ratio": 0.11176326177471266,
+            "act_nh4no3": 0.0006097065744331602,
+            "act_nh4cl": 0.016097099745610032,
+            "keq_nh3_gl": 1.3402694964149059e-08,
+            "keq_hno3_gl": 0.006228206991262881,
+            "keq_hcl_gl": 0.005419944637893046,
+            "keq_nh3_ll": 9.87979923538294e-06,
+            "k_w": 1.5646163745775717e-16,
+            "kp_nh4no3": 0.18971627130192495,
+            "kp_nh4cl": 0.21800816912740784
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.10557514282044285,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.141573176107135e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 1.0359980332866923,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.141573176107135e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 4.2715931869511307e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.706897160794098e-19
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 3.2029142558230417,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.2029142558230415e-12
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.8496945955068087,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.2029142558230415e-12
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -4.279410530673694e-07,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.6131190038979351e-18
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 0.0010957805693389,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0957805693389e-15
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -0.0010957144851523129,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0957805693389e-15
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -7.817343724021944e-10,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.817815199765191e-22
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.0007798983211445907,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_hand_wet_poor_series",
+          "description": "Branch case3_closed_h_no3. Hand-specified bin 'wet_poor_series' (ammonia-dominated sulfate-poor liquid: |4ac/b^2| < 1e-6, the series root (case 3); chem170_scm/mosaic_astem/make_astem_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 0.001,
+            "gas_hcl": 0.0,
+            "gas_nh3": 1000.0,
+            "kg_hno3": 0.00026802113972230595,
+            "kg_hcl": 0.00035130402198708716,
+            "kg_nh3": 0.0005141612988517215,
+            "kel_hno3": 1.0036862449202526,
+            "kel_hcl": 1.002455207219397,
+            "kel_nh3": 1.0028153260813646,
+            "so4_l": 1.0,
+            "msa_l": 0.0,
+            "nh4_l": 3.0,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.0015876951153063585,
+            "mc_nh4": 8.155532880073714,
+            "ma_no3": 2.7185109600245716,
+            "ma_cl": 0.0,
+            "gam_hno3": 0.2628009167652951,
+            "gam_hcl": 0.37513697748264124,
+            "gam_ratio": 1.269786007916363,
+            "act_nh4no3": 1.9443198956317251,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 2.0251115991496595e-09,
+            "keq_hno3_gl": 0.000141141675680105,
+            "keq_hcl_gl": 0.00011035253056846738,
+            "keq_nh3_ll": 1.7125265168514455e-05,
+            "k_w": 5.3079758516306834e-15,
+            "kp_nh4no3": 1084.3947421344735,
+            "kp_nh4cl": 1386.9486292259896
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 2.119798848254105,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.119798848254105e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": -2.118798848254105,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.119798848254105e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.0005678828821513744,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.681509032910966e-16
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-42
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-42
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.513040219870871e-46
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 1001.1044839108265,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0011044839108265e-09
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": -1.1044839108265023,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0011044839108265e-09
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.0005678828821513834,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.147291817338729e-13
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.0015876951153063585,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case3_closed_h_no3_hand_dry_an_70",
+          "description": "Branch case3_closed_h_no3. Hand-specified bin 'dry_an_70' (solid AS + AN at 70% RH on the lower leg, where the saturated-solution product Kp_nh4no3_0 falls below Keq_sg(1); chem170_scm/mosaic_astem/make_astem_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (route 4.0: mixed, no solid NH4NO3/NH4Cl). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 200.0,
+            "gas_hcl": 0.0,
+            "gas_nh3": 200.0,
+            "kg_hno3": 0.00022204629420538645,
+            "kg_hcl": 0.0002911190771767082,
+            "kg_nh3": 0.00042613126587577653,
+            "kel_hno3": 1.0080834325641512,
+            "kel_hcl": 1.0053800047162171,
+            "kel_nh3": 1.0061704380649015,
+            "so4_l": 0.5021590002718263,
+            "msa_l": 0.0,
+            "nh4_l": 3.0043180005436527,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 0.00846807536239822,
+            "mc_nh4": 17.443675592449626,
+            "ma_no3": 11.612402940895784,
+            "ma_cl": 0.0,
+            "gam_hno3": 0.30343813898007205,
+            "gam_hcl": 0.5913927893157996,
+            "gam_ratio": 0.408170163842519,
+            "act_nh4no3": 7.612752076585418,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 2.0251115991496595e-09,
+            "keq_hno3_gl": 0.000141141675680105,
+            "keq_hcl_gl": 0.00011035253056846738,
+            "keq_nh3_ll": 1.7125265168514455e-05,
+            "k_w": 5.3079758516306834e-15,
+            "kp_nh4no3": 1084.3947421344735,
+            "kp_nh4cl": 1386.9486292259896
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 64.66783951743723,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-10
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 135.33216048256276,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-10
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.030050004721961704,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.440925884107729e-14
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-42
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-42
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.9111907717670822e-46
+              }
+            },
+            {
+              "variable": "sfc_nh3",
+              "time": 0.0,
+              "expected": 129.48181199470653,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-10
+              }
+            },
+            {
+              "variable": "df_nh3",
+              "time": 0.0,
+              "expected": 70.51818800529347,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2e-10
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 0.030050004721961707,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.522625317515531e-14
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 0.00846807536239822,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        },
+        {
+          "id": "astem64_case4_exchange_hand_wet_noammonia",
+          "description": "Branch case4_exchange. Hand-specified bin 'wet_noammonia' (ammonia-free sulfate-poor liquid with nitrate and chloride: HNO3/HCl exchange (case 4); chem170_scm/mosaic_astem/make_astem_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (route 2.0: all liquid). Inputs are the state the bin's ASTEM_flux_wet saw after its tiny-absorption adjustments and compute_activities (FXO record), kg and the constants from the call's AIN/BIN records; expected are the surface concentrations sfc_a, driving forces df_gas_l (df_gas_s for CaCO3) and H+ it formed. cond_x is kg x df_gas, the product of two taped values. rel 1e-9, absolute floor 1e-12 of the larger of gas and surface value.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 0.5,
+            "gas_nh3": 0.0,
+            "kg_hno3": 0.0003570393749286235,
+            "kg_hcl": 0.00046776796860798186,
+            "kg_nh3": 0.000684458646013688,
+            "kel_hno3": 1.003188914209017,
+            "kel_hcl": 1.0021241380200558,
+            "kel_nh3": 1.0024356381584154,
+            "so4_l": 1.0,
+            "msa_l": 0.0,
+            "nh4_l": 0.0,
+            "na_l": 4.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "mc_h_act": 6.383049281189183e-05,
+            "mc_nh4": 0.0,
+            "ma_no3": 1.4886335486843225,
+            "ma_cl": 1.4886335486843225,
+            "gam_hno3": 0.7428167439726229,
+            "gam_hcl": 1.0650712559315123,
+            "gam_ratio": 0.0,
+            "act_nh4no3": 0.0,
+            "act_nh4cl": 0.0,
+            "keq_nh3_gl": 2.0251115991496595e-09,
+            "keq_hno3_gl": 0.000141141675680105,
+            "keq_hcl_gl": 0.00011035253056846738,
+            "keq_nh3_ll": 1.7125265168514455e-05,
+            "k_w": 5.3079758516306834e-15,
+            "kp_nh4no3": 1084.3947421344735,
+            "kp_nh4cl": 1386.9486292259896
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sfc_hno3",
+              "time": 0.0,
+              "expected": 0.3726548898195405,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-12
+              }
+            },
+            {
+              "variable": "df_hno3",
+              "time": 0.0,
+              "expected": 0.6273451101804595,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1e-12
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.00022398690600335968,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.5703937492862346e-16
+              }
+            },
+            {
+              "variable": "sfc_hcl",
+              "time": 0.0,
+              "expected": 0.9788419067468775,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.788419067468774e-13
+              }
+            },
+            {
+              "variable": "df_hcl",
+              "time": 0.0,
+              "expected": -0.47884190674687754,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.788419067468774e-13
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.0002239869060033596,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.578708903073505e-16
+              }
+            },
+            {
+              "variable": "mc_h",
+              "time": 0.0,
+              "expected": 6.383049281189183e-05,
+              "tolerance": {
+                "rel": 1e-09
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
