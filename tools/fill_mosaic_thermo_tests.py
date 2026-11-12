@@ -23,7 +23,10 @@ Two things the capture taught, kept here because they decide what is compared:
   leaves the rest stale from an earlier call; only the entries it sets on that path
   are asserted (the component's description lists them).
 
-    python3 tools/fill_mosaic_thermo_tests.py <dump_dir>
+    python3 tools/fill_mosaic_thermo_tests.py <dump_dir> [<chem170_scm/therm64/act.json>]
+
+The optional second argument adds the hand-specified branch cases (kernels/mosaic_therm_driver,
+chem170_scm/therm64/make_cases.py; their ids and intents from cases_act.json beside it).
 """
 from __future__ import annotations
 
@@ -46,6 +49,11 @@ SRC = ("Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm
        "MOSAIC thermodynamics capture dumps/chem170_mosaic_therm (WRF fork earthsciml-instrumented-chem170, the "
        "compute_activities hooks), whose fields shared with dumps/chem170_mosaic_coag are bit-identical. The "
        "thermodynamics runs in real(kind=8), so the in-model values are a double-precision reference")
+SRC_R = ("Reference: WRF's own compiled thermodynamics (main/libwrflib.a of the chem170 build, the model's flags) run "
+         "on a hand-specified bin by kernels/mosaic_therm_driver (mode 1: conform_electrolytes, do_full_deliquescence, "
+         "compute_activities with ah2o_a = the stated water activity), cases in chem170_scm/therm64/make_cases.py, "
+         "recorded through the same compute_activities hooks as the column capture; a double-precision reference "
+         "for a branch the chem170 column never reaches")
 ELNAMES = ["(NH4)2SO4", "letovicite", "NH4HSO4", "NH4MSA", "NH4NO3", "NH4Cl", "Na2SO4", "Na3H(SO4)2", "NaHSO4",
            "NaMSA", "NaNO3", "NaCl", "Ca(NO3)2", "CaCl2", "Ca(MSA)2", "H2SO4", "MSA", "HNO3", "HCl", "H.HSO4",
            "CaSO4", "CaCO3"]
@@ -64,6 +72,8 @@ CASES = [
     (2134, 45, 3, "c2", "sulfate-RICH, free troposphere, step 2134, last call"),
     (2521, 30, 4, "c1", "sulfate-RICH at the last dumped step"),
 ]
+# hand-specified cases whose water activity also gets a binary-MTEM matrix test
+MTEM_REPLAY = {"dilute98": "very wet", "dilute995": "near saturation", "dry05": "very dry, below every a_min"}
 # levels for the binary MTEM matrix: (step, level, why)
 MTEM_LEVELS = [
     (918, 1, "surface layer, mid-afternoon (relative humidity 0.50)"),
@@ -82,31 +92,41 @@ def tol_for(x):
     return {"rel": REL, "abs": 0.0} if x != 0 else {"rel": 0.0, "abs": 0.0}
 
 
-def main(dump_dir: str) -> None:
+def main(dump_dir: str, replay: str | None = None) -> None:
     P = params()
     cache = {}
 
     def dump(step):
         if step not in cache:
-            cache[step] = load(os.path.join(dump_dir, f"esm_dump_mosaic_{step}.json"))["vars"]
+            path = (replay if step == "R" else os.path.join(dump_dir, f"esm_dump_mosaic_{step}.json"))
+            cache[step] = load(path)["vars"]
         return cache[step]
 
+    cases = list(CASES)
+    if replay:
+        for i, c in enumerate(json.load(open(os.path.join(os.path.dirname(replay), "cases_act.json")))):
+            cases.append(("R", i + 1, 1, "c1", c["intent"], c["id"]))
     wtests, atests, mtests = [], [], []
-    for step, lev, b1, slot, regime in CASES:
+    for case in cases:
+        step, lev, b1, slot, regime = case[:5]
         v = dump(step)
         k, b = lev - 1, b1 - 1
         assert v["th_ncall"][b, k] >= (1 if slot == "c1" else 2), (step, lev, b1, slot)
         el = v[f"th_elec_{slot}"][:, b, k]
         water = float(v[f"th_water_{slot}"][b, k])
-        assert water > 0.0
+        assert water > 0.0, case
         which = "first" if slot == "c1" else "last"
-        where = f"model step {step}, level {lev}, section {b1} of 8, the {which} compute_activities call of the step"
+        if step == "R":
+            where = f"hand-specified bin '{case[5]}', T = {v['th_t_k'][k]:.2f} K"
+            src, tid = SRC_R, f"r_{case[5]}"
+        else:
+            where = f"model step {step}, level {lev}, section {b1} of 8, the {which} compute_activities call of the step"
+            src, tid = SRC, f"s{step}_lev{lev}_bin{b1}_{slot}"
         # ---- ZSR water
         wtests.append({
-            "id": f"zsr_s{step}_lev{lev}_bin{b1}_{slot}",
+            "id": f"zsr_{tid}",
             "description": (f"{regime[0].upper()}{regime[1:]}: {where}; bin water activity "
-                            f"{v[f'th_ah2o_a_{slot}'][b, k]:.4f}. {SRC}; tolerance rel {REL:g}, measured 6.2e-15 "
-                            f"worst over the 11068 recorded calls."),
+                            f"{v[f'th_ah2o_a_{slot}'][b, k]:.4f}. {src}; tolerance rel {REL:g}."),
             "parameter_overrides": {"a_w": float(v[f"th_ah2o_a_{slot}"][b, k]), "elec": el.tolist(),
                                     "aer_t": v[f"th_aert_{slot}"][:, b, k].tolist()},
             "time_span": {"start": 0, "end": 1},
@@ -152,9 +172,9 @@ def main(dump_dir: str) -> None:
         note = ("B27 is in force: the H+ asserted is the Fortran's 0.5 a_c + sqrt(a_c^2 + 4 K_w), not the "
                 "charge-balance root. " if poor else "")
         atests.append({
-            "id": f"act_s{step}_lev{lev}_bin{b1}_{slot}",
-            "description": (f"{regime[0].upper()}{regime[1:]}: {where}; X_T = {xt:.4g}. {note}{SRC}; tolerance rel "
-                            f"{REL:g}, measured 5.8e-15 worst over all 11068 calls (exact zeros pinned exactly). "
+            "id": f"act_{tid}",
+            "description": (f"{regime[0].upper()}{regime[1:]}: {where}; X_T = {xt:.4g}. {note}{src}; tolerance rel "
+                            f"{REL:g} (exact zeros pinned exactly). "
                             f"Not asserted, because compute_activities leaves them stale from an earlier call on this "
                             f"path: gam of {', '.join(ELNAMES[e] for e in skipped) or 'none'}"
                             + ("" if ratio_set else "; gam_ratio (NH4NO3 absent)") + "."),
@@ -180,6 +200,23 @@ def main(dump_dir: str) -> None:
                             f"{int(np.sum(L == 0))} it leaves at zero exactly."),
             "parameter_overrides": {"a_w": rh}, "time_span": {"start": 0, "end": 1}, "assertions": a,
         })
+    if replay:
+        v = dump("R")
+        for i, c in enumerate(json.load(open(os.path.join(os.path.dirname(replay), "cases_act.json")))):
+            if c["id"] not in MTEM_REPLAY:
+                continue
+            L = v["th_log_gamz"][:, :, i]
+            aw = float(np.float32(c["rh"]))   # the driver reads relhum as default REAL, as relhumclm is
+            a = [{"variable": "log_gamz", "coords": {"el": p + 1, "solv": q + 1}, "time": 0.0,
+                  "expected": float(L[p, q]), "tolerance": tol_for(float(L[p, q]))}
+                 for p in range(22) for q in range(22)]
+            mtests.append({
+                "id": f"mtem_r_{c['id']}",
+                "description": (f"Water activity {aw:.9g} ({MTEM_REPLAY[c['id']]}), outside the 0.30-0.77 the column "
+                                f"reaches: the fit-range clamp of mtem_compute_log_gamz. {SRC_R}; all 484 entries at "
+                                f"rel {REL:g}, zeros exactly."),
+                "parameter_overrides": {"a_w": aw}, "time_span": {"start": 0, "end": 1}, "assertions": a,
+            })
     for path, model, tests in ((WATER, "MosaicAerosolWaterZSR", wtests), (ACT, "MosaicMtemActivities", atests),
                                (MTEM, "MosaicMtemBinaryLogGamma", mtests)):
         doc = json.load(open(path))
@@ -191,4 +228,4 @@ def main(dump_dir: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)

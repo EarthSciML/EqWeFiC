@@ -1,0 +1,274 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "MosaicThermoTemplates",
+    "description": "Expression templates shared by MOSAIC's thermodynamics components (chem/module_mosaic_therm.F, WRF v4.8.0). The ZSR water of a bin is needed wherever the bin's water activity is: at the activity compute_activities is handed (aerosol_water_zsr.esm), at the fixed 0.6 of the hysteresis reference (aerosol_water_up), and inside the Kelvin iteration of aerosol_phase_state, where it is evaluated once per iterate. Writing it once is the reason these are templates. They read the consuming model's mounted parameter library by its mount name `tp` (mosaic_thermo_parameters.esm), and zsr_water reads the consumer's `elec` (electrolyte amounts, nmol/m3) and `v_kappa` (the kappa-weighted non-electrolyte dry volume) by bare name -- the keyed-factor convention of the EarthSciDiscretizations column rules.",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "references": [
+      {
+        "citation": "Zaveri, R.A., Easter, R.C., Fast, J.D., Peters, L.K. (2008). Model for Simulating Aerosol Interactions and Chemistry (MOSAIC). J. Geophys. Res. 113, D13204."
+      },
+      {
+        "citation": "WRF v4.8.0 chem/module_mosaic_therm.F"
+      }
+    ]
+  },
+  "expression_templates": {
+    "zsr_fit_activity": {
+      "params": [
+        "a",
+        "e"
+      ],
+      "description": "Water activity a held inside electrolyte e's fit range, min(max(a, a_min,e), 0.999999) (bin_molality).",
+      "body": {
+        "op": "min",
+        "args": [
+          {
+            "op": "max",
+            "args": [
+              "a",
+              {
+                "op": "index",
+                "args": [
+                  "tp.aw_min",
+                  "e"
+                ]
+              }
+            ]
+          },
+          "tp.aw_cap"
+        ]
+      }
+    },
+    "zsr_binary_molality": {
+      "params": [
+        "a",
+        "e"
+      ],
+      "description": "Binary molality of electrolyte e at water activity a (FUNCTION bin_molality): below the binary32 0.97 the fitted solute mole fraction x = sum_p A_{p,e} a^(p-1) turned into molality 55.509 x/(1 - x); at and above it the dilute limit -B_e ln a. Both on the clamped activity.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          {
+            "op": "<",
+            "args": [
+              {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "zsr_fit_activity",
+                "bindings": {
+                  "a": "a",
+                  "e": "e"
+                }
+              },
+              "tp.aw_poly_max"
+            ]
+          },
+          {
+            "op": "/",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "tp.molal_water",
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "zsr_mole_fraction",
+                    "bindings": {
+                      "a": {
+                        "op": "apply_expression_template",
+                        "args": [],
+                        "name": "zsr_fit_activity",
+                        "bindings": {
+                          "a": "a",
+                          "e": "e"
+                        }
+                      },
+                      "e": "e"
+                    }
+                  }
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  1.0,
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "zsr_mole_fraction",
+                    "bindings": {
+                      "a": {
+                        "op": "apply_expression_template",
+                        "args": [],
+                        "name": "zsr_fit_activity",
+                        "bindings": {
+                          "a": "a",
+                          "e": "e"
+                        }
+                      },
+                      "e": "e"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "*",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "tp.b_zsr",
+                      "e"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "log",
+                "args": [
+                  {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "zsr_fit_activity",
+                    "bindings": {
+                      "a": "a",
+                      "e": "e"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "zsr_mole_fraction": {
+      "params": [
+        "a",
+        "e"
+      ],
+      "description": "MOSAIC's fifth-order fit of electrolyte e's binary solute mole fraction against water activity, x = sum_{p=1..6} A_{p,e} a^(p-1). The caller passes the clamped activity.",
+      "body": {
+        "op": "faq",
+        "output_idx": [],
+        "reduce": "+",
+        "args": [],
+        "ranges": {
+          "p": {
+            "from": "pc"
+          }
+        },
+        "expr": {
+          "op": "*",
+          "args": [
+            {
+              "op": "index",
+              "args": [
+                "tp.a_zsr",
+                "p",
+                "e"
+              ]
+            },
+            {
+              "op": "^",
+              "args": [
+                "a",
+                {
+                  "op": "-",
+                  "args": [
+                    "p",
+                    1
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "zsr_water": {
+      "params": [
+        "a"
+      ],
+      "description": "ZSR liquid water of a bin at water activity a, kg per m3 of air (FUNCTION aerosol_water): W = (sum over the first NZSR electrolytes of E_e/m_e(a) + 1e-3 v_kappa a/(1 - a)) 1e-9, every literal at its binary32 value. Reads the consumer's `elec`, `v_kappa` and metaparameter NZSR.",
+      "body": {
+        "op": "*",
+        "args": [
+          {
+            "op": "+",
+            "args": [
+              {
+                "op": "faq",
+                "output_idx": [],
+                "reduce": "+",
+                "args": [],
+                "ranges": {
+                  "e": [
+                    1,
+                    "NZSR"
+                  ]
+                },
+                "expr": {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "elec",
+                        "e"
+                      ]
+                    },
+                    {
+                      "op": "apply_expression_template",
+                      "args": [],
+                      "name": "zsr_binary_molality",
+                      "bindings": {
+                        "a": "a",
+                        "e": "e"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "tp.kappa_water_per_volume",
+                          "v_kappa"
+                        ]
+                      },
+                      "a"
+                    ]
+                  },
+                  {
+                    "op": "-",
+                    "args": [
+                      1.0,
+                      "a"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "tp.mol_per_nmol"
+        ]
+      }
+    }
+  }
+}
