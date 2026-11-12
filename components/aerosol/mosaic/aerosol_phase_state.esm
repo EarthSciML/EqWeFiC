@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "MosaicAerosolPhaseState",
-    "description": "MOSAIC's phase state of ONE size bin: SUBROUTINE aerosol_phase_state of chem/module_mosaic_therm.F (WRF v4.8.0), with the branch decisions of SUBROUTINE mesa, do_full_deliquescence / adjust_liquid_aerosol / adjust_solid_aerosol, calculate_kelvin, drh_mutual and aerosol_water_up. ASTEM calls it for every bin at the start of each of its sub-steps, after conform_electrolytes has rebuilt the bin's total electrolytes; it decides whether the bin is solid, liquid or mixed, how much water it holds, and the Kelvin factors that raise the equilibrium vapour pressures of HNO3, HCl, NH3 over a small droplet.\n\nINPUTS a consumer supplies: rh_pc, t_k, the bin's number concentration, the total species and the total electrolytes (as conform_electrolytes left them), and water_a_hyst -- the water the bin carried on the upper hysteresis leg at the end of the previous MOSAIC step (0 on the lower leg).\n\nDRY MASS AND VOLUME. sum_a A_a mw_a (and A_a mw_a / rho_a), plus the charge-balance H+ aer_H = (2 SO4 + NO3 + Cl + MSA + 2 CO3) - (2 Ca + Na + NH4), which the Fortran adds as nmol straight into the ng and ncc sums (an implied 1 g/mol and 1 g/cm3, written as such in mosaic_phase_parameters.esm), times 1e-15.\n\nTHE BRANCH (SUBROUTINE mesa, template mesa_path), tried in this order at the current water activity x: (1) x < crh = 0.35 and X_T > 1 or X_T < 0 and neither Ca(NO3)2 nor CaCl2 above ptol_mol_astem = 0.01 mol percent: effloresced, ALL SOLID. (2) water_a_hyst > 0.5 water_a_up, where water_a_up is the ZSR water of the totals at a fixed a_w = 0.6 without the kappa term (mhyst_method = uporlo_waterhyst): the upper hysteresis leg, FULLY LIQUID, water = ZSR water of the TOTAL electrolytes at x. (6) 0 < X_T < 1, the excess-sulfate domain: handed to mesa_ptc. (4) no salt above ptol_mol_astem: ALL SOLID -- which includes a pure H2SO4 or a purely carbonaceous bin on the lower leg. (5) x*100 below the mutual deliquescence RH of the salts present (jsulf_poor/jsulf_rich of the salt code, drh_mutual's cubic in T plus 1, or 10% for Ca(NO3)2/CaCl2 mixtures): ALL SOLID. (6) otherwise mesa_ptc. MESA_PTC, the pseudo-transient solid-liquid equilibrium solver (mixed phases), IS NOT TRANSCRIBED HERE: where the branch is 6, only `path` (and the inputs-only water_up and mass_dry) mean anything. The Fortran's step-2 'negative water' exit cannot occur with non-negative amounts and is omitted.\n\nTHE KELVIN ITERATION. On the liquid branch the wet volume V = vol_dry + 1e-3 W(x), the volume-mean diameter Dp = (6 V/(N pi))^(1/3), the solution tension sigma = sigma_water + 49 (1 - x), and K = 1 + t(1 + t/2 (1 + t/3)) with t = 72 sigma/(R T Dp) (R = 8.3144e7) give a new water activity x' = rh_pc 0.01/K. The loop repeats while |x' - x|/x exceeds 1e-2 (1e-6 above 99% RH), at most ten updates. It is written as a causal recurrence over the iteration axis `it` (esm 4.3.1.1): aw_it[1] = rh_pc 0.01, aw_it[i] = kelvin_update(aw_it[i-1]), where kelvin_update returns x' if the bin is liquid at x and the change exceeds the tolerance, and x otherwise -- so the sequence holds once the Fortran's loop has exited. The three CLAUDE.md tests all fail, which is why it is a recurrence: (a) it does not unroll into a reduction over original values, because each pass reads the previous pass's ANSWER through W(x) and K(x); (b) it is not an ODE integrator but a fixed-point iteration, and transcribing the converged fixed point instead would not reproduce the Fortran, whose 1e-2 tolerance routinely stops one pass early (a 0.6% Kelvin correction is never applied); (c) it is a single variable, so there is no cycle to break. The only state carried is the scalar x; W(x) is re-evaluated inside the recurrence by the zsr_water template (mosaic_thermo_templates.esm), the same expression aerosol_water_zsr.esm uses. niter counts the passes. Because the branch is re-decided on every pass, a bin just above crh can go liquid on the first pass and effloresce on the second once K has lowered x below 0.35; the Fortran then exits with ah2o_a at the lowered value and kelvin from the previous pass, which `kelvin` reproduces.\n\nOUTPUTS. ah2o_a, niter, path, state (jaerosolstate; 0 where mesa_ptc decides), jhyst (jhyst_leg), water, mass/vol wet, dpmv, sigma_soln, kelvin, kel(gas) for H2SO4, HNO3, HCl, NH3, MSA (t = 4 sigma vbar/(R T Dp), 1 when solid), and the solid/liquid partition of species and electrolytes (liquid: all but CaSO4 and CaCO3 dissolve, Ca++ in the liquid is the Ca(NO3)2 + CaCl2; solid: everything stays solid). dpmv, sigma_soln, mass_wet and vol_wet are meaningful on the liquid branch only: on a solid exit the Fortran leaves whatever the previous pass, or the previous call, put there.\n\nFORTRAN_BUGS B29: sigma_water = 0.2358 tau^1.256 (1 - 0.625 tau) is the IAPWS surface tension of water in N/m (about 0.072), and calculate_kelvin adds it to 49 (1 - a_w), a term in dyn/cm; pure water's 72 dyn/cm enters as 0.072. The solution tension, and so every Kelvin factor, is too small: at 290 K and a_w = 0.6 it is 19.7 instead of 93.3 dyn/cm (every Kelvin term 4.7 times too small), and toward a_w = 1 it falls to 0.073 instead of 73 (a thousandfold). Reproduced as written; fixing it fails 65 assertions.\n\nPRECISION. Double-precision arithmetic with the default-real literals at their binary32 values (mosaic_phase_parameters.esm): 0.35, 0.01, 0.6, 1e-15, 1e-3, 3.1415926, 1./3. (formed in REAL), 647.15, 0.2358, 1.256, 1e-2, 1e-6. rh_pc itself is 100*relhumclm formed in default REAL.\n\nTESTS AND COVERAGE. Eleven calls from the chem170 aerosol_phase_state capture (dumps/chem170_mosaic_phase, WRF fork e277517c; reference namelist unchanged, fields shared with dumps/chem170_mosaic_therm bit-identical): the upper leg with one and two Kelvin passes, efflorescence below crh, lower-leg bins below their mutual DRH, and three mesa_ptc hand-offs (mass-converged, flux-converged and NOT converged in 80 iterations). Of the column's 15104 recorded calls, 6892 take the upper leg, 446 effloresce, 3692 sit below their mutual DRH, and 4074 go to mesa_ptc (206 of them unconverged); 1020 need a second Kelvin pass and none a third. A sweep of 480 non-mesa_ptc calls sampled across all 16 steps (not kept as tests) agreed bit for bit in 38055 of 39264 assertions and to 5.4e-15 relative at worst (water). Plus 14 hand-specified bins run through WRF's own compiled aerosol_phase_state (kernels/mosaic_therm_driver mode 2; chem170_scm/therm64/make_cases.py) for what the column does not show: liquid at 0.30 (Ca blocks efflorescence), 0.90 and 0.995 (the 1e-6 tolerance, three passes); efflorescence on the SECOND pass; the no-salt solids (H2SO4, carbon); ammonium sulfate and NaCl + NH4NO3 below their DRH. All at rel 1e-9, integer flags exactly. Mutation-checked (on the driver bins): fixing B29 fails 65, a single Kelvin pass (NIT = 1) 51, two passes 13, crh = 0.30 14, the 1e-2 tolerance above 99% 13, the double-precision pi 9 and 1/3 44, dropping aer_H from the dry mass 14. NOT covered: the mutual-DRH cubic of most of the 63 curves (perturbing curve 1 changes nothing), and a bin whose ZSR water is exactly zero on the upper leg (aerosol_water then flags it all solid from inside the liquid branch).",
+    "description": "MOSAIC's phase state of ONE size bin: SUBROUTINE aerosol_phase_state of chem/module_mosaic_therm.F (WRF v4.8.0), with the branch decisions of SUBROUTINE mesa, do_full_deliquescence / adjust_liquid_aerosol / adjust_solid_aerosol, calculate_kelvin, drh_mutual and aerosol_water_up. ASTEM calls it for every bin at the start of each of its sub-steps, after conform_electrolytes has rebuilt the bin's total electrolytes; it decides whether the bin is solid, liquid or mixed, how much water it holds, and the Kelvin factors that raise the equilibrium vapour pressures of HNO3, HCl, NH3 over a small droplet.\n\nINPUTS a consumer supplies: rh_pc, t_k, the bin's number concentration, the total species and the total electrolytes (as conform_electrolytes left them), and water_a_hyst -- the water the bin carried on the upper hysteresis leg at the end of the previous MOSAIC step (0 on the lower leg).\n\nDRY MASS AND VOLUME. sum_a A_a mw_a (and A_a mw_a / rho_a), plus the charge-balance H+ aer_H = (2 SO4 + NO3 + Cl + MSA + 2 CO3) - (2 Ca + Na + NH4), which the Fortran adds as nmol straight into the ng and ncc sums (an implied 1 g/mol and 1 g/cm3, written as such in mosaic_phase_parameters.esm), times 1e-15.\n\nTHE BRANCH (SUBROUTINE mesa, template mesa_path), tried in this order at the current water activity x: (1) x < crh = 0.35 and X_T > 1 or X_T < 0 and neither Ca(NO3)2 nor CaCl2 above ptol_mol_astem = 0.01 mol percent: effloresced, ALL SOLID. (2) water_a_hyst > 0.5 water_a_up, where water_a_up is the ZSR water of the totals at a fixed a_w = 0.6 without the kappa term (mhyst_method = uporlo_waterhyst): the upper hysteresis leg, FULLY LIQUID, water = ZSR water of the TOTAL electrolytes at x. (6) 0 < X_T < 1, the excess-sulfate domain: handed to mesa_ptc. (4) no salt above ptol_mol_astem: ALL SOLID -- which includes a pure H2SO4 or a purely carbonaceous bin on the lower leg. (5) x*100 below the mutual deliquescence RH of the salts present (jsulf_poor/jsulf_rich of the salt code, drh_mutual's cubic in T plus 1, or 10% for Ca(NO3)2/CaCl2 mixtures): ALL SOLID. (6) otherwise mesa_ptc. MESA_PTC, the pseudo-transient solid-liquid equilibrium solver (mixed phases), IS NOT TRANSCRIBED HERE: where the branch is 6, only `path` (and the inputs-only water_up and mass_dry) mean anything. The Fortran's step-2 'negative water' exit cannot occur with non-negative amounts and is omitted.\n\nTHE KELVIN ITERATION. On the liquid branch the wet volume V = vol_dry + 1e-3 W(x), the volume-mean diameter Dp = (6 V/(N pi))^(1/3), the solution tension sigma = sigma_water + 49 (1 - x), and K = 1 + t(1 + t/2 (1 + t/3)) with t = 72 sigma/(R T Dp) (R = 8.3144e7) give a new water activity x' = rh_pc 0.01/K. The loop repeats while |x' - x|/x exceeds 1e-2 (1e-6 above 99% RH), at most ten updates. It is written as a causal recurrence over the iteration axis `it` (esm 4.3.1.1): aw_it[1] = rh_pc 0.01, aw_it[i] = kelvin_update(aw_it[i-1]), where kelvin_update returns x' if the bin is liquid at x and the change exceeds the tolerance, and x otherwise -- so the sequence holds once the Fortran's loop has exited. The three CLAUDE.md tests all fail, which is why it is a recurrence: (a) it does not unroll into a reduction over original values, because each pass reads the previous pass's ANSWER through W(x) and K(x); (b) it is not an ODE integrator but a fixed-point iteration, and transcribing the converged fixed point instead would not reproduce the Fortran, whose 1e-2 tolerance routinely stops one pass early (a 0.6% Kelvin correction is never applied); (c) it is a single variable, so there is no cycle to break. The only state carried is the scalar x; W(x) is re-evaluated inside the recurrence by the zsr_water template (mosaic_thermo_templates.esm), the same expression aerosol_water_zsr.esm uses. niter counts the passes. Because the branch is re-decided on every pass, a bin just above crh can go liquid on the first pass and effloresce on the second once K has lowered x below 0.35; the Fortran then exits with ah2o_a at the lowered value and kelvin from the previous pass, which `kelvin` reproduces.\n\nOUTPUTS. ah2o_a, niter, path, state (jaerosolstate; 0 where mesa_ptc decides), jhyst (jhyst_leg), water, mass/vol wet, dpmv, sigma_soln, kelvin, kel(gas) for H2SO4, HNO3, HCl, NH3, MSA (t = 4 sigma vbar/(R T Dp), 1 when solid), and the solid/liquid partition of species and electrolytes (liquid: all but CaSO4 and CaCO3 dissolve, Ca++ in the liquid is the Ca(NO3)2 + CaCl2; solid: everything stays solid). dpmv, sigma_soln, mass_wet and vol_wet are meaningful on the liquid branch only: on a solid exit the Fortran leaves whatever the previous pass, or the previous call, put there.\n\nFORTRAN_BUGS B29: sigma_water = 0.2358 tau^1.256 (1 - 0.625 tau) is the IAPWS surface tension of water in N/m (about 0.072), and calculate_kelvin adds it to 49 (1 - a_w), a term in dyn/cm; pure water's 72 dyn/cm enters as 0.072. The solution tension, and so every Kelvin factor, is too small: at 290 K and a_w = 0.6 it is 19.7 instead of 93.3 dyn/cm (every Kelvin term 4.7 times too small), and toward a_w = 1 it falls to 0.073 instead of 73 (a thousandfold). Reproduced as written; fixing it fails 65 assertions.\n\nPRECISION. Double-precision arithmetic with the default-real literals at their binary32 values (mosaic_phase_parameters.esm): 0.35, 0.01, 0.6, 1e-15, 1e-3, 3.1415926, 1./3. (formed in REAL), 647.15, 0.2358, 1.256, 1e-2, 1e-6. rh_pc itself is 100*relhumclm formed in default REAL.\n\nTESTS AND COVERAGE. Eleven calls from the chem170 aerosol_phase_state capture (dumps/chem170_mosaic_phase, WRF fork e277517c; reference namelist unchanged, fields shared with dumps/chem170_mosaic_therm bit-identical): the upper leg with one and two Kelvin passes, efflorescence below crh, lower-leg bins below their mutual DRH, and three mesa_ptc hand-offs (mass-converged, flux-converged and NOT converged in 80 iterations). Of the column's 15104 recorded calls, 6892 take the upper leg, 446 effloresce, 3692 sit below their mutual DRH, and 4074 go to mesa_ptc (206 of them unconverged); 1020 need a second Kelvin pass and none a third. A sweep of 480 non-mesa_ptc calls sampled across all 16 steps (not kept as tests) agreed bit for bit in 38055 of 39264 assertions and to 5.4e-15 relative at worst (water). Plus 14 hand-specified bins run through WRF's own compiled aerosol_phase_state (kernels/mosaic_therm_driver mode 2; chem170_scm/therm64/make_cases.py) for what the column does not show: liquid at 0.30 (Ca blocks efflorescence), 0.90 and 0.995 (the 1e-6 tolerance, three passes); efflorescence on the SECOND pass; the no-salt solids (H2SO4, carbon); ammonium sulfate and NaCl + NH4NO3 below their DRH. All at rel 1e-9, integer flags exactly. Mutation-checked (on the driver bins): fixing B29 fails 65, a single Kelvin pass (NIT = 1) 51, two passes 13, crh = 0.30 14, the 1e-2 tolerance above 99% 13, the double-precision pi 9 and 1/3 44, dropping aer_H from the dry mass 14. The 63 mutual-DRH curves are pinned as a whole table (mdrh_table, the drh_mutual cubic at t_k) at six temperatures from 240 to 315 K through the driver (chem170_scm/therm64/mdrh) and at the column's top-level temperature from the capture, 63 assertions each (tools/fill_mosaic_mdrh_table_tests.py); perturbing any curve's leading coefficient by 1e-4 fails all seven. NOT covered: a bin whose ZSR water is exactly zero on the upper leg (aerosol_water then flags it all solid from inside the liquid branch).",
     "authors": [
       "EqWeFiC"
     ],
@@ -62,6 +62,10 @@
     "gas": {
       "kind": "interval",
       "size": 5
+    },
+    "mdrhcurve": {
+      "kind": "interval",
+      "size": 63
     }
   },
   "models": {
@@ -554,7 +558,7 @@
         "mdrh": {
           "type": "unknown",
           "units": "percent",
-          "description": "Mutual deliquescence relative humidity of the combination (drh_mutual): 10 for the Ca(NO3)2/CaCl2 mixtures (indices 7, 8, 34-51), else the cubic d_1 + T(d_2 + T(d_3 + T d_4)) + 1."
+          "description": "Mutual deliquescence relative humidity of the bin's salt combination: curve mdrh_index of mdrh_table (0 without a salt)."
         },
         "sigma_water": {
           "type": "unknown",
@@ -678,6 +682,14 @@
           "shape": [
             "aer"
           ]
+        },
+        "mdrh_table": {
+          "type": "unknown",
+          "units": "percent",
+          "shape": [
+            "mdrhcurve"
+          ],
+          "description": "The 63 mutual deliquescence relative humidities at t_k, mdrh_t(1:63) as update_thermodynamic_constants fills them (drh_mutual): 10 for the Ca(NO3)2/CaCl2 mixtures (curves 7, 8, 34-51), else the cubic d_1 + T(d_2 + T(d_3 + T d_4)) + 1. MESA reads the one curve of the bin's salt combination (mdrh)."
         }
       },
       "equations": [
@@ -1397,6 +1409,136 @@
           }
         },
         {
+          "lhs": "mdrh_table",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j"
+            ],
+            "args": [],
+            "ranges": {
+              "j": {
+                "from": "mdrhcurve"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "or",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        "j",
+                        7
+                      ]
+                    },
+                    {
+                      "op": "==",
+                      "args": [
+                        "j",
+                        8
+                      ]
+                    },
+                    {
+                      "op": "and",
+                      "args": [
+                        {
+                          "op": ">=",
+                          "args": [
+                            "j",
+                            34
+                          ]
+                        },
+                        {
+                          "op": "<=",
+                          "args": [
+                            "j",
+                            51
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "pp.mdrh_ca",
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "pp.d_mdrh",
+                            "j",
+                            1
+                          ]
+                        },
+                        {
+                          "op": "*",
+                          "args": [
+                            "t_k",
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "pp.d_mdrh",
+                                    "j",
+                                    2
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "t_k",
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "pp.d_mdrh",
+                                            "j",
+                                            3
+                                          ]
+                                        },
+                                        {
+                                          "op": "*",
+                                          "args": [
+                                            "t_k",
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "pp.d_mdrh",
+                                                "j",
+                                                4
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    1.0
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
           "lhs": "mdrh",
           "rhs": {
             "op": "ifelse",
@@ -1410,118 +1552,10 @@
               },
               0.0,
               {
-                "op": "ifelse",
+                "op": "index",
                 "args": [
-                  {
-                    "op": "or",
-                    "args": [
-                      {
-                        "op": "==",
-                        "args": [
-                          "mdrh_index",
-                          7.0
-                        ]
-                      },
-                      {
-                        "op": "==",
-                        "args": [
-                          "mdrh_index",
-                          8.0
-                        ]
-                      },
-                      {
-                        "op": "and",
-                        "args": [
-                          {
-                            "op": ">=",
-                            "args": [
-                              "mdrh_index",
-                              34.0
-                            ]
-                          },
-                          {
-                            "op": "<=",
-                            "args": [
-                              "mdrh_index",
-                              51.0
-                            ]
-                          }
-                        ]
-                      }
-                    ]
-                  },
-                  "pp.mdrh_ca",
-                  {
-                    "op": "+",
-                    "args": [
-                      {
-                        "op": "+",
-                        "args": [
-                          {
-                            "op": "index",
-                            "args": [
-                              "pp.d_mdrh",
-                              "mdrh_index",
-                              1
-                            ]
-                          },
-                          {
-                            "op": "*",
-                            "args": [
-                              "t_k",
-                              {
-                                "op": "+",
-                                "args": [
-                                  {
-                                    "op": "index",
-                                    "args": [
-                                      "pp.d_mdrh",
-                                      "mdrh_index",
-                                      2
-                                    ]
-                                  },
-                                  {
-                                    "op": "*",
-                                    "args": [
-                                      "t_k",
-                                      {
-                                        "op": "+",
-                                        "args": [
-                                          {
-                                            "op": "index",
-                                            "args": [
-                                              "pp.d_mdrh",
-                                              "mdrh_index",
-                                              3
-                                            ]
-                                          },
-                                          {
-                                            "op": "*",
-                                            "args": [
-                                              "t_k",
-                                              {
-                                                "op": "index",
-                                                "args": [
-                                                  "pp.d_mdrh",
-                                                  "mdrh_index",
-                                                  4
-                                                ]
-                                              }
-                                            ]
-                                          }
-                                        ]
-                                      }
-                                    ]
-                                  }
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      },
-                      1.0
-                    ]
-                  }
+                  "mdrh_table",
+                  "mdrh_index"
                 ]
               }
             ]
@@ -24047,6 +24081,5389 @@
               "variable": "mass_dry",
               "time": 0.0,
               "expected": 3.425000012424166e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "mdrh_table_driver_240K",
+          "description": "All 63 mutual deliquescence curves at t_k = 240.0 K: mdrh_t(1:63) as update_thermodynamic_constants fills them (drh_mutual). Source: kernels/mosaic_therm_driver at 240 K (chem170_scm/therm64/mdrh, WRF fork earthsciml-instrumented-chem170). Real64 (mdrh_t is real(kind=8), the coefficients binary32); rel 1e-9. Only the table is asserted; the bin is left at its defaults.",
+          "parameter_overrides": {
+            "t_k": 240.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 1
+              },
+              "time": 0.0,
+              "expected": 92.31572470068932,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 2
+              },
+              "time": 0.0,
+              "expected": 96.16738241910934,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 3
+              },
+              "time": 0.0,
+              "expected": 92.16625155322254,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 4
+              },
+              "time": 0.0,
+              "expected": 82.48540983442217,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 5
+              },
+              "time": 0.0,
+              "expected": 94.72398176789284,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 6
+              },
+              "time": 0.0,
+              "expected": 91.92881795670837,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 7
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 8
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 9
+              },
+              "time": 0.0,
+              "expected": 91.05613479018211,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 10
+              },
+              "time": 0.0,
+              "expected": 88.89110978133976,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 11
+              },
+              "time": 0.0,
+              "expected": 91.11022710800171,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 12
+              },
+              "time": 0.0,
+              "expected": 88.17368364334106,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 13
+              },
+              "time": 0.0,
+              "expected": 80.93395633774344,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 14
+              },
+              "time": 0.0,
+              "expected": 85.46405506134033,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 15
+              },
+              "time": 0.0,
+              "expected": 92.95716246962547,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 16
+              },
+              "time": 0.0,
+              "expected": 85.1322329044342,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 17
+              },
+              "time": 0.0,
+              "expected": 81.44485823158175,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 18
+              },
+              "time": 0.0,
+              "expected": 80.07411727309227,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 19
+              },
+              "time": 0.0,
+              "expected": 83.09922785079107,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 20
+              },
+              "time": 0.0,
+              "expected": 85.2323027253151,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 21
+              },
+              "time": 0.0,
+              "expected": 81.2452572286129,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 22
+              },
+              "time": 0.0,
+              "expected": 83.22068463638425,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 23
+              },
+              "time": 0.0,
+              "expected": 81.0150032043457,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 24
+              },
+              "time": 0.0,
+              "expected": 82.5710363984108,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 25
+              },
+              "time": 0.0,
+              "expected": 79.94628584384918,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 26
+              },
+              "time": 0.0,
+              "expected": 81.70617199502885,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 27
+              },
+              "time": 0.0,
+              "expected": 79.92434687842615,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 28
+              },
+              "time": 0.0,
+              "expected": 90.38061549142003,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 29
+              },
+              "time": 0.0,
+              "expected": 81.74913200736046,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 30
+              },
+              "time": 0.0,
+              "expected": 84.71639916300774,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 31
+              },
+              "time": 0.0,
+              "expected": 81.21431413292885,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 32
+              },
+              "time": 0.0,
+              "expected": 80.75123500823975,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 33
+              },
+              "time": 0.0,
+              "expected": 79.14206984639168,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 34
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 35
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 36
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 37
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 38
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 39
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 40
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 41
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 42
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 43
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 44
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 45
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 46
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 47
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 48
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 49
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 50
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 51
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 52
+              },
+              "time": 0.0,
+              "expected": 51.14152307808399,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 53
+              },
+              "time": 0.0,
+              "expected": 82.18267481401563,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 54
+              },
+              "time": 0.0,
+              "expected": 42.78581276349723,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 55
+              },
+              "time": 0.0,
+              "expected": 51.14152307808399,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 56
+              },
+              "time": 0.0,
+              "expected": 82.18267481401563,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 57
+              },
+              "time": 0.0,
+              "expected": 42.78581276349723,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 58
+              },
+              "time": 0.0,
+              "expected": 78.08065165951848,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 59
+              },
+              "time": 0.0,
+              "expected": 78.08065165951848,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 60
+              },
+              "time": 0.0,
+              "expected": 47.363277301192284,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 61
+              },
+              "time": 0.0,
+              "expected": 47.363277301192284,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 62
+              },
+              "time": 0.0,
+              "expected": 39.17155720666051,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 63
+              },
+              "time": 0.0,
+              "expected": 39.34352006018162,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "mdrh_table_driver_255K",
+          "description": "All 63 mutual deliquescence curves at t_k = 255.0 K: mdrh_t(1:63) as update_thermodynamic_constants fills them (drh_mutual). Source: kernels/mosaic_therm_driver at 255 K (chem170_scm/therm64/mdrh, WRF fork earthsciml-instrumented-chem170). Real64 (mdrh_t is real(kind=8), the coefficients binary32); rel 1e-9. Only the table is asserted; the bin is left at its defaults.",
+          "parameter_overrides": {
+            "t_k": 255.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 1
+              },
+              "time": 0.0,
+              "expected": 88.9908497730139,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 2
+              },
+              "time": 0.0,
+              "expected": 91.32309861927934,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 3
+              },
+              "time": 0.0,
+              "expected": 88.25987661756108,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 4
+              },
+              "time": 0.0,
+              "expected": 80.08152703873043,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 5
+              },
+              "time": 0.0,
+              "expected": 90.83294971820578,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 6
+              },
+              "time": 0.0,
+              "expected": 89.90524320218151,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 7
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 8
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 9
+              },
+              "time": 0.0,
+              "expected": 84.5235778205315,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 10
+              },
+              "time": 0.0,
+              "expected": 83.90653776378576,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 11
+              },
+              "time": 0.0,
+              "expected": 84.85641691542696,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 12
+              },
+              "time": 0.0,
+              "expected": 80.442383829155,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 13
+              },
+              "time": 0.0,
+              "expected": 77.57939102453102,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 14
+              },
+              "time": 0.0,
+              "expected": 77.35582386073656,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 15
+              },
+              "time": 0.0,
+              "expected": 84.91302016472764,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 16
+              },
+              "time": 0.0,
+              "expected": 77.49851192493225,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 17
+              },
+              "time": 0.0,
+              "expected": 78.34802011169654,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 18
+              },
+              "time": 0.0,
+              "expected": 74.9098449899102,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 19
+              },
+              "time": 0.0,
+              "expected": 78.56423586728067,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 20
+              },
+              "time": 0.0,
+              "expected": 77.65925071948732,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 21
+              },
+              "time": 0.0,
+              "expected": 73.70243974014738,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 22
+              },
+              "time": 0.0,
+              "expected": 78.75258449329431,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 23
+              },
+              "time": 0.0,
+              "expected": 75.89756482772646,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 24
+              },
+              "time": 0.0,
+              "expected": 75.57358297567407,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 25
+              },
+              "time": 0.0,
+              "expected": 72.8323871960456,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 26
+              },
+              "time": 0.0,
+              "expected": 79.17667082130492,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 27
+              },
+              "time": 0.0,
+              "expected": 76.31160047525083,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 28
+              },
+              "time": 0.0,
+              "expected": 87.15300455519628,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 29
+              },
+              "time": 0.0,
+              "expected": 74.87795016154269,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 30
+              },
+              "time": 0.0,
+              "expected": 78.09465402398928,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 31
+              },
+              "time": 0.0,
+              "expected": 73.70006938654842,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 32
+              },
+              "time": 0.0,
+              "expected": 77.57663220737595,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 33
+              },
+              "time": 0.0,
+              "expected": 73.81254185864964,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 34
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 35
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 36
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 37
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 38
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 39
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 40
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 41
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 42
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 43
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 44
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 45
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 46
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 47
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 48
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 49
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 50
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 51
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 52
+              },
+              "time": 0.0,
+              "expected": 47.366437899170705,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 53
+              },
+              "time": 0.0,
+              "expected": 78.33489659594215,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 54
+              },
+              "time": 0.0,
+              "expected": 41.049272523886884,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 55
+              },
+              "time": 0.0,
+              "expected": 47.366437899170705,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 56
+              },
+              "time": 0.0,
+              "expected": 78.33489659594215,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 57
+              },
+              "time": 0.0,
+              "expected": 41.049272523886884,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 58
+              },
+              "time": 0.0,
+              "expected": 73.34730391599169,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 59
+              },
+              "time": 0.0,
+              "expected": 73.34730391599169,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 60
+              },
+              "time": 0.0,
+              "expected": 42.69355726186404,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 61
+              },
+              "time": 0.0,
+              "expected": 42.69355726186404,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 62
+              },
+              "time": 0.0,
+              "expected": 38.334314564000124,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 63
+              },
+              "time": 0.0,
+              "expected": 37.70469743167996,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "mdrh_table_driver_270K",
+          "description": "All 63 mutual deliquescence curves at t_k = 270.0 K: mdrh_t(1:63) as update_thermodynamic_constants fills them (drh_mutual). Source: kernels/mosaic_therm_driver at 270 K (chem170_scm/therm64/mdrh, WRF fork earthsciml-instrumented-chem170). Real64 (mdrh_t is real(kind=8), the coefficients binary32); rel 1e-9. Only the table is asserted; the bin is left at its defaults.",
+          "parameter_overrides": {
+            "t_k": 270.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 1
+              },
+              "time": 0.0,
+              "expected": 85.39731463062344,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 2
+              },
+              "time": 0.0,
+              "expected": 84.61610715591814,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 3
+              },
+              "time": 0.0,
+              "expected": 84.96139598864465,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 4
+              },
+              "time": 0.0,
+              "expected": 78.2774137092074,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 5
+              },
+              "time": 0.0,
+              "expected": 85.79833488009172,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 6
+              },
+              "time": 0.0,
+              "expected": 88.64420783358037,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 7
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 8
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 9
+              },
+              "time": 0.0,
+              "expected": 77.21803171158535,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 10
+              },
+              "time": 0.0,
+              "expected": 79.36871522851652,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 11
+              },
+              "time": 0.0,
+              "expected": 79.04982426669449,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 12
+              },
+              "time": 0.0,
+              "expected": 73.66101301182061,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 13
+              },
+              "time": 0.0,
+              "expected": 74.55919115042457,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 14
+              },
+              "time": 0.0,
+              "expected": 70.15571644343436,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 15
+              },
+              "time": 0.0,
+              "expected": 76.2186798301409,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 16
+              },
+              "time": 0.0,
+              "expected": 68.6053993855603,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 17
+              },
+              "time": 0.0,
+              "expected": 75.08005367883197,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 18
+              },
+              "time": 0.0,
+              "expected": 69.4014608261059,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 19
+              },
+              "time": 0.0,
+              "expected": 74.69843825367843,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 20
+              },
+              "time": 0.0,
+              "expected": 70.8777127462672,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 21
+              },
+              "time": 0.0,
+              "expected": 66.05848432536004,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 22
+              },
+              "time": 0.0,
+              "expected": 75.51954777949868,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 23
+              },
+              "time": 0.0,
+              "expected": 71.82571474299766,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 24
+              },
+              "time": 0.0,
+              "expected": 69.68347432569135,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 25
+              },
+              "time": 0.0,
+              "expected": 65.67999485437758,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 26
+              },
+              "time": 0.0,
+              "expected": 77.34608751748965,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 27
+              },
+              "time": 0.0,
+              "expected": 73.13306444615091,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 28
+              },
+              "time": 0.0,
+              "expected": 83.03467811828159,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 29
+              },
+              "time": 0.0,
+              "expected": 68.60839262063382,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 30
+              },
+              "time": 0.0,
+              "expected": 70.79139523993945,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 31
+              },
+              "time": 0.0,
+              "expected": 65.71899626852246,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 32
+              },
+              "time": 0.0,
+              "expected": 74.35977052245289,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 33
+              },
+              "time": 0.0,
+              "expected": 68.34740479808534,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 34
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 35
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 36
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 37
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 38
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 39
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 40
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 41
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 42
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 43
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 44
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 45
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 46
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 47
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 48
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 49
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 50
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 51
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 52
+              },
+              "time": 0.0,
+              "expected": 43.342169096838916,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 53
+              },
+              "time": 0.0,
+              "expected": 74.91668539800594,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 54
+              },
+              "time": 0.0,
+              "expected": 40.08521487770122,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 55
+              },
+              "time": 0.0,
+              "expected": 43.342169096838916,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 56
+              },
+              "time": 0.0,
+              "expected": 74.91668539800594,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 57
+              },
+              "time": 0.0,
+              "expected": 40.08521487770122,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 58
+              },
+              "time": 0.0,
+              "expected": 69.22921184494771,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 59
+              },
+              "time": 0.0,
+              "expected": 69.22921184494771,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 60
+              },
+              "time": 0.0,
+              "expected": 38.096878889919026,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 61
+              },
+              "time": 0.0,
+              "expected": 38.096878889919026,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 62
+              },
+              "time": 0.0,
+              "expected": 37.35258748985507,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 63
+              },
+              "time": 0.0,
+              "expected": 35.19493596305256,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "mdrh_table_driver_285K",
+          "description": "All 63 mutual deliquescence curves at t_k = 285.0 K: mdrh_t(1:63) as update_thermodynamic_constants fills them (drh_mutual). Source: kernels/mosaic_therm_driver at 285 K (chem170_scm/therm64/mdrh, WRF fork earthsciml-instrumented-chem170). Real64 (mdrh_t is real(kind=8), the coefficients binary32); rel 1e-9. Only the table is asserted; the bin is left at its defaults.",
+          "parameter_overrides": {
+            "t_k": 285.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 1
+              },
+              "time": 0.0,
+              "expected": 81.7385244402758,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 2
+              },
+              "time": 0.0,
+              "expected": 74.67411619519407,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 3
+              },
+              "time": 0.0,
+              "expected": 82.41848765279292,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 4
+              },
+              "time": 0.0,
+              "expected": 77.00967985269449,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 5
+              },
+              "time": 0.0,
+              "expected": 80.07710281653999,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 6
+              },
+              "time": 0.0,
+              "expected": 88.07326605958701,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 7
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 8
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 9
+              },
+              "time": 0.0,
+              "expected": 67.09081220289954,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 10
+              },
+              "time": 0.0,
+              "expected": 75.40790536443956,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 11
+              },
+              "time": 0.0,
+              "expected": 71.02667221392039,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 12
+              },
+              "time": 0.0,
+              "expected": 64.67758872162085,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 13
+              },
+              "time": 0.0,
+              "expected": 71.88171585453298,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 14
+              },
+              "time": 0.0,
+              "expected": 62.3214725793805,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 15
+              },
+              "time": 0.0,
+              "expected": 64.68806733506062,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 16
+              },
+              "time": 0.0,
+              "expected": 56.69778330455301,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 17
+              },
+              "time": 0.0,
+              "expected": 71.57756893982946,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 18
+              },
+              "time": 0.0,
+              "expected": 62.32226233313122,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 19
+              },
+              "time": 0.0,
+              "expected": 71.47257801303124,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 20
+              },
+              "time": 0.0,
+              "expected": 61.789297048861044,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 21
+              },
+              "time": 0.0,
+              "expected": 55.847467501946085,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 22
+              },
+              "time": 0.0,
+              "expected": 73.43171390166299,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 23
+              },
+              "time": 0.0,
+              "expected": 68.69844676050707,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 24
+              },
+              "time": 0.0,
+              "expected": 61.521532269587624,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 25
+              },
+              "time": 0.0,
+              "expected": 55.891013446467696,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 26
+              },
+              "time": 0.0,
+              "expected": 76.1217750957735,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 27
+              },
+              "time": 0.0,
+              "expected": 70.39779450986128,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 28
+              },
+              "time": 0.0,
+              "expected": 78.25481555848728,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 29
+              },
+              "time": 0.0,
+              "expected": 61.415614080913656,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 30
+              },
+              "time": 0.0,
+              "expected": 60.793161206565856,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 31
+              },
+              "time": 0.0,
+              "expected": 54.80154648358439,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 32
+              },
+              "time": 0.0,
+              "expected": 70.98153237008955,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 33
+              },
+              "time": 0.0,
+              "expected": 61.44681314247282,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 34
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 35
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 36
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 37
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 38
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 39
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 40
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 41
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 42
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 43
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 44
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 45
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 46
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 47
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 48
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 49
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 50
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 51
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 52
+              },
+              "time": 0.0,
+              "expected": 39.7675805953877,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 53
+              },
+              "time": 0.0,
+              "expected": 72.10915580209894,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 54
+              },
+              "time": 0.0,
+              "expected": 39.85443521737989,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 55
+              },
+              "time": 0.0,
+              "expected": 39.7675805953877,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 56
+              },
+              "time": 0.0,
+              "expected": 72.10915580209894,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 57
+              },
+              "time": 0.0,
+              "expected": 39.85443521737989,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 58
+              },
+              "time": 0.0,
+              "expected": 65.96501157548391,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 59
+              },
+              "time": 0.0,
+              "expected": 65.96501157548391,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 60
+              },
+              "time": 0.0,
+              "expected": 34.18687791958291,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 61
+              },
+              "time": 0.0,
+              "expected": 34.18687791958291,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 62
+              },
+              "time": 0.0,
+              "expected": 36.4650121133227,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 63
+              },
+              "time": 0.0,
+              "expected": 32.649463091463986,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "mdrh_table_driver_300K",
+          "description": "All 63 mutual deliquescence curves at t_k = 300.0 K: mdrh_t(1:63) as update_thermodynamic_constants fills them (drh_mutual). Source: kernels/mosaic_therm_driver at 300 K (chem170_scm/therm64/mdrh, WRF fork earthsciml-instrumented-chem170). Real64 (mdrh_t is real(kind=8), the coefficients binary32); rel 1e-9. Only the table is asserted; the bin is left at its defaults.",
+          "parameter_overrides": {
+            "t_k": 300.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 1
+              },
+              "time": 0.0,
+              "expected": 78.21788436872885,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 2
+              },
+              "time": 0.0,
+              "expected": 60.12483390327543,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 3
+              },
+              "time": 0.0,
+              "expected": 80.77882959632552,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 4
+              },
+              "time": 0.0,
+              "expected": 76.21493547603313,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 5
+              },
+              "time": 0.0,
+              "expected": 74.12621909053996,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 6
+              },
+              "time": 0.0,
+              "expected": 88.11997208888351,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 7
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 8
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 9
+              },
+              "time": 0.0,
+              "expected": 52.09323503402993,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 10
+              },
+              "time": 0.0,
+              "expected": 72.15437136046239,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 11
+              },
+              "time": 0.0,
+              "expected": 58.12318380922079,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 12
+              },
+              "time": 0.0,
+              "expected": 50.34012848883867,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 13
+              },
+              "time": 0.0,
+              "expected": 69.55532427596518,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 14
+              },
+              "time": 0.0,
+              "expected": 52.31083203852177,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 15
+              },
+              "time": 0.0,
+              "expected": 48.13510854868218,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 16
+              },
+              "time": 0.0,
+              "expected": 40.020551700145006,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 17
+              },
+              "time": 0.0,
+              "expected": 67.77717590153043,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 18
+              },
+              "time": 0.0,
+              "expected": 52.44554706243798,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 19
+              },
+              "time": 0.0,
+              "expected": 68.85739814838598,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 20
+              },
+              "time": 0.0,
+              "expected": 47.29561187047511,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 21
+              },
+              "time": 0.0,
+              "expected": 40.603465787600726,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 22
+              },
+              "time": 0.0,
+              "expected": 72.39922226645285,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 23
+              },
+              "time": 0.0,
+              "expected": 66.41475469060242,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 24
+              },
+              "time": 0.0,
+              "expected": 47.708578628487885,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 25
+              },
+              "time": 0.0,
+              "expected": 40.86734759993851,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 26
+              },
+              "time": 0.0,
+              "expected": 75.41108656834695,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 27
+              },
+              "time": 0.0,
+              "expected": 68.11484638511683,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 28
+              },
+              "time": 0.0,
+              "expected": 73.04259625362465,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 29
+              },
+              "time": 0.0,
+              "expected": 51.774769238661975,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 30
+              },
+              "time": 0.0,
+              "expected": 46.086490319576114,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 31
+              },
+              "time": 0.0,
+              "expected": 38.47817173646763,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 32
+              },
+              "time": 0.0,
+              "expected": 67.32280016690493,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 33
+              },
+              "time": 0.0,
+              "expected": 51.81092136958614,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 34
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 35
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 36
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 37
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 38
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 39
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 40
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 41
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 42
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 43
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 44
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 45
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 46
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 47
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 48
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 49
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 50
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 51
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 52
+              },
+              "time": 0.0,
+              "expected": 37.34153631911613,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 53
+              },
+              "time": 0.0,
+              "expected": 70.09342239011312,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 54
+              },
+              "time": 0.0,
+              "expected": 40.31772893536254,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 55
+              },
+              "time": 0.0,
+              "expected": 37.34153631911613,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 56
+              },
+              "time": 0.0,
+              "expected": 70.09342239011312,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 57
+              },
+              "time": 0.0,
+              "expected": 40.31772893536254,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 58
+              },
+              "time": 0.0,
+              "expected": 63.79333923669765,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 59
+              },
+              "time": 0.0,
+              "expected": 63.79333923669765,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 60
+              },
+              "time": 0.0,
+              "expected": 31.577190085081384,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 61
+              },
+              "time": 0.0,
+              "expected": 31.577190085081384,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 62
+              },
+              "time": 0.0,
+              "expected": 35.91022456350038,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 63
+              },
+              "time": 0.0,
+              "expected": 30.90350625407882,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "mdrh_table_driver_315K",
+          "description": "All 63 mutual deliquescence curves at t_k = 315.0 K: mdrh_t(1:63) as update_thermodynamic_constants fills them (drh_mutual). Source: kernels/mosaic_therm_driver at 315 K (chem170_scm/therm64/mdrh, WRF fork earthsciml-instrumented-chem170). Real64 (mdrh_t is real(kind=8), the coefficients binary32); rel 1e-9. Only the table is asserted; the bin is left at its defaults.",
+          "parameter_overrides": {
+            "t_k": 315.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 1
+              },
+              "time": 0.0,
+              "expected": 75.03879958274047,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 2
+              },
+              "time": 0.0,
+              "expected": 39.59596844633052,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 3
+              },
+              "time": 0.0,
+              "expected": 80.19009980556211,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 4
+              },
+              "time": 0.0,
+              "expected": 75.82979058606475,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 5
+              },
+              "time": 0.0,
+              "expected": 68.40264926508098,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 6
+              },
+              "time": 0.0,
+              "expected": 88.71188013015194,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 7
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 8
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 9
+              },
+              "time": 0.0,
+              "expected": 30.176615944532386,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 10
+              },
+              "time": 0.0,
+              "expected": 69.73837640549255,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 11
+              },
+              "time": 0.0,
+              "expected": 37.67558210471179,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 12
+              },
+              "time": 0.0,
+              "expected": 27.49664984375704,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 13
+              },
+              "time": 0.0,
+              "expected": 67.58837555383005,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 14
+              },
+              "time": 0.0,
+              "expected": 38.58153459080495,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 15
+              },
+              "time": 0.0,
+              "expected": 24.373729340200953,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 16
+              },
+              "time": 0.0,
+              "expected": 16.818592590570915,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 17
+              },
+              "time": 0.0,
+              "expected": 63.61548457077629,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 18
+              },
+              "time": 0.0,
+              "expected": 38.54461256547802,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 19
+              },
+              "time": 0.0,
+              "expected": 66.82364166278956,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 20
+              },
+              "time": 0.0,
+              "expected": 24.298265454315697,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 21
+              },
+              "time": 0.0,
+              "expected": 17.860555700019177,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 22
+              },
+              "time": 0.0,
+              "expected": 72.3322122805339,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 23
+              },
+              "time": 0.0,
+              "expected": 64.87363234363147,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 24
+              },
+              "time": 0.0,
+              "expected": 24.865435223517125,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 25
+              },
+              "time": 0.0,
+              "expected": 18.010901942412602,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 26
+              },
+              "time": 0.0,
+              "expected": 75.12137494740045,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 27
+              },
+              "time": 0.0,
+              "expected": 66.29327579065244,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 28
+              },
+              "time": 0.0,
+              "expected": 67.62719958150501,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 29
+              },
+              "time": 0.0,
+              "expected": 38.161012790158566,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 30
+              },
+              "time": 0.0,
+              "expected": 24.657920974677836,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 31
+              },
+              "time": 0.0,
+              "expected": 14.279323731905606,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 32
+              },
+              "time": 0.0,
+              "expected": 63.264456329518,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 33
+              },
+              "time": 0.0,
+              "expected": 38.139883957199345,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 34
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 35
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 36
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 37
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 38
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 39
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 40
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 41
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 42
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 43
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 44
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 45
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 46
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 47
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 48
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 49
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 50
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 51
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 52
+              },
+              "time": 0.0,
+              "expected": 36.762900192323286,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 53
+              },
+              "time": 0.0,
+              "expected": 69.05059974394044,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 54
+              },
+              "time": 0.0,
+              "expected": 41.43589142408882,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 55
+              },
+              "time": 0.0,
+              "expected": 36.762900192323286,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 56
+              },
+              "time": 0.0,
+              "expected": 69.05059974394044,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 57
+              },
+              "time": 0.0,
+              "expected": 41.43589142408882,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 58
+              },
+              "time": 0.0,
+              "expected": 62.952830957686274,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 59
+              },
+              "time": 0.0,
+              "expected": 62.952830957686274,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 60
+              },
+              "time": 0.0,
+              "expected": 30.881451120640122,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 61
+              },
+              "time": 0.0,
+              "expected": 30.881451120640122,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 62
+              },
+              "time": 0.0,
+              "expected": 35.92686096948546,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 63
+              },
+              "time": 0.0,
+              "expected": 30.792292888061638,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "mdrh_table_col_s1",
+          "description": "All 63 mutual deliquescence curves at t_k = 233.0 K: mdrh_t(1:63) as update_thermodynamic_constants fills them (drh_mutual). Source: the chem170 aerosol_phase_state capture, step 1, the table as left by the column's last MOSAIC call (level 59). Real64 (mdrh_t is real(kind=8), the coefficients binary32); rel 1e-9. Only the table is asserted; the bin is left at its defaults.",
+          "parameter_overrides": {
+            "t_k": 233.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 1
+              },
+              "time": 0.0,
+              "expected": 93.71815680628788,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 2
+              },
+              "time": 0.0,
+              "expected": 98.1767274398153,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 3
+              },
+              "time": 0.0,
+              "expected": 94.15570743083708,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 4
+              },
+              "time": 0.0,
+              "expected": 83.83031309372359,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 5
+              },
+              "time": 0.0,
+              "expected": 96.0198550700079,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 6
+              },
+              "time": 0.0,
+              "expected": 93.1544957588651,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 7
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 8
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 9
+              },
+              "time": 0.0,
+              "expected": 94.4165916565471,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 10
+              },
+              "time": 0.0,
+              "expected": 91.3334771802397,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 11
+              },
+              "time": 0.0,
+              "expected": 94.93126043875236,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 12
+              },
+              "time": 0.0,
+              "expected": 92.99362375715282,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 13
+              },
+              "time": 0.0,
+              "expected": 82.61149531691476,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 14
+              },
+              "time": 0.0,
+              "expected": 89.99264179985039,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 15
+              },
+              "time": 0.0,
+              "expected": 97.10370680705091,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 16
+              },
+              "time": 0.0,
+              "expected": 88.75750242633512,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 17
+              },
+              "time": 0.0,
+              "expected": 82.84932229108722,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 18
+              },
+              "time": 0.0,
+              "expected": 82.71152113952121,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 19
+              },
+              "time": 0.0,
+              "expected": 85.4528030407306,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 20
+              },
+              "time": 0.0,
+              "expected": 89.90910124043876,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 21
+              },
+              "time": 0.0,
+              "expected": 85.42449532435421,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 22
+              },
+              "time": 0.0,
+              "expected": 85.75374940566962,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 23
+              },
+              "time": 0.0,
+              "expected": 83.78938605819712,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 24
+              },
+              "time": 0.0,
+              "expected": 87.1663149852393,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 25
+              },
+              "time": 0.0,
+              "expected": 83.98399094780325,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 26
+              },
+              "time": 0.0,
+              "expected": 83.15186036375462,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 27
+              },
+              "time": 0.0,
+              "expected": 81.75634351630259,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 28
+              },
+              "time": 0.0,
+              "expected": 91.51752417451917,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 29
+              },
+              "time": 0.0,
+              "expected": 85.59063785509352,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 30
+              },
+              "time": 0.0,
+              "expected": 88.13987107534922,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 31
+              },
+              "time": 0.0,
+              "expected": 85.25609084523603,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 32
+              },
+              "time": 0.0,
+              "expected": 82.25177201523911,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 33
+              },
+              "time": 0.0,
+              "expected": 81.9485285325718,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 34
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 35
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 36
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 37
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 38
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 39
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 40
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 41
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 42
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 43
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 44
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 45
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 46
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 47
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 48
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 49
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 50
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 51
+              },
+              "time": 0.0,
+              "expected": 10.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 52
+              },
+              "time": 0.0,
+              "expected": 52.62130509239432,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 53
+              },
+              "time": 0.0,
+              "expected": 84.07434951637242,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 54
+              },
+              "time": 0.0,
+              "expected": 43.87159041735549,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 55
+              },
+              "time": 0.0,
+              "expected": 52.62130509239432,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 56
+              },
+              "time": 0.0,
+              "expected": 84.07434951637242,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 57
+              },
+              "time": 0.0,
+              "expected": 43.87159041735549,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 58
+              },
+              "time": 0.0,
+              "expected": 80.43295335448329,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 59
+              },
+              "time": 0.0,
+              "expected": 80.43295335448329,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 60
+              },
+              "time": 0.0,
+              "expected": 49.39480997837745,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 61
+              },
+              "time": 0.0,
+              "expected": 49.39480997837745,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 62
+              },
+              "time": 0.0,
+              "expected": 39.4456765745299,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "mdrh_table",
+              "coords": {
+                "mdrhcurve": 63
+              },
+              "time": 0.0,
+              "expected": 39.57523076340658,
               "tolerance": {
                 "rel": 1e-09,
                 "abs": 0.0
