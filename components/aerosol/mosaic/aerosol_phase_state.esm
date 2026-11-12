@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "MosaicAerosolPhaseState",
-    "description": "MOSAIC's phase state of ONE size bin: SUBROUTINE aerosol_phase_state of chem/module_mosaic_therm.F (WRF v4.8.0), with the branch decisions of SUBROUTINE mesa, do_full_deliquescence / adjust_liquid_aerosol / adjust_solid_aerosol, calculate_kelvin, drh_mutual and aerosol_water_up. ASTEM calls it for every bin at the start of each of its sub-steps, after conform_electrolytes has rebuilt the bin's total electrolytes; it decides whether the bin is solid, liquid or mixed, how much water it holds, and the Kelvin factors that raise the equilibrium vapour pressures of HNO3, HCl, NH3 over a small droplet.\n\nINPUTS a consumer supplies: rh_pc, t_k, the bin's number concentration, the total species and the total electrolytes (as conform_electrolytes left them), and water_a_hyst -- the water the bin carried on the upper hysteresis leg at the end of the previous MOSAIC step (0 on the lower leg).\n\nDRY MASS AND VOLUME. sum_a A_a mw_a (and A_a mw_a / rho_a), plus the charge-balance H+ aer_H = (2 SO4 + NO3 + Cl + MSA + 2 CO3) - (2 Ca + Na + NH4), which the Fortran adds as nmol straight into the ng and ncc sums (an implied 1 g/mol and 1 g/cm3, written as such in mosaic_phase_parameters.esm), times 1e-15.\n\nTHE BRANCH (SUBROUTINE mesa, template mesa_path), tried in this order at the current water activity x: (1) x < crh = 0.35 and X_T > 1 or X_T < 0 and neither Ca(NO3)2 nor CaCl2 above ptol_mol_astem = 0.01 mol percent: effloresced, ALL SOLID. (2) water_a_hyst > 0.5 water_a_up, where water_a_up is the ZSR water of the totals at a fixed a_w = 0.6 without the kappa term (mhyst_method = uporlo_waterhyst): the upper hysteresis leg, FULLY LIQUID, water = ZSR water of the TOTAL electrolytes at x. (6) 0 < X_T < 1, the excess-sulfate domain: handed to mesa_ptc. (4) no salt above ptol_mol_astem: ALL SOLID -- which includes a pure H2SO4 or a purely carbonaceous bin on the lower leg. (5) x*100 below the mutual deliquescence RH of the salts present (jsulf_poor/jsulf_rich of the salt code, drh_mutual's cubic in T plus 1, or 10% for Ca(NO3)2/CaCl2 mixtures): ALL SOLID. (6) otherwise mesa_ptc. MESA_PTC, the pseudo-transient solid-liquid equilibrium solver (mixed phases), IS NOT TRANSCRIBED HERE: where the branch is 6, only `path` (and the inputs-only water_up and mass_dry) mean anything. The Fortran's step-2 'negative water' exit cannot occur with non-negative amounts and is omitted.\n\nTHE KELVIN EQUILIBRIUM. On the liquid branch the wet volume V = vol_dry + 1e-3 W(x), the volume-mean diameter Dp = (6 V/(N pi))^(1/3), the solution tension sigma = sigma_water + 49 (1 - x), and K = 1 + t(1 + t/2 (1 + t/3)) with t = 72 sigma/(R T Dp) (R = 8.3144e7) give the water activity the curved surface allows, x' = rh_pc 0.01/K(x) (`aw_next`). The bin's water activity is the FIXED POINT x = x'(x): written here as its residual `kelvin_residual` = aw0/K(x) - x, a function of the state x = `ah2o_a`, which is an input. Every other output is evaluated at that x. aerosol_phase_state finds the fixed point by plain fixed-point iteration from x = aw0, stopping when |x' - x|/x <= 1e-2 (1e-6 above 99% RH) or after ten updates; that iteration, its tolerance, its cap and its pass counter are a numerical solver, not physics, and are not written here (CLAUDE.md: .esm files never implement a numerical solver). EarthSciIntegrator solves kelvin_residual = 0 for ah2o_a (a scalar `solve` node; see data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md, which also measures how far the Fortran's 1e-2 stop leaves it from the root). Because the branch is decided at x, a bin just above crh can be liquid at aw0 and solid at aw0/K(aw0) < crh: then the residual has no root (liquid gives K > 1 and wants x < crh; solid gives K = 1 and wants x = aw0), and the Fortran's answer -- solid, at the lowered x, with the first iterate's K left in kelvin(ibin) -- is an artefact of where its iteration stopped.\n\nOUTPUTS, at the state ah2o_a. aw_next and kelvin_residual, path, state (jaerosolstate; 0 where mesa_ptc decides), jhyst (jhyst_leg), water, mass/vol wet, dpmv, sigma_soln, kelvin, kel(gas) for H2SO4, HNO3, HCl, NH3, MSA (t = 4 sigma vbar/(R T Dp), 1 when solid), and the solid/liquid partition of species and electrolytes (liquid: all but CaSO4 and CaCO3 dissolve, Ca++ in the liquid is the Ca(NO3)2 + CaCl2; solid: everything stays solid). dpmv, sigma_soln, mass_wet and vol_wet are meaningful on the liquid branch only: on a solid exit the Fortran leaves whatever the previous pass, or the previous call, put there.\n\nFORTRAN_BUGS B29: sigma_water = 0.2358 tau^1.256 (1 - 0.625 tau) is the IAPWS surface tension of water in N/m (about 0.072), and calculate_kelvin adds it to 49 (1 - a_w), a term in dyn/cm; pure water's 72 dyn/cm enters as 0.072. The solution tension, and so every Kelvin factor, is too small: at 290 K and a_w = 0.6 it is 19.7 instead of 93.3 dyn/cm (every Kelvin term 4.7 times too small), and toward a_w = 1 it falls to 0.073 instead of 73 (a thousandfold). Reproduced as written; fixing it fails 65 assertions.\n\nPRECISION. Double-precision arithmetic with the default-real literals at their binary32 values (mosaic_phase_parameters.esm): 0.35, 0.01, 0.6, 1e-15, 1e-3, 3.1415926, 1./3. (formed in REAL), 647.15, 0.2358, 1.256, 1e-2, 1e-6. rh_pc itself is 100*relhumclm formed in default REAL.\n\nTESTS AND COVERAGE. Eleven calls from the chem170 aerosol_phase_state capture (dumps/chem170_mosaic_phase, WRF fork e277517c; reference namelist unchanged, fields shared with dumps/chem170_mosaic_therm bit-identical): the upper leg with one and two Kelvin passes, efflorescence below crh, lower-leg bins below their mutual DRH, and three mesa_ptc hand-offs (mass-converged, flux-converged and NOT converged in 80 iterations). Of the column's 15104 recorded calls, 6892 take the upper leg, 446 effloresce, 3692 sit below their mutual DRH, and 4074 go to mesa_ptc (206 of them unconverged); 1020 need a second Kelvin pass and none a third. A sweep of 480 non-mesa_ptc calls sampled across all 16 steps (not kept as tests) agreed bit for bit in 38055 of 39264 assertions and to 5.4e-15 relative at worst (water). Plus 14 hand-specified bins run through WRF's own compiled aerosol_phase_state (kernels/mosaic_therm_driver mode 2; chem170_scm/therm64/make_cases.py) for what the column does not show: liquid at 0.30 (Ca blocks efflorescence), 0.90 and 0.995 (the 1e-6 tolerance, three passes); efflorescence on the SECOND pass; the no-salt solids (H2SO4, carbon); ammonium sulfate and NaCl + NH4NO3 below their DRH. Every call is evaluated at the water activity the Fortran's Kelvin iteration STOPPED at (its final ah2o_a, an input here), where kelvin_residual is the update its tolerance declined to apply; a call that took a second pass is evaluated as well at its FIRST iterate aw0, where aw_next must be the second iterate the Fortran moved to (and, for the hand bin that effloresces on its second pass, kelvin is the first iterate's K the Fortran leaves in kelvin(ibin)). The 0.995 bin's middle iterate is not taped, so it is tested at its final iterate only. All at rel 1e-9 (the residual, a difference of two O(1) numbers, with an absolute floor of 1e-14), integer flags exactly. The Fortran's stopping point is NOT a target: data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md measures it against the converged root (median 1.9e-3, worst 1.0e-2 relative in ah2o_a; 1.6e-2 in the water). Mutation-checked (2026-11-12, after the iteration was removed): fixing B29 fails 78, aw_next formed from ah2o_a instead of aw0 5, K = 1 everywhere 24, a second-order Kelvin series 57, the residual's sign 18. (Before the rework, on the driver bins: crh = 0.30 failed 14, the double-precision pi 9 and 1/3 44, dropping aer_H from the dry mass 14.) The 63 mutual-DRH curves are pinned as a whole table (mdrh_table, the drh_mutual cubic at t_k) at six temperatures from 240 to 315 K through the driver (chem170_scm/therm64/mdrh) and at the column's top-level temperature from the capture, 63 assertions each (tools/fill_mosaic_mdrh_table_tests.py); perturbing any curve's leading coefficient by 1e-4 fails all seven. NOT covered: a bin whose ZSR water is exactly zero on the upper leg (aerosol_water then flags it all solid from inside the liquid branch).",
+    "description": "MOSAIC's phase state of ONE size bin: SUBROUTINE aerosol_phase_state of chem/module_mosaic_therm.F (WRF v4.8.0), with the branch decisions of SUBROUTINE mesa, do_full_deliquescence / adjust_liquid_aerosol / adjust_solid_aerosol, calculate_kelvin, drh_mutual and aerosol_water_up. ASTEM calls it for every bin at the start of each of its sub-steps, after conform_electrolytes has rebuilt the bin's total electrolytes; it decides whether the bin is solid, liquid or mixed, how much water it holds, and the Kelvin factors that raise the equilibrium vapour pressures of HNO3, HCl, NH3 over a small droplet.\n\nINPUTS a consumer supplies: rh_pc, t_k, the bin's number concentration, the total species and the total electrolytes (as conform_electrolytes left them), and water_a_hyst -- the water the bin carried on the upper hysteresis leg at the end of the previous MOSAIC step (0 on the lower leg).\n\nDRY MASS AND VOLUME. sum_a A_a mw_a (and A_a mw_a / rho_a), plus the charge-balance H+ aer_H = (2 SO4 + NO3 + Cl + MSA + 2 CO3) - (2 Ca + Na + NH4), which the Fortran adds as nmol straight into the ng and ncc sums (an implied 1 g/mol and 1 g/cm3, written as such in mosaic_phase_parameters.esm), times 1e-15.\n\nTHE BRANCH (SUBROUTINE mesa, template mesa_path), tried in this order at the current water activity x: (1) x < crh = 0.35 and X_T > 1 or X_T < 0 and neither Ca(NO3)2 nor CaCl2 above ptol_mol_astem = 0.01 mol percent: effloresced, ALL SOLID. (2) water_a_hyst > 0.5 water_a_up, where water_a_up is the ZSR water of the totals at a fixed a_w = 0.6 without the kappa term (mhyst_method = uporlo_waterhyst): the upper hysteresis leg, FULLY LIQUID, water = ZSR water of the TOTAL electrolytes at x. (6) 0 < X_T < 1, the excess-sulfate domain: handed to mesa_ptc. (4) no salt above ptol_mol_astem: ALL SOLID -- which includes a pure H2SO4 or a purely carbonaceous bin on the lower leg. (5) x*100 below the mutual deliquescence RH of the salts present (jsulf_poor/jsulf_rich of the salt code, drh_mutual's cubic in T plus 1, or 10% for Ca(NO3)2/CaCl2 mixtures): ALL SOLID. (6) otherwise mesa_ptc. MESA_PTC, the pseudo-transient solid-liquid equilibrium solver (mixed phases), IS NOT TRANSCRIBED HERE: where the branch is 6, only `path` (and the inputs-only water_up and mass_dry) mean anything. The Fortran's step-2 'negative water' exit cannot occur with non-negative amounts and is omitted.\n\nTHE KELVIN EQUILIBRIUM. On the liquid branch the wet volume V = vol_dry + 1e-3 W(x), the volume-mean diameter Dp = (6 V/(N pi))^(1/3), the solution tension sigma = sigma_water + 49 (1 - x), and K = 1 + t(1 + t/2 (1 + t/3)) with t = 72 sigma/(R T Dp) (R = 8.3144e7) give the water activity the curved surface allows, x' = rh_pc 0.01/K(x) (`aw_next`). The bin's water activity is the FIXED POINT x = x'(x): written here as its residual `kelvin_residual` = aw0/K(x) - x, a function of the state x = `ah2o_a`, which is an input. Every other output is evaluated at that x. aerosol_phase_state finds the fixed point by plain fixed-point iteration from x = aw0, stopping when |x' - x|/x <= 1e-2 (1e-6 above 99% RH) or after ten updates; that iteration, its tolerance, its cap and its pass counter are a numerical solver, not physics, and are not written here (CLAUDE.md: .esm files never implement a numerical solver). EarthSciIntegrator solves kelvin_residual = 0 for ah2o_a (a scalar `solve` node; see data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md, which also measures how far the Fortran's 1e-2 stop leaves it from the root). Because the branch is decided at x, a bin just above crh can be liquid at aw0 and solid at aw0/K(aw0) < crh: then the residual has no root (liquid gives K > 1 and wants x < crh; solid gives K = 1 and wants x = aw0), and the Fortran's answer -- solid, at the lowered x, with the first iterate's K left in kelvin(ibin) -- is an artefact of where its iteration stopped.\n\nOUTPUTS, at the state ah2o_a. aw_next and kelvin_residual, path, state (jaerosolstate; 0 where mesa_ptc decides), jhyst (jhyst_leg), water, mass/vol wet, dpmv, sigma_soln, kelvin, kel(gas) for H2SO4, HNO3, HCl, NH3, MSA (t = 4 sigma vbar/(R T Dp), 1 when solid), and the solid/liquid partition of species and electrolytes (liquid: all but CaSO4 and CaCO3 dissolve, Ca++ in the liquid is the Ca(NO3)2 + CaCl2; solid: everything stays solid). dpmv, sigma_soln, mass_wet and vol_wet are meaningful on the liquid branch only: on a solid exit the Fortran leaves whatever the previous pass, or the previous call, put there.\n\nFORTRAN_BUGS B29: sigma_water = 0.2358 tau^1.256 (1 - 0.625 tau) is the IAPWS surface tension of water in N/m (about 0.072), and calculate_kelvin adds it to 49 (1 - a_w), a term in dyn/cm; pure water's 72 dyn/cm enters as 0.072. The solution tension, and so every Kelvin factor, is too small: at 290 K and a_w = 0.6 it is 19.7 instead of 93.3 dyn/cm (every Kelvin term 4.7 times too small), and toward a_w = 1 it falls to 0.073 instead of 73 (a thousandfold). Reproduced as written; fixing it fails 65 assertions.\n\nPRECISION. Double-precision arithmetic with the default-real literals at their binary32 values (mosaic_phase_parameters.esm): 0.35, 0.01, 0.6, 1e-15, 1e-3, 3.1415926, 1./3. (formed in REAL), 647.15, 0.2358, 1.256, 1e-2, 1e-6. rh_pc itself is 100*relhumclm formed in default REAL.\n\nTESTS AND COVERAGE. Eleven calls from the chem170 aerosol_phase_state capture (dumps/chem170_mosaic_phase, WRF fork e277517c; reference namelist unchanged, fields shared with dumps/chem170_mosaic_therm bit-identical): the upper leg with one and two Kelvin passes, efflorescence below crh, lower-leg bins below their mutual DRH, and three mesa_ptc hand-offs (mass-converged, flux-converged and NOT converged in 80 iterations). Of the column's 15104 recorded calls, 6892 take the upper leg, 446 effloresce, 3692 sit below their mutual DRH, and 4074 go to mesa_ptc (206 of them unconverged); 1020 need a second Kelvin pass and none a third. A sweep of 480 non-mesa_ptc calls sampled across all 16 steps (not kept as tests) agreed bit for bit in 38055 of 39264 assertions and to 5.4e-15 relative at worst (water). Plus 14 hand-specified bins run through WRF's own compiled aerosol_phase_state (kernels/mosaic_therm_driver mode 2; chem170_scm/therm64/make_cases.py) for what the column does not show: liquid at 0.30 (Ca blocks efflorescence), 0.90 and 0.995 (the 1e-6 tolerance, three passes); efflorescence on the SECOND pass; the no-salt solids (H2SO4, carbon); ammonium sulfate and NaCl + NH4NO3 below their DRH. Every call is evaluated at the water activity the Fortran's Kelvin iteration STOPPED at (its final ah2o_a, an input here), where kelvin_residual is the update its tolerance declined to apply; a call that took a second pass is evaluated as well at its FIRST iterate aw0, where aw_next must be the second iterate the Fortran moved to (and, for the hand bin that effloresces on its second pass, kelvin is the first iterate's K the Fortran leaves in kelvin(ibin)). The 0.995 bin's middle iterate is not taped, so it is tested at its final iterate only. All at rel 1e-9 (the residual, a difference of two O(1) numbers, with an absolute floor of 1e-14), integer flags exactly. The Fortran's stopping point is NOT a target: data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md measures it against the converged root (median 1.9e-3, worst 1.0e-2 relative in ah2o_a; 1.6e-2 in the water). Mutation-checked (2026-11-12, after the iteration was removed): fixing B29 fails 78, aw_next formed from ah2o_a instead of aw0 5, K = 1 everywhere 24, a second-order Kelvin series 57, the residual's sign 18. (Before the rework, on the driver bins: crh = 0.30 failed 14, the double-precision pi 9 and 1/3 44, dropping aer_H from the dry mass 14.) The 63 mutual-DRH curves are pinned as a whole table (mdrh_table, the drh_mutual cubic at t_k) at six temperatures from 240 to 315 K through the driver (chem170_scm/therm64/mdrh) and at the column's top-level temperature from the capture, 63 assertions each (tools/fill_mosaic_mdrh_table_tests.py); perturbing any curve's leading coefficient by 1e-4 fails all seven. NOT covered: a bin whose ZSR water is exactly zero on the upper leg (aerosol_water then flags it all solid from inside the liquid branch). THE ROOT (2026-11-12): five liquid upper-leg column calls re-solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance tightened to 1e-13 (chem170_scm/solver_tol, out_kel_tight), tests kelvin_root_*: at that root kelvin_residual is zero within 2e-13 absolute (twice the tightened stopping test) and K, the water and aw_next at rel 1e-9. They include the call farthest from its root at the model's own setting (1.0e-2 in ah2o_a) and the driest (36.5% RH); a residual shifted by 1e-12 fails all five. couplings/mosaic_kelvin_equilibrium.esm states the root as an algebraic problem (ah2o_a an algebraic unknown, `0 ~ kelvin_residual`) with its run configuration beside it. Since 2026-11-12 the n-ary `and`/`or` of crh_ok, mdrh_table, elec_l, aer_l and aer_s are written as nested binary ones: the be1fafe6d binary evaluates only the first two arguments of an n-ary `and`/`or` (EarthSciAST main 3e1f9bb2f evaluates all), so before then the third and later conditions were dead; no assertion moved when they came alive. Surface tensions are declared mN/m, exactly dyn/cm, which `esm validate` does not parse.",
     "authors": [
       "EqWeFiC"
     ],
@@ -477,7 +477,7 @@
         },
         "sigma_water": {
           "type": "unknown",
-          "units": "dyn/cm",
+          "units": "mN/m",
           "description": "Surface tension of pure water as update_thermodynamic_constants forms it, 0.2358 tau^1.256 (1 - 0.625 tau), tau = (647.15 - T)/647.15. THE FORMULA GIVES N/m (about 0.072) and calculate_kelvin adds it to a term in dyn/cm (FORTRAN_BUGS B29); reproduced as written, so this is 1000 times too small for the dyn/cm it is used as."
         },
         "aw0": {
@@ -527,7 +527,7 @@
         },
         "sigma_soln": {
           "type": "unknown",
-          "units": "dyn/cm",
+          "units": "mN/m",
           "description": "Solution surface tension at the final water activity."
         },
         "kelvin": {
@@ -1164,35 +1164,40 @@
                 "op": "and",
                 "args": [
                   {
-                    "op": "or",
+                    "op": "and",
                     "args": [
                       {
-                        "op": ">",
+                        "op": "or",
                         "args": [
-                          "x_t",
-                          1.0
+                          {
+                            "op": ">",
+                            "args": [
+                              "x_t",
+                              1.0
+                            ]
+                          },
+                          {
+                            "op": "<",
+                            "args": [
+                              "x_t",
+                              0.0
+                            ]
+                          }
                         ]
                       },
                       {
-                        "op": "<",
+                        "op": "<=",
                         "args": [
-                          "x_t",
-                          0.0
+                          {
+                            "op": "index",
+                            "args": [
+                              "epercent",
+                              13
+                            ]
+                          },
+                          "pp.ptol"
                         ]
                       }
-                    ]
-                  },
-                  {
-                    "op": "<=",
-                    "args": [
-                      {
-                        "op": "index",
-                        "args": [
-                          "epercent",
-                          13
-                        ]
-                      },
-                      "pp.ptol"
                     ]
                   },
                   {
@@ -1330,17 +1335,22 @@
                   "op": "or",
                   "args": [
                     {
-                      "op": "==",
+                      "op": "or",
                       "args": [
-                        "j",
-                        7
-                      ]
-                    },
-                    {
-                      "op": "==",
-                      "args": [
-                        "j",
-                        8
+                        {
+                          "op": "==",
+                          "args": [
+                            "j",
+                            7
+                          ]
+                        },
+                        {
+                          "op": "==",
+                          "args": [
+                            "j",
+                            8
+                          ]
+                        }
                       ]
                     },
                     {
@@ -1785,17 +1795,22 @@
                   "op": "and",
                   "args": [
                     {
-                      "op": ">",
+                      "op": "and",
                       "args": [
-                        "liquid",
-                        0.5
-                      ]
-                    },
-                    {
-                      "op": "!=",
-                      "args": [
-                        "e",
-                        21
+                        {
+                          "op": ">",
+                          "args": [
+                            "liquid",
+                            0.5
+                          ]
+                        },
+                        {
+                          "op": "!=",
+                          "args": [
+                            "e",
+                            21
+                          ]
+                        }
                       ]
                     },
                     {
@@ -1913,31 +1928,46 @@
                           "op": "or",
                           "args": [
                             {
-                              "op": "==",
+                              "op": "or",
                               "args": [
-                                "a",
-                                2
-                              ]
-                            },
-                            {
-                              "op": "==",
-                              "args": [
-                                "a",
-                                3
-                              ]
-                            },
-                            {
-                              "op": "==",
-                              "args": [
-                                "a",
-                                4
-                              ]
-                            },
-                            {
-                              "op": "==",
-                              "args": [
-                                "a",
-                                5
+                                {
+                                  "op": "or",
+                                  "args": [
+                                    {
+                                      "op": "or",
+                                      "args": [
+                                        {
+                                          "op": "==",
+                                          "args": [
+                                            "a",
+                                            2
+                                          ]
+                                        },
+                                        {
+                                          "op": "==",
+                                          "args": [
+                                            "a",
+                                            3
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "==",
+                                      "args": [
+                                        "a",
+                                        4
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "==",
+                                  "args": [
+                                    "a",
+                                    5
+                                  ]
+                                }
                               ]
                             },
                             {
@@ -2079,31 +2109,46 @@
                               "op": "or",
                               "args": [
                                 {
-                                  "op": "==",
+                                  "op": "or",
                                   "args": [
-                                    "a",
-                                    2
-                                  ]
-                                },
-                                {
-                                  "op": "==",
-                                  "args": [
-                                    "a",
-                                    3
-                                  ]
-                                },
-                                {
-                                  "op": "==",
-                                  "args": [
-                                    "a",
-                                    4
-                                  ]
-                                },
-                                {
-                                  "op": "==",
-                                  "args": [
-                                    "a",
-                                    5
+                                    {
+                                      "op": "or",
+                                      "args": [
+                                        {
+                                          "op": "or",
+                                          "args": [
+                                            {
+                                              "op": "==",
+                                              "args": [
+                                                "a",
+                                                2
+                                              ]
+                                            },
+                                            {
+                                              "op": "==",
+                                              "args": [
+                                                "a",
+                                                3
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "==",
+                                          "args": [
+                                            "a",
+                                            4
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "==",
+                                      "args": [
+                                        "a",
+                                        5
+                                      ]
+                                    }
                                   ]
                                 },
                                 {
@@ -24483,6 +24528,1006 @@
               "variable": "mass_dry",
               "time": 0.0,
               "expected": 3.425000012424166e-13,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "kelvin_root_s639_lev43_bin1_c1",
+          "description": "THE KELVIN ROOT, not a visited iterate: chem170 column step 639 level 43 section 1 (slot 1), a liquid upper-leg bin at relative humidity 36.4948%, solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance tightened from 1e-2 to 1e-13 (ESM_KEL_TOL; chem170_scm/solver_tol, out_kel_tight), 7 updates (the model's own setting took 2, and its ah2o_a is 2.46e-04 relative from this root). Evaluated at the root x: the residual aw0/K(x) - x is zero within 2e-13 absolute (twice the tightened stopping test |aw0/K(x) - x| <= 1e-13 x), and K, the water and aw_next = x at rel 1e-9. This is the algebraic equation the EarthSciIntegrator `solve` (newton) is given (couplings/mosaic_kelvin_equilibrium.esm).",
+          "parameter_overrides": {
+            "rh_pc": 36.49479293823242,
+            "t_k": 262.1957702636719,
+            "num": 1680.4682502113428,
+            "aer_t": [
+              1.0469319021033872,
+              0.0,
+              0.0,
+              0.1633309398992082,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.7626499319251243e-11,
+              1.5537478264134376e-15,
+              1.8979038465836648e-06,
+              0.004620218740872758,
+              0.23101154017290748
+            ],
+            "elec": [
+              0.0,
+              0.0,
+              0.1633309398992082,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.7626499319251243e-11,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.8836009621865508,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.5537478264134376e-15,
+              0.0
+            ],
+            "water_hyst": 1.521917771712938e-10,
+            "ah2o_a": 0.35820659383316533
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 2e-13
+              }
+            },
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "aw_next",
+              "time": 0.0,
+              "expected": 0.35820659383316533,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0188196630325317,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 9.254182057563906e-11,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "kelvin_root_s1080_lev36_bin4_c2",
+          "description": "THE KELVIN ROOT, not a visited iterate: chem170 column step 1080 level 36 section 4 (slot 2), a liquid upper-leg bin at relative humidity 49.2298%, solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance tightened from 1e-2 to 1e-13 (ESM_KEL_TOL; chem170_scm/solver_tol, out_kel_tight), 5 updates (the model's own setting took 1, and its ah2o_a is 1.57e-03 relative from this root). Evaluated at the root x: the residual aw0/K(x) - x is zero within 2e-13 absolute (twice the tightened stopping test |aw0/K(x) - x| <= 1e-13 x), and K, the water and aw_next = x at rel 1e-9. This is the algebraic equation the EarthSciIntegrator `solve` (newton) is given (couplings/mosaic_kelvin_equilibrium.esm).",
+          "parameter_overrides": {
+            "rh_pc": 49.22983932495117,
+            "t_k": 273.8937683105469,
+            "num": 4.533022309194081,
+            "aer_t": [
+              1.7774082635269952,
+              0.0,
+              0.0,
+              1.7529116068255381,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00023539365203066292,
+              1.913048005493298e-15,
+              1.3902729201034574,
+              0.3350185350574863,
+              16.751413733856882
+            ],
+            "elec": [
+              0.0,
+              0.0,
+              1.7529116068255381,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.00023539365203066292,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.024261263049424553,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.913048005493298e-15,
+              0.0
+            ],
+            "water_hyst": 1.3893009961122626e-10,
+            "ah2o_a": 0.4915266596829867
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 2e-13
+              }
+            },
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "aw_next",
+              "time": 0.0,
+              "expected": 0.4915266596829867,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0015700523005293,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 9.49516075557655e-11,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "kelvin_root_s689_lev16_bin2_c1",
+          "description": "THE KELVIN ROOT, not a visited iterate: chem170 column step 689 level 16 section 2 (slot 1), a liquid upper-leg bin at relative humidity 60.7427%, solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance tightened from 1e-2 to 1e-13 (ESM_KEL_TOL; chem170_scm/solver_tol, out_kel_tight), 6 updates (the model's own setting took 1, and its ah2o_a is 3.52e-03 relative from this root). Evaluated at the root x: the residual aw0/K(x) - x is zero within 2e-13 absolute (twice the tightened stopping test |aw0/K(x) - x| <= 1e-13 x), and K, the water and aw_next = x at rel 1e-9. This is the algebraic equation the EarthSciIntegrator `solve` (newton) is given (couplings/mosaic_kelvin_equilibrium.esm).",
+          "parameter_overrides": {
+            "rh_pc": 60.7426643371582,
+            "t_k": 296.9211730957031,
+            "num": 33.47540539400393,
+            "aer_t": [
+              0.37264362190212635,
+              0.0,
+              0.0,
+              0.20063656126807142,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.1028974038540165e-08,
+              4.185424147706349e-15,
+              0.000448138239173749,
+              0.027592329787552456,
+              1.3796170180777645
+            ],
+            "elec": [
+              0.0,
+              0.0,
+              0.20063656126807142,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.1028974038540165e-08,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.1720070496050767,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              4.185424147706349e-15,
+              0.0
+            ],
+            "water_hyst": 4.26371574440471e-11,
+            "ah2o_a": 0.6052964108193232
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 2e-13
+              }
+            },
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "aw_next",
+              "time": 0.0,
+              "expected": 0.6052964108193232,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0035192988710369,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 4.322848717818103e-11,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "kelvin_root_s1621_lev51_bin1_c1",
+          "description": "THE KELVIN ROOT, not a visited iterate: chem170 column step 1621 level 51 section 1 (slot 1), a liquid upper-leg bin at relative humidity 64.8699%, solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance tightened from 1e-2 to 1e-13 (ESM_KEL_TOL; chem170_scm/solver_tol, out_kel_tight), 8 updates (the model's own setting took 1, and its ah2o_a is 1.03e-02 relative from this root). Evaluated at the root x: the residual aw0/K(x) - x is zero within 2e-13 absolute (twice the tightened stopping test |aw0/K(x) - x| <= 1e-13 x), and K, the water and aw_next = x at rel 1e-9. This is the algebraic equation the EarthSciIntegrator `solve` (newton) is given (couplings/mosaic_kelvin_equilibrium.esm).",
+          "parameter_overrides": {
+            "rh_pc": 64.86986541748047,
+            "t_k": 236.56304931640625,
+            "num": 1142.934902563924,
+            "aer_t": [
+              0.6766807532584961,
+              0.0,
+              0.0,
+              0.08161184543378834,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.6007222307297033e-11,
+              1.0657301311105969e-15,
+              1.7235167879565953e-06,
+              0.004195567868768749,
+              0.20978355999177722
+            ],
+            "elec": [
+              0.0,
+              0.0,
+              0.08161184543378834,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.6007222307297033e-11,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.5950689078086995,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0657301311105969e-15,
+              0.0
+            ],
+            "water_hyst": 1.0034227508429539e-10,
+            "ah2o_a": 0.6420923884102175
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 2e-13
+              }
+            },
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "aw_next",
+              "time": 0.0,
+              "expected": 0.6420923884102175,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0102886303969674,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 1.1032295617361309e-10,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            }
+          ]
+        },
+        {
+          "id": "kelvin_root_s1621_lev46_bin5_c2",
+          "description": "THE KELVIN ROOT, not a visited iterate: chem170 column step 1621 level 46 section 5 (slot 2), a liquid upper-leg bin at relative humidity 77.5898%, solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance tightened from 1e-2 to 1e-13 (ESM_KEL_TOL; chem170_scm/solver_tol, out_kel_tight), 5 updates (the model's own setting took 1, and its ah2o_a is 3.24e-04 relative from this root). Evaluated at the root x: the residual aw0/K(x) - x is zero within 2e-13 absolute (twice the tightened stopping test |aw0/K(x) - x| <= 1e-13 x), and K, the water and aw_next = x at rel 1e-9. This is the algebraic equation the EarthSciIntegrator `solve` (newton) is given (couplings/mosaic_kelvin_equilibrium.esm).",
+          "parameter_overrides": {
+            "rh_pc": 77.58975982666016,
+            "t_k": 254.81651306152344,
+            "num": 0.5883049512355853,
+            "aer_t": [
+              1.7639196838336237,
+              0.0,
+              0.0,
+              1.7580421330966403,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0077877169082493074,
+              1.388256785729358e-15,
+              17.830019775182965,
+              0.33740276610735404,
+              16.86880424216007
+            ],
+            "elec": [
+              0.0,
+              0.0,
+              1.7580421330966403,
+              0.0,
+              0.0,
+              0.0,
+              0.0019101661712671563,
+              0.0,
+              0.003967384565714995,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.388256785729358e-15,
+              0.0
+            ],
+            "water_hyst": 1.3619259430402417e-10,
+            "ah2o_a": 0.7756464613772378
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "kelvin_residual",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 2e-13
+              }
+            },
+            {
+              "variable": "path",
+              "time": 0.0,
+              "expected": 2.0,
+              "tolerance": {
+                "rel": 0.0,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "aw_next",
+              "time": 0.0,
+              "expected": 0.7756464613772378,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "kelvin",
+              "time": 0.0,
+              "expected": 1.0003237551632167,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 0.0
+              }
+            },
+            {
+              "variable": "water",
+              "time": 0.0,
+              "expected": 2.6909127748664905e-10,
               "tolerance": {
                 "rel": 1e-09,
                 "abs": 0.0

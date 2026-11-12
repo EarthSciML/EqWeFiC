@@ -21,6 +21,9 @@ Samples are chosen to cover branches (the census keys below), first occurrence i
 fixed file order, so the selection is deterministic.
 
   fill_mosaic_mesa_tests.py <data/eqwefic/chem170_scm/mesa64>
+
+Plus, when <mesa64>/tight/tight.tape.gz exists, tests at CONVERGED states (mesa_ptc run to rtol 1e-10 by the
+tolerance-study build, mesa64/make_tight_cases.py): the rate zero and g in complementarity with E_s.
 """
 import gzip, json, os, sys, glob
 import numpy as np
@@ -193,6 +196,19 @@ def rate_expected(c, r):
     return sat, phi, flux
 
 
+def g_expected(c, r):
+    """g, the equilibrium residual paired with E_s: S - 1 where MOSAIC lets the salt exchange (and the liquid
+    holds water), 0 where its own switch-offs hold -- the taped flux without the complementarity switch-off."""
+    fl, th = r['flux'], r['therm']
+    ca = th['ions_l'][7]
+    g = np.zeros(NS)
+    if th['water'] > 0:
+        for s in range(NS):
+            off = s in (12, 13) or (ca > 0 and (fl['frac_l'][s] < np.float32(0.01) or c['entry']['jsalt_present'][s] == 0))
+            g[s] = 0.0 if off else fl['sat'][s] - 1.0
+    return g
+
+
 def step_test(tid, why, src, c, it, r):
     e, t, th, fl = c['entry'], r['top'], r['therm'], r['flux']
     scale = float(np.max(np.abs(e['ions_t'])))  # largest total species amount of the bin
@@ -212,8 +228,9 @@ def step_test(tid, why, src, c, it, r):
     for k, x in enumerate(sp(t['ions_l'])):
         put(A, 'a_l_state', x, {'sp': k + 1}, ab=fa)
     sat, phi, flux = rate_expected(c, r)
+    g = g_expected(c, r)
     for s in range(NS):
-        for v, x in (('sat', sat), ('phi', phi), ('flux', flux), ('frac_l', fl['frac_l'])):
+        for v, x in (('sat', sat), ('phi', phi), ('flux', flux), ('g', g), ('frac_l', fl['frac_l'])):
             put(A, v, x[s], {'salt': s + 1})
     snap = snapped(r)
     if not snap:
@@ -270,7 +287,7 @@ def pass_test(tid, why, src, c, it, r):
     for s in range(NS):
         if s != 7:  # Na3H(SO4)2: the tape holds it after mesa_flux_salt zeroes it; Act returns the MTEM value
             put(A, 'Act.activity', th['activity'][s], {'el': s + 1})
-        for v, x in (('Eq.sat', sat), ('Eq.phi', phi), ('Eq.flux', flux)):
+        for v, x in (('Eq.sat', sat), ('Eq.phi', phi), ('Eq.flux', flux), ('Eq.g', g_expected(c, r))):
             put(A, v, x[s], {'salt': s + 1})
     if not snapped(r):
         put_exact(A, 'Eq.all_solid', fl['iconv_mass'])
@@ -282,6 +299,90 @@ def pass_test(tid, why, src, c, it, r):
             "rel 1e-9, amounts with an absolute floor of 1e-12 of the bin's largest total amount, flags exactly.")
     return {'id': tid, 'description': desc, 'parameter_overrides': po, 'time_span': {'start': 0, 'end': 1},
             'assertions': A}
+
+
+# Converged states (2026-11-12): mesa_ptc run to rtol 1e-10 (ESM_RTOL_MESA, tolerance-study build
+# chem170_scm/solver_tol) on hand-offs that converge there, taped (mesa64/tight, make_tight_cases.py).
+# Its stopping test is |phi_s| <= 1e-10 on the last pass, so |S_s - 1| <= 1e-10 max(S_s, 1) for every
+# salt that may exchange; G_TOL is twice that, the margin being the component's round-off against the
+# Fortran's (the S values agree to ~1e-15).
+G_TOL = 2e-10
+TIGHT_WHY = {2: "a hand-off mesa_ptc converges at its own 1% test", 3: "a hand-off mesa_ptc does NOT converge in its 80 passes"}
+
+
+def converged_asserts(A, c, r, pre):
+    """At a converged state: the rate is zero for every salt; g_s is zero where solid is present and is the
+    (non-positive) S_s - 1 where none is -- the complementarity E_s >= 0, g_s <= 0, E_s g_s = 0."""
+    fl = r['flux']
+    g = g_expected(c, r)
+    zero = {'rel': 0.0, 'abs': G_TOL}
+    for s in range(NS):
+        A.append({'variable': pre + 'flux', 'coords': {'salt': s + 1}, 'time': 0.0, 'expected': 0.0, 'tolerance': zero})
+        if fl['elec_s'][s] > 0:
+            A.append({'variable': pre + 'g', 'coords': {'salt': s + 1}, 'time': 0.0, 'expected': 0.0, 'tolerance': zero})
+        else:
+            assert g[s] <= G_TOL, (s, g[s])
+            put(A, pre + 'g', g[s], {'salt': s + 1}, ab=G_TOL)
+    put_exact(A, pre + 'all_solid', fl['iconv_mass'])
+
+
+def converged_desc(src, n_it):
+    return (f"THE EQUILIBRIUM, not a visited pass: {src}, run with mesa_ptc's tolerance tightened from 1e-2 to "
+            f"1e-10 (rtol_mesa; WRF's own compiled code, chem170_scm/solver_tol build), which converged in {n_it} "
+            "passes; inputs are its final state (TOP record of the last pass) and the bin's ENTRY / GAMZ records. "
+            "Asserted: the rate is zero for every salt, and g (the residual paired with E_s) is zero where solid is "
+            "present and equal to the non-positive S - 1 where none is -- the complementarity E_s >= 0, g_s <= 0, "
+            f"E_s g_s = 0 the bounded EarthSciIntegrator solve (D95) finds. Tolerance: absolute {G_TOL:g}, twice the "
+            "tightened stopping test (|S - 1| <= 1e-10 max(S, 1)); S - 1 itself at rel 1e-9.")
+
+
+def converged_step_test(tid, src, c, it, r):
+    e, t, th = c['entry'], r['top'], r['therm']
+    po = {'t_k': float(e['t_k']), 'aer_t': [float(x) for x in c['aert']['aer_t']],
+          'elec_t': [float(x) for x in e['elec_t']], 'elec_s': [float(x) for x in t['elec_s']],
+          'a_l': sp(th['ions_l']), 'caso4': float(th['elec_s'][20] - t['elec_s'][20]),
+          'elec_l': [float(x) for x in th['elec_l']], 'water': float(th['water']),
+          'activity': [float(x) for x in th['activity']]}
+    A = []
+    converged_asserts(A, c, r, '')
+    return {'id': tid, 'description': converged_desc(src, it), 'parameter_overrides': po,
+            'time_span': {'start': 0, 'end': 1}, 'assertions': A}
+
+
+def converged_pass_test(tid, src, c, it, r):
+    e, t, th = c['entry'], r['top'], r['therm']
+    gz = c['gamz']['log_gamz'].reshape((NE, NE), order='F')
+    po = {'MesaRates.t_k': float(e['t_k']), 'MesaRates.a_w': float(e['ah2o_a']),
+          'MesaRates.aer_t': [float(x) for x in c['aert']['aer_t']], 'MesaRates.elec_t': [float(x) for x in e['elec_t']],
+          'MesaRates.elec_s': [float(x) for x in t['elec_s']], 'MesaRates.log_gamz': gz.tolist(),
+          'MesaRates.keq_hso4': float(e['keq_ll'][0]), 'MesaRates.k_w': float(e['keq_ll'][2])}
+    A = []
+    put(A, 'Zsr.water', th['water'])
+    converged_asserts(A, c, r, 'Eq.')
+    return {'id': tid, 'description': converged_desc(src, it) + " Assembled from the state alone (ions_to_electrolytes, "
+            "ZSR water and MTEM activities at the converged solid).", 'parameter_overrides': po,
+            'time_span': {'start': 0, 'end': 1}, 'assertions': A}
+
+
+def tight_tests(d):
+    tdir = os.path.join(d, 'tight')
+    if not os.path.exists(os.path.join(tdir, 'tight.tape.gz')):
+        return [], []
+    meta = json.load(open(os.path.join(tdir, 'cases.json')))
+    sidx = {(r['file'], r['case']): r for r in json.load(open(os.path.join(d, '..', 'solver_tol', 'cases', 'index.json')))}
+    st, pt = [], []
+    for (case, call), c in sorted(read(os.path.join(tdir, 'tight.tape.gz')).items()):
+        m = meta[case - 1]
+        assert int(c['exit']['outcome']) == 2, (case, call)
+        it = max(c['its']); r = c['its'][it]
+        assert not snapped(r) and np.max(np.abs(r['flux']['phi'])) <= 1e-10
+        x = sidx[(m['file'], m['case'])]
+        src = (f"{TIGHT_WHY[m['outcome_default']]} ({m['passes_default']} passes at the model's settings), chem170 "
+               f"column step {x['step']} level {x['k'] + 1} bin {x['b'] + 1} slot {x['slot']}")
+        tid = f"converged_s{x['step']}_lev{x['k'] + 1}_bin{x['b'] + 1}_c{x['slot']}"
+        st.append(converged_step_test(tid, src, c, it, r))
+        pt.append(converged_pass_test(tid, src, c, it, r))
+    return st, pt
 
 
 def main(d):
@@ -324,6 +425,9 @@ def main(d):
                 if ki:
                     seen_i |= ki
                     i2e_sel.append(i2e_test(f"{short}_it{it}", 'Covers: ' + ', '.join(sorted(ki)) + '.', src, it, r))
+    ts, tp = tight_tests(d)
+    step_sel += ts
+    pass_sel += tp
     for name, model, tests in ((os.path.join(COMP, 'mesa_salt_equilibrium.esm'), 'MosaicMesaSaltEquilibrium', step_sel),
                                (os.path.join(COMP, 'ions_to_electrolytes.esm'), 'MosaicIonsToElectrolytes', i2e_sel),
                                (os.path.join(HERE, '..', 'couplings', 'mosaic_mesa_salt_rates.esm'), 'MesaRates', pass_sel)):

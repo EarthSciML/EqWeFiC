@@ -140,7 +140,55 @@ def build(v, k, b, slot, tid, why, src):
     return out
 
 
-def main(dump_dir, drv):
+# Converged states (2026-11-12): the Kelvin root x = aw0/K(x) found by WRF's own compiled
+# aerosol_phase_state with its tolerance tightened from 1e-2 to 1e-13 (ESM_KEL_TOL, up to 1000 updates;
+# the tolerance-study build chem170_scm/solver_tol, out_kel_tight).  The Fortran stops when the update it
+# would apply is within 1e-13 of x, so at its final x |aw0/K(x) - x| <= 1e-13 x; KEL_TOL is twice that
+# bound at x <= 1, the margin being the component's round-off against the Fortran's K.
+KEL_TOL = 2e-13
+# (solver_tol cases file, case): liquid upper-leg calls (path 2), chosen by relative humidity and by how many
+# updates the model's own 1e-2 tolerance took (1 or 2) and the root needs (5-8); (88, 97) is the call
+# farthest from its root (1.0e-2 in ah2o_a), (50, 57) the driest (36.5%)
+KEL_SEL = [(50, 57), (83, 8), (57, 86), (88, 97), (93, 33)]
+
+
+def converged_tests(sdir):
+    idx = {(r["file"], r["case"]): r for r in json.load(open(os.path.join(sdir, "cases", "index.json")))}
+    out, cache = [], {}
+    for f, c in KEL_SEL:
+        if f not in cache:
+            cache[f] = (load(os.path.join(sdir, "out_kel_tight", f"all_{f:03d}.json"))["vars"],
+                        load(os.path.join(sdir, "out_default", f"all_{f:03d}.json"))["vars"])
+        v, v0 = cache[f]
+        s, s0 = v["ps_sc_c1"][:, 0, c - 1], v0["ps_sc_c1"][:, 0, c - 1]
+        assert int(s[SC["path"]]) == 2 and int(s0[SC["path"]]) == 2, (f, c)
+        rh = float(s[SC["rh_pc"]]); aw0 = rh * PC_TO_FRAC; x = float(s[SC["ah2o_a"]]); K = float(s[SC["kelvin"]])
+        assert abs(aw0 / K - x) <= 1e-13 * x, (f, c, aw0 / K - x)
+        r = idx[(f, c)]
+        base = {"rh_pc": rh, "t_k": float(v["ps_t_k"][c - 1]), "num": float(s[SC["num"]]),
+                "aer_t": v["ps_aert_in_c1"][:, 0, c - 1].tolist(), "elec": v["ps_elet_in_c1"][:22, 0, c - 1].tolist(),
+                "water_hyst": float(s[SC["hyst_in"]])}
+        a = [{"variable": "kelvin_residual", "time": 0.0, "expected": 0.0, "tolerance": {"rel": 0.0, "abs": KEL_TOL}},
+             {"variable": "path", "time": 0.0, "expected": 2.0, "tolerance": EXACT}]
+        for n, val in (("aw_next", x), ("kelvin", K), ("water", s[SC["water"]])):
+            a.append({"variable": n, "time": 0.0, "expected": float(val), "tolerance": tol(float(val))})
+        dx = abs(float(s0[SC["ah2o_a"]]) - x) / x
+        out.append({"id": f"kelvin_root_s{r['step']}_lev{r['k'] + 1}_bin{r['b'] + 1}_{'c' + str(r['slot'])}",
+                    "description": (f"THE KELVIN ROOT, not a visited iterate: chem170 column step {r['step']} level {r['k'] + 1} "
+                                    f"section {r['b'] + 1} (slot {r['slot']}), a liquid upper-leg bin at relative humidity "
+                                    f"{rh:.4f}%, solved by WRF's own compiled aerosol_phase_state with its Kelvin tolerance "
+                                    f"tightened from 1e-2 to 1e-13 (ESM_KEL_TOL; chem170_scm/solver_tol, out_kel_tight), "
+                                    f"{int(s[SC['niter']])} updates (the model's own setting took {int(s0[SC['niter']])}, and its "
+                                    f"ah2o_a is {dx:.2e} relative from this root). Evaluated at the root x: the residual "
+                                    f"aw0/K(x) - x is zero within {KEL_TOL:g} absolute (twice the tightened stopping test "
+                                    "|aw0/K(x) - x| <= 1e-13 x), and K, the water and aw_next = x at rel 1e-9. This is the "
+                                    "algebraic equation the EarthSciIntegrator `solve` (newton) is given "
+                                    "(couplings/mosaic_kelvin_equilibrium.esm)."),
+                    "parameter_overrides": dict(base, ah2o_a=x), "time_span": {"start": 0, "end": 1}, "assertions": a})
+    return out
+
+
+def main(dump_dir, drv, tight=None):
     tests = []
     if dump_dir != "-":
         cache = {}
@@ -152,13 +200,18 @@ def main(dump_dir, drv):
     v = load(drv)["vars"]
     for i, c in enumerate(json.load(open(os.path.join(os.path.dirname(drv), "cases_ps.json")))):
         tests.extend(build(v, i, 0, "c1", f"r_{c['id']}", f"hand-specified bin '{c['id']}': {c['intent']}", SRC_DRV))
+    if tight is not None:
+        tests.extend(converged_tests(tight))
     doc = json.load(open(COMP))
-    doc["models"]["MosaicAerosolPhaseState"]["tests"] = tests
+    # the mdrh_table_* tests belong to tools/fill_mosaic_mdrh_table_tests.py: keep them
+    keep = [t for t in doc["models"]["MosaicAerosolPhaseState"]["tests"] if t["id"].startswith("mdrh_table_")]
+    doc["models"]["MosaicAerosolPhaseState"]["tests"] = tests + keep
     with open(COMP, "w") as f:
         json.dump(doc, f, indent=2)
         f.write("\n")
-    print(f"aerosol_phase_state.esm: {len(tests)} tests, {sum(len(t['assertions']) for t in tests)} assertions")
+    print(f"aerosol_phase_state.esm: {len(tests)} tests, {sum(len(t['assertions']) for t in tests)} assertions "
+          f"(plus {len(keep)} mdrh_table tests kept)")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(*sys.argv[1:4])
