@@ -235,7 +235,6 @@ def build_test(tid, desc, c, sb, bins):
 
 
 ASTEM_DIR = None
-KP0 = '--kp0' in sys.argv
 
 
 def main():
@@ -310,14 +309,6 @@ def main():
             name, why = names[c['lev']]
             if name == 'wet_poor_noacid':
                 hreasons['equilibrate_acids'] += 1
-                continue
-            if name.startswith('kp0_') and not KP0:
-                # the be1fafe6d binary evaluates Const's Kp_nh4no3_0 / Kp_nh4cl_0 to NaN once Const
-                # is lifted over lev (an index into a subsystem array inside a lifted system;
-                # data/eqwefic/phase3_probes/const_lift/), and Sol's min(NaN, Keq_sg) then silently
-                # picks Keq_sg: these bins, whose rate is set by Kp0, cannot pass on that binary.
-                # EarthSciAST main computes Kp0 correctly. Pass --kp0 to include them.
-                hreasons['Kp0 bin (lifted-Const NaN on be1fafe6d)'] += 1
                 continue
             lab, bad = bin_branch(c, sb, 1)
             if bad:
