@@ -5,7 +5,8 @@ condensation rates over the whole size distribution) from the ASTEM tape.
     tools/fill_mosaic_astem_rates_tests.py <astem_dir>
 
 <astem_dir> is data/eqwefic/chem170_scm/mosaic_astem (astem.tape.gz, hand.tape,
-cases_hand_names.txt, astem_tape.py; see data/eqwefic/notes/chem170_mosaic_astem_capture.md).
+cases_hand_names.txt, mix.tape, cases_mix_names.txt, astem_tape.py; see
+data/eqwefic/notes/chem170_mosaic_astem_capture.md).
 Only numbers are written; the document's equations and structure are hand-authored.
 
 A test is one state ASTEM formed its fluxes at, all bins at once:
@@ -14,7 +15,8 @@ A test is one state ASTEM formed its fluxes at, all bins at once:
     ions/electrolytes = SVB); in the other sub-steps a solid bin's flux routine edits HCl
     and NH3 before the next bin forms its flux, so no single state reproduces them;
   * hand: each hand-specified bin of kernels/mosaic_therm_driver mode 6 in bin 1, bins 2..
-    NBIN empty (state 0, number 0).
+    NBIN empty (state 0, number 0): hand.tape, and mix.tape (make_astem_mix_hand.py: mixed
+    bins that reach ASTEM_flux_mix, and all-solid bins whose Kp0 is below Keq_sg).
 Expected (all real64 values ASTEM held):
   * kg of HNO3, HCl, NH3 (BIN record);
   * each bin's semi-volatile rate: flux_s for a solid bin; flux_s + kg df_gas_l where ASTEM
@@ -22,9 +24,9 @@ Expected (all real64 values ASTEM held):
   * gas kg for H2SO4 and MSA in every bin holding aerosol;
   * the gas tendencies, minus the sum over bins of those rates; the balances, zero.
 Never in a test (ASTEM's solver decisions, CLAUDE.md): a solid bin inside ASTEM_flux_dry's
-1% deadband, a liquid bin ASTEM skipped although a driving force is nonzero (the signed
-equilibrium test, FORTRAN_BUGS.md B31), equilibrate_acids, and ASTEM_flux_mix (route 3,
-not transcribed).
+or ASTEM_flux_mix's 1% deadband, a liquid (or the liquid half of a mixed bin) ASTEM skipped
+although a driving force is nonzero (the signed equilibrium test, FORTRAN_BUGS.md B31), and
+equilibrate_acids.
 """
 import collections
 import importlib.util
@@ -44,6 +46,9 @@ EMPTY_NUM = 1000.0   # 1/cm3 in the empty bins of the hand tests
 _spec = importlib.util.spec_from_file_location('fat', ROOT / 'tools' / 'fill_astem_tests.py')
 fat = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fat)
+_spec = importlib.util.spec_from_file_location('fmx', ROOT / 'tools' / 'fill_astem_mix_tests.py')
+fmx = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fmx)
 
 GASES = ['h2so4', 'hno3', 'hcl', 'nh3', 'msa']
 SEMI = [('hno3', 1, 'no3'), ('hcl', 2, 'cl'), ('nh3', 3, 'nh4')]   # gas, 0-based gas index, ion
@@ -53,11 +58,16 @@ JNH4NO3, JNH4CL = 4, 5                                               # 0-based e
 def load(d):
     sys.path.insert(0, str(d))
     from astem_tape import read_tape
-    names = {}
-    for line in open(Path(d) / 'cases_hand_names.txt'):
-        i, name, why = line.rstrip('\n').split('\t')
-        names[int(i)] = (name, why)
-    return read_tape(Path(d) / 'astem.tape.gz'), read_tape(Path(d) / 'hand.tape'), names
+
+    def names_of(fname):
+        out = {}
+        for line in open(Path(d) / fname):
+            i, name, why = line.rstrip('\n').split('\t')
+            out[int(i)] = (name, why)
+        return out
+    hand = [(read_tape(Path(d) / 'hand.tape'), names_of('cases_hand_names.txt'), 'make_astem_hand.py'),
+            (read_tape(Path(d) / 'mix.tape'), names_of('cases_mix_names.txt'), 'make_astem_mix_hand.py')]
+    return read_tape(Path(d) / 'astem.tape.gz'), hand
 
 
 def clean(sb):
@@ -90,7 +100,13 @@ def bin_branch(c, sb, b):
     if route != route_of(sb['bins'][b]['jaerosolstate'], fx['E_s']):
         return None, 'route mismatch'
     if route == 3:
-        return None, 'ASTEM_flux_mix (not transcribed)'
+        case = fmx.mix_case(fx)
+        if fmx.deadband(case, fx, c['ain']):
+            return None, 'mixed solid 1% deadband'
+        for i in (1, 2, 3):
+            if fx['int_l'][i] == 0 and fx['df_l'][i] != 0:
+                return None, 'liquid half skipped by the signed equilibrium test (B31)'
+        return 'mix_' + case, None
     if route == 1:
         groups, skipped = fat.dry_rows([{'ain': c['ain'], 'subs': [{'fxo': {b: fx}}]}])
         if skipped:
@@ -186,7 +202,7 @@ def build_test(tid, desc, c, sb, bins):
     asr, sums = [], {n: [0.0, 0.0] for n in GASES}
     for b in range(1, NBIN + 1):
         if b not in bins:
-            for v in ('has_aer', 'route_solid', 'route_liquid',
+            for v in ('has_aer', 'route_solid', 'route_liquid', 'route_mix',
                       'daer_so4', 'daer_no3', 'daer_cl', 'daer_nh4', 'daer_msa'):
                 asr.append(a(v, 0.0, EXACT, b))
             continue
@@ -195,6 +211,7 @@ def build_test(tid, desc, c, sb, bins):
         asr.append(a('has_aer', 1.0, EXACT, b))
         asr.append(a('route_solid', 1.0 if route == 1 else 0.0, EXACT, b))
         asr.append(a('route_liquid', 1.0 if route in (2, 4) else 0.0, EXACT, b))
+        asr.append(a('route_mix', 1.0 if route == 3 else 0.0, EXACT, b))
         for gname, i, _ in SEMI:
             asr.append(a(f'kg_{gname}', kg[i], {'rel': REL, 'abs': 0.0}, b))
         for gname, i, ion in (('h2so4', 0, 'so4'), ('msa', 4, 'msa')):
@@ -218,13 +235,14 @@ def build_test(tid, desc, c, sb, bins):
 
 
 ASTEM_DIR = None
+KP0 = '--kp0' in sys.argv
 
 
 def main():
     global ASTEM_DIR
-    d = Path(sys.argv[1])
+    d = Path([x for x in sys.argv[1:] if not x.startswith('--')][0])
     ASTEM_DIR = d
-    calls, hand, names = load(d)
+    calls, hands = load(d)
 
     # ---- column: census of usable first sub-steps
     usable, reasons = [], collections.Counter()
@@ -274,7 +292,7 @@ def main():
         pat = ''.join(str(int(sb['fxo'][b]['route'])) for b in sorted(sb['fxo']))
         desc = (f"ASTEM tape (real64), chem_opt = 170 column, model step {c['step'] + 1}, level {c['lev']}, "
                 f"first ASTEM sub-step, all {NBIN} bins at one state (ASTEM routes by bin: {pat}; 1 solid, "
-                f"2 liquid, 4 mixed handled as liquid). Bin branches: "
+                f"2 liquid, 3 mixed with solid NH4NO3/NH4Cl, 4 mixed handled as liquid). Bin branches: "
                 + ', '.join(f'{b}:{br[b]}' for b in sorted(br)) + '. '
                 "Inputs: the FXO records (each bin's state where its flux was formed), kg's inputs from AIN/BIN; "
                 "expected: kg (BIN), each bin's semi-volatile rate (flux_s solid; flux_s + kg df_gas_l liquid), "
@@ -286,24 +304,33 @@ def main():
 
     # ---- hand bins
     hreasons = collections.Counter()
-    for c in hand:
-        sb = c['subs'][0]
-        name, why = names[c['lev']]
-        if name == 'wet_poor_noacid':
-            hreasons['equilibrate_acids'] += 1
-            continue
-        lab, bad = bin_branch(c, sb, 1)
-        if bad:
-            hreasons[bad] += 1
-            print(f'  hand {name}: excluded ({bad})')
-            continue
-        desc = (f"Hand-specified bin '{name}' ({why}; chem170_scm/mosaic_astem/make_astem_hand.py), run through "
-                f"WRF's own compiled ASTEM by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm "
-                f"(ASTEM route {int(sb['fxo'][1]['route'])}, branch {lab}), placed in bin 1 of a distribution "
-                f"whose bins 2..{NBIN} are empty (state 0, but a number of {EMPTY_NUM:g} /cm3 so that their kg is nonzero: every rate there must still be exactly 0, as ASTEM's dispatch and non-volatile loop skip a no_aerosol bin). "
-                "Inputs: the bin's FXO record (its state where its flux was formed, after ASTEM's state edits), "
-                "kg's inputs from AIN/BIN; expected as in the column tests. rel 1e-9.")
-        tests.append(build_test(f'astem_hand_{name}', desc, c, sb, {1: sb['fxo'][1]}))
+    for hand, names, maker in hands:
+        for c in hand:
+            sb = c['subs'][0]
+            name, why = names[c['lev']]
+            if name == 'wet_poor_noacid':
+                hreasons['equilibrate_acids'] += 1
+                continue
+            if name.startswith('kp0_') and not KP0:
+                # the be1fafe6d binary evaluates Const's Kp_nh4no3_0 / Kp_nh4cl_0 to NaN once Const
+                # is lifted over lev (an index into a subsystem array inside a lifted system;
+                # data/eqwefic/phase3_probes/const_lift/), and Sol's min(NaN, Keq_sg) then silently
+                # picks Keq_sg: these bins, whose rate is set by Kp0, cannot pass on that binary.
+                # EarthSciAST main computes Kp0 correctly. Pass --kp0 to include them.
+                hreasons['Kp0 bin (lifted-Const NaN on be1fafe6d)'] += 1
+                continue
+            lab, bad = bin_branch(c, sb, 1)
+            if bad:
+                hreasons[bad] += 1
+                print(f'  hand {name}: excluded ({bad})')
+                continue
+            desc = (f"Hand-specified bin '{name}' ({why}; chem170_scm/mosaic_astem/{maker}), run through "
+                    f"WRF's own compiled ASTEM by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm "
+                    f"(ASTEM route {int(sb['fxo'][1]['route'])}, branch {lab}), placed in bin 1 of a distribution "
+                    f"whose bins 2..{NBIN} are empty (state 0, but a number of {EMPTY_NUM:g} /cm3 so that their kg is nonzero: every rate there must still be exactly 0, as ASTEM's dispatch and non-volatile loop skip a no_aerosol bin). "
+                    "Inputs: the bin's FXO record (its state where its flux was formed, after ASTEM's state edits), "
+                    "kg's inputs from AIN/BIN; expected as in the column tests. rel 1e-9.")
+            tests.append(build_test(f'astem_hand_{name}', desc, c, sb, {1: sb['fxo'][1]}))
     print('hand excluded:', dict(hreasons))
 
     doc = json.loads(DOC.read_text())

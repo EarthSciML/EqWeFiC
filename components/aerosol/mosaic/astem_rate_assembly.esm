@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "MosaicAstemRateAssembly",
-    "description": "MOSAIC's gas-particle condensation rates assembled over a size distribution in every grid cell (WRF v4.8.0 chem/module_mosaic_therm.F, SUBROUTINE ASTEM: ASTEM_non_volatiles and ASTEM_semi_volatiles' dispatch on jaerosolstate, summed into the tendencies of the five condensing gases and of the matching aerosol ions in every bin). It is the right-hand side ASTEM integrates; ASTEM's integration (the analytical exponential of the non-volatile stage, the semi-implicit liquid update, the explicit solid update, the adaptive sub-step, the 1% equilibrium skips, the step cap) is solver and is not written here (CLAUDE.md: numerical solvers belong to EarthSciIntegrator).\n\nWHAT IS MOUNTED AROUND IT. This component holds the dispatch and the sums; the per-bin physics is mounted beside it by the coupling document and lifted pointwise (esm-spec 10.5): gas_particle_mass_transfer.esm over lev x bin x gas gives kg and gas kg (this component lays its inputs on those axes: t_bg ... gas_bg), astem_liquid_surface_equilibrium.esm and astem_solid_surface_equilibrium.esm over lev x bin give each bin's HNO3, HCl and NH3 rates for a liquid and for a solid particle (this component slices their inputs: kg_hno3 ..., kel_hno3 ..., so4_l ..., nh4no3_s ..., gam_hno3 ..., act_nh4no3 ...), and mosaic_gas_equilibrium_constants.esm over lev gives the cell's constants. Users: couplings/mosaic_astem_rates.esm (phase state and activities given) and couplings/mosaic_column.esm (computed).\n\nWHICH PHYSICS A BIN GETS is ASTEM_semi_volatiles' dispatch on jaerosolstate (state: 0 no aerosol, 1 all solid, 2 all liquid, 3 mixed): all solid -> the solid surface; all liquid, or mixed without solid NH4NO3 or NH4Cl -> the liquid surface (ASTEM_flux_wet; its CaCO3 case puts the acids into the solid, still the bin's total); mixed WITH solid NH4NO3 or NH4Cl -> ASTEM_flux_mix, which is NOT transcribed (the chem_opt = 170 column never reaches it): route_mix flags such a bin and its semi-volatile rates are set to zero, so a consumer must not use this document where route_mix is 1. H2SO4 and MSA condense on every bin that holds aerosol, at gas kg (the dt -> 0 limit of ASTEM_non_volatiles' exponential, shared over bins as kg/sum kg).\n\nTHE TENDENCIES. Each gas condenses into its own ion: H2SO4 -> SO4, HNO3 -> NO3, HCl -> Cl, NH3 -> NH4, MSA -> MSA, one nmol for one nmol in MOSAIC's units (nmol per m3 of air), into the bin's TOTAL phase (aer(:,jtotal)); how the condensed amount divides between solid and liquid is the phase equilibrium's business (aerosol_phase_state.esm, mesa_salt_equilibrium.esm). daer[lev, bin, gas] is the rate into each bin of the ion gas g condenses into, dgas[lev, gas] = -sum over bins of it. CONSERVATION: gas plus particles is conserved species by species, balance = dgas + sum_bins daer = 0, which is ASTEM's own invariant total_species(iv) = gas(iv) + sum_bins aer(iv, jtotal) in rate form.\n\nNOT IN THE RATES. (a) The NH3 co-uptake of ASTEM_non_volatiles (each bin free of Na and Ca salts takes up min(2 delta_SO4 + delta_MSA, delta_NH3_max) of NH3 alongside the acid): it is an operator-split neutralisation of the finite non-volatile step whose dt -> 0 limit, min(2 r_SO4 + r_MSA, kg_NH3 g_NH3), would ADD to the semi-volatile NH3 flux kg_NH3 (g_NH3 - surface) and so exceed the diffusion limit kg_NH3 g_NH3 that bounds NH3 transfer; the semi-volatile flux already neutralises the acid in the continuous system. (b) The 1e-14 gas threshold below which ASTEM_non_volatiles skips its step. (c) The N2O5 heterogeneous uptake in the same routine, off in this configuration (n2o5_hetchem = 0). (d) The tiny absorptions and equilibrate_acids of ASTEM_flux_wet and the instantaneous solid equilibrations of ASTEM_flux_dry (state edits, see the component descriptions): a consumer applies the rates to the state after them. (e) ASTEM_flux_wet's equilibrium test, which skips a liquid bin when EVERY gas's relative driving force is <= 0.01 -- a signed test, so a bin from which every gas would evaporate is skipped too (FORTRAN_BUGS.md B31): the rates here evaporate it.\n\nAXES. lev (NLEV grid cells) and bin (NBIN size sections) lead every per-bin quantity; the cell's temperature, pressure, relative humidity and gases carry lev; gas is MOSAIC's ngas_ioa (H2SO4, HNO3, HCl, NH3, MSA), ion the nine inorganic aerosol species (SO4, NO3, Cl, NH4, MSA, CO3, Na, Ca, OIN), el the NEL electrolytes in MOSAIC's order, salt the first NSALT. NLEV and NBIN default to 1 and are bound at the mount.\n\nTESTS. None here: the assertions sit on the coupling documents that mount it with the per-bin physics (couplings/mosaic_astem_rates.esm, couplings/mosaic_column.esm), since its rates are only defined once the surface equilibria are coupled in. Moved here from couplings/mosaic_astem_rates.esm on 2026-11-12, with the five per-ion rates and gas tendencies put on the gas axis."
+    "description": "MOSAIC's gas-particle condensation rates assembled over a size distribution in every grid cell (WRF v4.8.0 chem/module_mosaic_therm.F, SUBROUTINE ASTEM: ASTEM_non_volatiles and ASTEM_semi_volatiles' dispatch on jaerosolstate, summed into the tendencies of the five condensing gases and of the matching aerosol ions in every bin). It is the right-hand side ASTEM integrates; ASTEM's integration (the analytical exponential of the non-volatile stage, the semi-implicit liquid update, the explicit solid update, the adaptive sub-step, the 1% equilibrium skips, the step cap) is solver and is not written here (CLAUDE.md: numerical solvers belong to EarthSciIntegrator).\n\nWHAT IS MOUNTED AROUND IT. This component holds the dispatch and the sums; the per-bin physics is mounted beside it by the coupling document and lifted pointwise (esm-spec 10.5): gas_particle_mass_transfer.esm over lev x bin x gas gives kg and gas kg (this component lays its inputs on those axes: t_bg ... gas_bg), astem_liquid_surface_equilibrium.esm, astem_solid_surface_equilibrium.esm and astem_mixed_surface_equilibrium.esm over lev x bin give each bin's HNO3, HCl and NH3 rates for a liquid, a solid and a mixed particle (the solid one read at mixed = route_mix, so that a mixed bin's solid salts hold the pure solids' products) (this component slices their inputs: kg_hno3 ..., kel_hno3 ..., so4_l ..., nh4no3_s ..., gam_hno3 ..., act_nh4no3 ...), and mosaic_gas_equilibrium_constants.esm over lev gives the cell's constants. Users: couplings/mosaic_astem_rates.esm (phase state and activities given) and couplings/mosaic_column.esm (computed).\n\nWHICH PHYSICS A BIN GETS is ASTEM_semi_volatiles' dispatch on jaerosolstate (state: 0 no aerosol, 1 all solid, 2 all liquid, 3 mixed): all solid -> the solid surface; all liquid, or mixed without solid NH4NO3 or NH4Cl -> the liquid surface (ASTEM_flux_wet; its CaCO3 case puts the acids into the solid, still the bin's total); mixed WITH solid NH4NO3 or NH4Cl -> ASTEM_flux_mix (route_mix; astem_mixed_surface_equilibrium.esm: solid and liquid surfaces side by side; the chem_opt = 170 column never reaches it, hand bins do). H2SO4 and MSA condense on every bin that holds aerosol, at gas kg (the dt -> 0 limit of ASTEM_non_volatiles' exponential, shared over bins as kg/sum kg).\n\nTHE TENDENCIES. Each gas condenses into its own ion: H2SO4 -> SO4, HNO3 -> NO3, HCl -> Cl, NH3 -> NH4, MSA -> MSA, one nmol for one nmol in MOSAIC's units (nmol per m3 of air), into the bin's TOTAL phase (aer(:,jtotal)); how the condensed amount divides between solid and liquid is the phase equilibrium's business (aerosol_phase_state.esm, mesa_salt_equilibrium.esm). daer[lev, bin, gas] is the rate into each bin of the ion gas g condenses into, dgas[lev, gas] = -sum over bins of it. CONSERVATION: gas plus particles is conserved species by species, balance = dgas + sum_bins daer = 0, which is ASTEM's own invariant total_species(iv) = gas(iv) + sum_bins aer(iv, jtotal) in rate form.\n\nNOT IN THE RATES. (a) The NH3 co-uptake of ASTEM_non_volatiles (each bin free of Na and Ca salts takes up min(2 delta_SO4 + delta_MSA, delta_NH3_max) of NH3 alongside the acid): it is an operator-split neutralisation of the finite non-volatile step whose dt -> 0 limit, min(2 r_SO4 + r_MSA, kg_NH3 g_NH3), would ADD to the semi-volatile NH3 flux kg_NH3 (g_NH3 - surface) and so exceed the diffusion limit kg_NH3 g_NH3 that bounds NH3 transfer; the semi-volatile flux already neutralises the acid in the continuous system. (b) The 1e-14 gas threshold below which ASTEM_non_volatiles skips its step. (c) The N2O5 heterogeneous uptake in the same routine, off in this configuration (n2o5_hetchem = 0). (d) The tiny absorptions and equilibrate_acids of ASTEM_flux_wet and the instantaneous solid equilibrations of ASTEM_flux_dry (state edits, see the component descriptions): a consumer applies the rates to the state after them. (e) ASTEM_flux_wet's equilibrium test, which skips a liquid bin when EVERY gas's relative driving force is <= 0.01 -- a signed test, so a bin from which every gas would evaporate is skipped too (FORTRAN_BUGS.md B31): the rates here evaporate it.\n\nAXES. lev (NLEV grid cells) and bin (NBIN size sections) lead every per-bin quantity; the cell's temperature, pressure, relative humidity and gases carry lev; gas is MOSAIC's ngas_ioa (H2SO4, HNO3, HCl, NH3, MSA), ion the nine inorganic aerosol species (SO4, NO3, Cl, NH4, MSA, CO3, Na, Ca, OIN), el the NEL electrolytes in MOSAIC's order, salt the first NSALT. NLEV and NBIN default to 1 and are bound at the mount.\n\nTESTS. None here: the assertions sit on the coupling documents that mount it with the per-bin physics (couplings/mosaic_astem_rates.esm, couplings/mosaic_column.esm), since its rates are only defined once the surface equilibria are coupled in. Moved here from couplings/mosaic_astem_rates.esm on 2026-11-12, with the five per-ion rates and gas tendencies put on the gas axis."
   },
   "metaparameters": {
     "NLEV": {
@@ -324,6 +324,36 @@
           ],
           "default": 0.0,
           "description": "Coupling target: the solid surface's NH3 rate (astem_solid_surface_equilibrium.esm, lifted over lev x bin)."
+        },
+        "cond_m_hno3": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the mixed surface's HNO3 rate (astem_mixed_surface_equilibrium.esm, lifted over lev x bin), solid plus liquid."
+        },
+        "cond_m_hcl": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the mixed surface's HCL rate (astem_mixed_surface_equilibrium.esm, lifted over lev x bin), solid plus liquid."
+        },
+        "cond_m_nh3": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the mixed surface's NH3 rate (astem_mixed_surface_equilibrium.esm, lifted over lev x bin), solid plus liquid."
         },
         "mw": {
           "type": "unknown",
@@ -699,7 +729,7 @@
             "lev",
             "bin"
           ],
-          "description": "1 for a mixed bin holding solid NH4NO3 or NH4Cl: ASTEM_flux_mix, NOT transcribed; its semi-volatile rates here are zero."
+          "description": "1 for a mixed bin holding solid NH4NO3 or NH4Cl: ASTEM_flux_mix, the mixed surface."
         },
         "route_solid": {
           "type": "unknown",
@@ -739,6 +769,16 @@
           ],
           "description": "The liquid surface's semi-volatile rates on the gas axis (zero for H2SO4 and MSA)."
         },
+        "cond_m": {
+          "type": "unknown",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "The mixed surface's semi-volatile rates on the gas axis (zero for H2SO4 and MSA)."
+        },
         "daer": {
           "type": "unknown",
           "units": "nmol/(m^3*s)",
@@ -747,7 +787,7 @@
             "bin",
             "gas"
           ],
-          "description": "Rate into each bin of the ion each gas condenses into (H2SO4 -> SO4, HNO3 -> NO3, HCl -> Cl, NH3 -> NH4, MSA -> MSA, one nmol for one nmol), into the bin's total phase: gas kg for the non-volatile H2SO4 and MSA in every bin holding aerosol; for HNO3, HCl and NH3 the solid surface's rate in an all-solid bin, the liquid surface's in an all-liquid bin or a mixed bin without solid NH4NO3/NH4Cl, and zero otherwise (route_mix: ASTEM_flux_mix, not transcribed)."
+          "description": "Rate into each bin of the ion each gas condenses into (H2SO4 -> SO4, HNO3 -> NO3, HCl -> Cl, NH3 -> NH4, MSA -> MSA, one nmol for one nmol), into the bin's total phase: gas kg for the non-volatile H2SO4 and MSA in every bin holding aerosol; for HNO3, HCl and NH3 the solid surface's rate in an all-solid bin, the liquid surface's in an all-liquid bin or a mixed bin without solid NH4NO3/NH4Cl, the mixed surface's in a mixed bin with them (route_mix: ASTEM_flux_mix), and zero in a bin without aerosol."
         },
         "dgas": {
           "type": "unknown",
@@ -2204,6 +2244,99 @@
           }
         },
         {
+          "lhs": "cond_m",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                {
+                  "op": "makearray",
+                  "args": [],
+                  "regions": [
+                    [
+                      [
+                        1,
+                        1
+                      ]
+                    ],
+                    [
+                      [
+                        2,
+                        2
+                      ]
+                    ],
+                    [
+                      [
+                        3,
+                        3
+                      ]
+                    ],
+                    [
+                      [
+                        4,
+                        4
+                      ]
+                    ],
+                    [
+                      [
+                        5,
+                        5
+                      ]
+                    ]
+                  ],
+                  "values": [
+                    0.0,
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_m_hno3",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_m_hcl",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_m_nh3",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    0.0
+                  ]
+                },
+                "g"
+              ]
+            }
+          }
+        },
+        {
           "lhs": "daer",
           "rhs": {
             "op": "faq",
@@ -2327,7 +2460,35 @@
                             "g"
                           ]
                         },
-                        0.0
+                        {
+                          "op": "ifelse",
+                          "args": [
+                            {
+                              "op": "==",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "route_mix",
+                                    "k",
+                                    "b"
+                                  ]
+                                },
+                                1.0
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "cond_m",
+                                "k",
+                                "b",
+                                "g"
+                              ]
+                            },
+                            0.0
+                          ]
+                        }
                       ]
                     }
                   ]
