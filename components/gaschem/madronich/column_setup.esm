@@ -1,5 +1,5 @@
 {
- "esm": "1.1.0",
+ "esm": "2.0.0",
  "metadata": {
   "name": "MadronichColumnSetup",
   "description": "Stage 1 of WRF-Chem's Madronich photolysis (phot_opt = 1): everything madronich1_driver and the head of photolysis_mad do to turn the model column into the column the radiative transfer runs on (chem/module_phot_mad.F:1526-1563 and :1798-1893, WRF v4.8.0).\n\nThree things happen here and all three are places the existing gaschem/fastjx/* component has no counterpart at all.\n\n(1) The model column is EXTENDED by nabv = 10 levels reaching to 50 km, on a grid stretched so that zabv = 20 km lands on the model top and zabv = 50 km stays at 50 km: zz = 50 - znorm (50 - zabv) with znorm = (50 - z_top)/(50 - 20). Temperature, air, ozone and aerosol on those levels are piecewise-linear in the knot set formed by the model top followed by the built-in standard profile. The Fortran walks that knot set with a running (zu, tu, ...) pair and a manual index kk; the walk is exactly linear interpolation, and once a level is at or above zabv(1) the running anchors ARE the table entries, so the two branches here -- one anchored segment below zabv(1), the constant table above it -- reproduce it exactly.\n\n(2) Ozone is converted from the model's ppmV (floored at 1e-3) to a number density and then RESCALED so that the total column is exactly dobsi = 325 Dobson units. The profile SHAPE is the model's own, the TOTAL is prescribed. In the reference column the model's own column is 295.9 DU, so every ozone number density is multiplied by 1.0982 before any photon sees it. This is why a tabulated actinic flux cannot stand in for the scheme: the absolute level of j_o31d is set here, and WRF's own header records that the 350 -> 325 change alone was worth a 25 percent increase in surface JO1D at 17 degrees and about 50 percent at 80 degrees.\n\n(3) Cloud water is turned into an extinction through the scheme's own continental parameterization, reff = 9.6 qll^0.333 microns and bext = (0.0275 + 1.3/reff) 1000 per km.\n\nThe column integral in o3scal is written as an integral, not as a sum. The Fortran spells it sum_i o3_i (z_{i+1} - z_{i-1})/2 with clamped ends, which is the composite TRAPEZOIDAL rule; the trapezoid over interface values is the midpoint rule applied to the layer-mean field, so `o3_layer` is formed and the integral lowered by EarthSciDiscretizations' integral_lev_whole. Verified identical to the Fortran sum in float64 before the component was written.\n\nThe RT interface grid is the EarthSciDiscretizations column_nonuniform_1d grid with NLEV = 69 layers and NLEV+1 = 70 interfaces, supplied as `ze`. That identification is exact for a CLEAR column. For a CLOUDY one it is not: subgrid inserts extra levels inside cloud, as many as max(int(cloud dz 0.02),1) per model layer, so nlevel becomes a function of the cloud field (70, 72, 77 and 78 at the four dumped daytime calls). A static index set cannot express a grid whose SIZE is state-dependent, so this component is written for, and tested on, clear columns only; see the description of the tests."
@@ -26,148 +26,6 @@
    "size": 10
   }
  },
- "function_tables": {
-  "standard_temperature": {
-   "description": "Temperature of the above-model standard profile, tabv (module_phot_mad.F DATA block), on the zabv altitudes.",
-   "axes": [
-    {
-     "name": "z",
-     "units": "km",
-     "values": [
-      21.0,
-      22.0,
-      23.0,
-      24.0,
-      25.0,
-      30.0,
-      35.0,
-      40.0,
-      45.0,
-      50.0
-     ]
-    }
-   ],
-   "interpolation": "linear",
-   "out_of_bounds": "clamp",
-   "data": [
-    215.19000244140625,
-    215.19000244140625,
-    215.19000244140625,
-    215.19000244140625,
-    215.19000244140625,
-    217.38999938964844,
-    227.8000030517578,
-    243.19000244140625,
-    258.5,
-    265.70001220703125
-   ]
-  },
-  "standard_air": {
-   "description": "Air number density of the above-model standard profile, pabv. Named `pabv` in the Fortran but it is a number density, not a pressure.",
-   "axes": [
-    {
-     "name": "z",
-     "units": "km",
-     "values": [
-      21.0,
-      22.0,
-      23.0,
-      24.0,
-      25.0,
-      30.0,
-      35.0,
-      40.0,
-      45.0,
-      50.0
-     ]
-    }
-   ],
-   "interpolation": "linear",
-   "out_of_bounds": "clamp",
-   "data": [
-    1.5699999375658844e+18,
-    1.3399999720990966e+18,
-    1.1399999752377467e+18,
-    9.759999819346084e+17,
-    8.329999735272243e+17,
-    3.8299999776905626e+17,
-    1.7599999448920883e+17,
-    8.30999979056169e+16,
-    4.089999860223181e+16,
-    2.1400000969834496e+16
-   ]
-  },
-  "standard_ozone": {
-   "description": "Ozone number density of the above-model standard profile, o3abv.",
-   "axes": [
-    {
-     "name": "z",
-     "units": "km",
-     "values": [
-      21.0,
-      22.0,
-      23.0,
-      24.0,
-      25.0,
-      30.0,
-      35.0,
-      40.0,
-      45.0,
-      50.0
-     ]
-    }
-   ],
-   "interpolation": "linear",
-   "out_of_bounds": "clamp",
-   "data": [
-    4879999827968.0,
-    4859999813632.0,
-    4729999982592.0,
-    4540000108544.0,
-    4319999950848.0,
-    2519999971328.0,
-    1399999954944.0,
-    607000002560.0,
-    203000004608.0,
-    66099998720.0
-   ]
-  },
-  "standard_aerosol": {
-   "description": "Aerosol extinction of the above-model standard profile, caabv.",
-   "axes": [
-    {
-     "name": "z",
-     "units": "km",
-     "values": [
-      21.0,
-      22.0,
-      23.0,
-      24.0,
-      25.0,
-      30.0,
-      35.0,
-      40.0,
-      45.0,
-      50.0
-     ]
-    }
-   ],
-   "interpolation": "linear",
-   "out_of_bounds": "clamp",
-   "data": [
-    0.0016400000313296914,
-    0.001230000052601099,
-    0.0009449999779462814,
-    0.0007489999989047647,
-    0.0006300000241026282,
-    0.0001900000061141327,
-    4.999999873689376e-05,
-    1.3199999557400588e-05,
-    3.460000016275444e-06,
-    9.139999974649982e-07
-   ]
-  }
- },
  "models": {
   "MadronichColumnSetup": {
    "expression_template_imports": [
@@ -182,6 +40,12 @@
      "bindings": {
       "NLEV": "NLEV"
      }
+    },
+    {
+     "ref": "esm:std/interp.esm",
+     "only": [
+      "linear"
+     ]
     }
    ],
    "subsystems": {
@@ -406,8 +270,8 @@
     },
     "bext": {
      "type": "unknown",
-     "units": "1/km",
-     "description": "Cloud extinction per unit water content, (0.0275 + 1.3/reff) 1000.",
+     "units": "m^3/(g*km)",
+     "description": "Cloud extinction per unit water content (1/km per g/m^3), (0.0275 + 1.3/reff) 1000.",
      "shape": [
       "mlev"
      ]
@@ -703,9 +567,10 @@
              "op": "-",
              "args": [
               {
-               "op": "table_lookup",
-               "table": "standard_air",
-               "axes": {
+               "op": "apply_expression_template",
+               "args": [],
+               "name": "standard_air",
+               "bindings": {
                 "z": {
                  "op": "index",
                  "args": [
@@ -728,8 +593,7 @@
                   1
                  ]
                 }
-               },
-               "args": []
+               }
               },
               "air_top"
              ]
@@ -739,9 +603,10 @@
          ]
         },
         {
-         "op": "table_lookup",
-         "table": "standard_air",
-         "axes": {
+         "op": "apply_expression_template",
+         "args": [],
+         "name": "standard_air",
+         "bindings": {
           "z": {
            "op": "index",
            "args": [
@@ -749,8 +614,7 @@
             "ka"
            ]
           }
-         },
-         "args": []
+         }
         }
        ]
       },
@@ -886,9 +750,10 @@
              "op": "-",
              "args": [
               {
-               "op": "table_lookup",
-               "table": "standard_temperature",
-               "axes": {
+               "op": "apply_expression_template",
+               "args": [],
+               "name": "standard_temperature",
+               "bindings": {
                 "z": {
                  "op": "index",
                  "args": [
@@ -911,8 +776,7 @@
                   1
                  ]
                 }
-               },
-               "args": []
+               }
               },
               "t_top"
              ]
@@ -922,9 +786,10 @@
          ]
         },
         {
-         "op": "table_lookup",
-         "table": "standard_temperature",
-         "axes": {
+         "op": "apply_expression_template",
+         "args": [],
+         "name": "standard_temperature",
+         "bindings": {
           "z": {
            "op": "index",
            "args": [
@@ -932,8 +797,7 @@
             "ka"
            ]
           }
-         },
-         "args": []
+         }
         }
        ]
       },
@@ -1069,9 +933,10 @@
              "op": "-",
              "args": [
               {
-               "op": "table_lookup",
-               "table": "standard_aerosol",
-               "axes": {
+               "op": "apply_expression_template",
+               "args": [],
+               "name": "standard_aerosol",
+               "bindings": {
                 "z": {
                  "op": "index",
                  "args": [
@@ -1094,8 +959,7 @@
                   1
                  ]
                 }
-               },
-               "args": []
+               }
               },
               "aer_top"
              ]
@@ -1105,9 +969,10 @@
          ]
         },
         {
-         "op": "table_lookup",
-         "table": "standard_aerosol",
-         "axes": {
+         "op": "apply_expression_template",
+         "args": [],
+         "name": "standard_aerosol",
+         "bindings": {
           "z": {
            "op": "index",
            "args": [
@@ -1115,8 +980,7 @@
             "ka"
            ]
           }
-         },
-         "args": []
+         }
         }
        ]
       },
@@ -1269,9 +1133,10 @@
              "op": "-",
              "args": [
               {
-               "op": "table_lookup",
-               "table": "standard_ozone",
-               "axes": {
+               "op": "apply_expression_template",
+               "args": [],
+               "name": "standard_ozone",
+               "bindings": {
                 "z": {
                  "op": "index",
                  "args": [
@@ -1294,8 +1159,7 @@
                   1
                  ]
                 }
-               },
-               "args": []
+               }
               },
               "o3_top"
              ]
@@ -1305,9 +1169,10 @@
          ]
         },
         {
-         "op": "table_lookup",
-         "table": "standard_ozone",
-         "axes": {
+         "op": "apply_expression_template",
+         "args": [],
+         "name": "standard_ozone",
+         "bindings": {
           "z": {
            "op": "index",
            "args": [
@@ -1315,8 +1180,7 @@
             "ka"
            ]
           }
-         },
-         "args": []
+         }
         }
        ]
       },
@@ -6706,7 +6570,197 @@
       }
      ]
     }
-   ]
+   ],
+   "expression_templates": {
+    "standard_temperature": {
+     "params": [
+      "z"
+     ],
+     "description": "Temperature of the above-model standard profile, tabv (module_phot_mad.F DATA block), on the zabv altitudes. Tabulated on z (km) at 10 nodes; linear in between, clamped outside (esm:std/interp.esm `linear`, which is how the 1.x function table was lowered).",
+     "body": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "linear",
+      "bindings": {
+       "table": {
+        "op": "const",
+        "args": [],
+        "value": [
+         215.19000244140625,
+         215.19000244140625,
+         215.19000244140625,
+         215.19000244140625,
+         215.19000244140625,
+         217.38999938964844,
+         227.8000030517578,
+         243.19000244140625,
+         258.5,
+         265.70001220703125
+        ]
+       },
+       "axis": {
+        "op": "const",
+        "args": [],
+        "value": [
+         21.0,
+         22.0,
+         23.0,
+         24.0,
+         25.0,
+         30.0,
+         35.0,
+         40.0,
+         45.0,
+         50.0
+        ]
+       },
+       "x": "z",
+       "n": 10
+      }
+     }
+    },
+    "standard_air": {
+     "params": [
+      "z"
+     ],
+     "description": "Air number density of the above-model standard profile, pabv. Named `pabv` in the Fortran but it is a number density, not a pressure. Tabulated on z (km) at 10 nodes; linear in between, clamped outside (esm:std/interp.esm `linear`, which is how the 1.x function table was lowered).",
+     "body": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "linear",
+      "bindings": {
+       "table": {
+        "op": "const",
+        "args": [],
+        "value": [
+         1.5699999375658844e+18,
+         1.3399999720990966e+18,
+         1.1399999752377467e+18,
+         9.759999819346084e+17,
+         8.329999735272243e+17,
+         3.8299999776905626e+17,
+         1.7599999448920883e+17,
+         8.30999979056169e+16,
+         4.089999860223181e+16,
+         2.1400000969834496e+16
+        ]
+       },
+       "axis": {
+        "op": "const",
+        "args": [],
+        "value": [
+         21.0,
+         22.0,
+         23.0,
+         24.0,
+         25.0,
+         30.0,
+         35.0,
+         40.0,
+         45.0,
+         50.0
+        ]
+       },
+       "x": "z",
+       "n": 10
+      }
+     }
+    },
+    "standard_ozone": {
+     "params": [
+      "z"
+     ],
+     "description": "Ozone number density of the above-model standard profile, o3abv. Tabulated on z (km) at 10 nodes; linear in between, clamped outside (esm:std/interp.esm `linear`, which is how the 1.x function table was lowered).",
+     "body": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "linear",
+      "bindings": {
+       "table": {
+        "op": "const",
+        "args": [],
+        "value": [
+         4879999827968.0,
+         4859999813632.0,
+         4729999982592.0,
+         4540000108544.0,
+         4319999950848.0,
+         2519999971328.0,
+         1399999954944.0,
+         607000002560.0,
+         203000004608.0,
+         66099998720.0
+        ]
+       },
+       "axis": {
+        "op": "const",
+        "args": [],
+        "value": [
+         21.0,
+         22.0,
+         23.0,
+         24.0,
+         25.0,
+         30.0,
+         35.0,
+         40.0,
+         45.0,
+         50.0
+        ]
+       },
+       "x": "z",
+       "n": 10
+      }
+     }
+    },
+    "standard_aerosol": {
+     "params": [
+      "z"
+     ],
+     "description": "Aerosol extinction of the above-model standard profile, caabv. Tabulated on z (km) at 10 nodes; linear in between, clamped outside (esm:std/interp.esm `linear`, which is how the 1.x function table was lowered).",
+     "body": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "linear",
+      "bindings": {
+       "table": {
+        "op": "const",
+        "args": [],
+        "value": [
+         0.0016400000313296914,
+         0.001230000052601099,
+         0.0009449999779462814,
+         0.0007489999989047647,
+         0.0006300000241026282,
+         0.0001900000061141327,
+         4.999999873689376e-05,
+         1.3199999557400588e-05,
+         3.460000016275444e-06,
+         9.139999974649982e-07
+        ]
+       },
+       "axis": {
+        "op": "const",
+        "args": [],
+        "value": [
+         21.0,
+         22.0,
+         23.0,
+         24.0,
+         25.0,
+         30.0,
+         35.0,
+         40.0,
+         45.0,
+         50.0
+        ]
+       },
+       "x": "z",
+       "n": 10
+      }
+     }
+    }
+   }
   }
  }
 }

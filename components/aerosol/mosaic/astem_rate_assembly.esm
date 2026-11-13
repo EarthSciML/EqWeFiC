@@ -1,0 +1,2592 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "MosaicAstemRateAssembly",
+    "description": "MOSAIC's gas-particle condensation rates assembled over a size distribution in every grid cell (WRF v4.8.0 chem/module_mosaic_therm.F, SUBROUTINE ASTEM: ASTEM_non_volatiles and ASTEM_semi_volatiles' dispatch on jaerosolstate, summed into the tendencies of the five condensing gases and of the matching aerosol ions in every bin). It is the right-hand side ASTEM integrates; ASTEM's integration (the analytical exponential of the non-volatile stage, the semi-implicit liquid update, the explicit solid update, the adaptive sub-step, the 1% equilibrium skips, the step cap) is solver and is not written here (CLAUDE.md: numerical solvers belong to EarthSciIntegrator).\n\nWHAT IS MOUNTED AROUND IT. This component holds the dispatch and the sums; the per-bin physics is mounted beside it by the coupling document and lifted pointwise (esm-spec 10.5): gas_particle_mass_transfer.esm over lev x bin x gas gives kg and gas kg (this component lays its inputs on those axes: t_bg ... gas_bg), astem_liquid_surface_equilibrium.esm, astem_solid_surface_equilibrium.esm and astem_mixed_surface_equilibrium.esm over lev x bin give each bin's HNO3, HCl and NH3 rates for a liquid, a solid and a mixed particle (the solid one read at mixed = route_mix, so that a mixed bin's solid salts hold the pure solids' products) (this component slices their inputs: kg_hno3 ..., kel_hno3 ..., so4_l ..., nh4no3_s ..., gam_hno3 ..., act_nh4no3 ...), and mosaic_gas_equilibrium_constants.esm over lev gives the cell's constants. Users: couplings/mosaic_astem_rates.esm (phase state and activities given) and couplings/mosaic_column.esm (computed).\n\nWHICH PHYSICS A BIN GETS is ASTEM_semi_volatiles' dispatch on jaerosolstate (state: 0 no aerosol, 1 all solid, 2 all liquid, 3 mixed): all solid -> the solid surface; all liquid, or mixed without solid NH4NO3 or NH4Cl -> the liquid surface (ASTEM_flux_wet; its CaCO3 case puts the acids into the solid, still the bin's total); mixed WITH solid NH4NO3 or NH4Cl -> ASTEM_flux_mix (route_mix; astem_mixed_surface_equilibrium.esm: solid and liquid surfaces side by side; the chem_opt = 170 column never reaches it, hand bins do). H2SO4 and MSA condense on every bin that holds aerosol, at gas kg (the dt -> 0 limit of ASTEM_non_volatiles' exponential, shared over bins as kg/sum kg).\n\nTHE TENDENCIES. Each gas condenses into its own ion: H2SO4 -> SO4, HNO3 -> NO3, HCl -> Cl, NH3 -> NH4, MSA -> MSA, one nmol for one nmol in MOSAIC's units (nmol per m3 of air), into the bin's TOTAL phase (aer(:,jtotal)); how the condensed amount divides between solid and liquid is the phase equilibrium's business (aerosol_phase_state.esm, mesa_salt_equilibrium.esm). daer[lev, bin, gas] is the rate into each bin of the ion gas g condenses into, dgas[lev, gas] = -sum over bins of it. CONSERVATION: gas plus particles is conserved species by species, balance = dgas + sum_bins daer = 0, which is ASTEM's own invariant total_species(iv) = gas(iv) + sum_bins aer(iv, jtotal) in rate form.\n\nNOT IN THE RATES. (a) The NH3 co-uptake of ASTEM_non_volatiles (each bin free of Na and Ca salts takes up min(2 delta_SO4 + delta_MSA, delta_NH3_max) of NH3 alongside the acid): it is an operator-split neutralisation of the finite non-volatile step whose dt -> 0 limit, min(2 r_SO4 + r_MSA, kg_NH3 g_NH3), would ADD to the semi-volatile NH3 flux kg_NH3 (g_NH3 - surface) and so exceed the diffusion limit kg_NH3 g_NH3 that bounds NH3 transfer; the semi-volatile flux already neutralises the acid in the continuous system. (b) The 1e-14 gas threshold below which ASTEM_non_volatiles skips its step. (c) The N2O5 heterogeneous uptake in the same routine, off in this configuration (n2o5_hetchem = 0). (d) The tiny absorptions and equilibrate_acids of ASTEM_flux_wet and the instantaneous solid equilibrations of ASTEM_flux_dry (state edits, see the component descriptions): a consumer applies the rates to the state after them. (e) ASTEM_flux_wet's equilibrium test, which skips a liquid bin when EVERY gas's relative driving force is <= 0.01 -- a signed test, so a bin from which every gas would evaporate is skipped too (FORTRAN_BUGS.md B31): the rates here evaporate it.\n\nAXES. lev (NLEV grid cells) and bin (NBIN size sections) lead every per-bin quantity; the cell's temperature, pressure, relative humidity and gases carry lev; gas is MOSAIC's ngas_ioa (H2SO4, HNO3, HCl, NH3, MSA), ion the nine inorganic aerosol species (SO4, NO3, Cl, NH4, MSA, CO3, Na, Ca, OIN), el the NEL electrolytes in MOSAIC's order, salt the first NSALT. NLEV and NBIN default to 1 and are bound at the mount.\n\nTESTS. None here: the assertions sit on the coupling documents that mount it with the per-bin physics (couplings/mosaic_astem_rates.esm, couplings/mosaic_column.esm), since its rates are only defined once the surface equilibria are coupled in. Moved here from couplings/mosaic_astem_rates.esm on 2026-11-12, with the five per-ion rates and gas tendencies put on the gas axis."
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 1,
+      "description": "Grid cells (model levels); bound by the mounting coupling."
+    },
+    "NBIN": {
+      "type": "integer",
+      "default": 1,
+      "description": "MOSAIC size sections per cell (nbin_a; 8 in chem_opt = 170); bound by the mounting coupling."
+    },
+    "NEL": {
+      "type": "integer",
+      "default": 22,
+      "description": "MOSAIC electrolytes."
+    },
+    "NSALT": {
+      "type": "integer",
+      "default": 15,
+      "description": "Soluble salts, the first NSALT electrolytes."
+    }
+  },
+  "index_sets": {
+    "lev": {
+      "kind": "interval",
+      "size": "NLEV"
+    },
+    "bin": {
+      "kind": "interval",
+      "size": "NBIN"
+    },
+    "gas": {
+      "kind": "interval",
+      "size": 5
+    },
+    "ion": {
+      "kind": "interval",
+      "size": 9
+    },
+    "el": {
+      "kind": "interval",
+      "size": "NEL"
+    },
+    "salt": {
+      "kind": "interval",
+      "size": "NSALT"
+    }
+  },
+  "models": {
+    "MosaicAstemRateAssembly": {
+      "subsystems": {
+        "par": {
+          "ref": "./mosaic_mass_transfer_parameters.esm"
+        }
+      },
+      "variables": {
+        "t_k": {
+          "type": "parameter",
+          "units": "K",
+          "shape": [
+            "lev"
+          ],
+          "default": 290.0,
+          "description": "Cell temperature t_k."
+        },
+        "p_atm": {
+          "type": "parameter",
+          "units": "atm",
+          "shape": [
+            "lev"
+          ],
+          "default": 0.9,
+          "description": "Cell pressure p_atm."
+        },
+        "gas": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "gas"
+          ],
+          "default": 0.0,
+          "description": "The five condensing gases gas(1:ngas_ioa) on the gas axis: H2SO4, HNO3, HCl, NH3, MSA."
+        },
+        "relhum": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "default": 0.5,
+          "description": "The cell's relative humidity as a fraction, relhumclm: the value update_thermodynamic_constants evaluates the cell's constants at (N118). Nothing in this assembly reads it; it is the cell input a coupling hands to mosaic_gas_equilibrium_constants.esm for Kp_nh4no3_0 / Kp_nh4cl_0, beside t_k."
+        },
+        "state": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "jaerosolstate: 0 no aerosol, 1 all solid, 2 all liquid, 3 mixed."
+        },
+        "num": {
+          "type": "parameter",
+          "units": "1/cm^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Number concentration num_a."
+        },
+        "dp_wet": {
+          "type": "parameter",
+          "units": "cm",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 1e-05,
+          "description": "Wet diameter dp_wet_a."
+        },
+        "kel": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "default": 1.0,
+          "description": "Kelvin factors kel(iv, ibin)."
+        },
+        "aer_s": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "ion"
+          ],
+          "default": 0.0,
+          "description": "Solid-phase ions aer(ion, jsolid, ibin)."
+        },
+        "aer_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "ion"
+          ],
+          "default": 0.0,
+          "description": "Liquid-phase ions aer(ion, jliquid, ibin)."
+        },
+        "elec_s": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "el"
+          ],
+          "default": 0.0,
+          "description": "Solid electrolytes electrolyte(:, jsolid, ibin)."
+        },
+        "mc_h": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "H+ molality mc(jc_h) from compute_activities."
+        },
+        "mc_nh4": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "NH4+ molality mc(jc_nh4)."
+        },
+        "ma_no3": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "NO3- molality ma(ja_no3)."
+        },
+        "ma_cl": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Cl- molality ma(ja_cl)."
+        },
+        "gam": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin",
+            "el"
+          ],
+          "default": 1.0,
+          "description": "Electrolyte activity coefficients gam(:, ibin)."
+        },
+        "gam_ratio": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 1.0,
+          "description": "gam_ratio(ibin), the NH4+/H+ activity-coefficient ratio of the NH3 surface equilibrium."
+        },
+        "activity": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin",
+            "el"
+          ],
+          "default": 0.0,
+          "description": "Electrolyte activities activity(:, ibin)."
+        },
+        "kg": {
+          "type": "parameter",
+          "units": "1/s",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the mass-transfer coefficient of every gas to every bin (gas_particle_mass_transfer.esm, lifted over lev x bin x gas)."
+        },
+        "cond_nv": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: gas kg, the non-volatile rate (gas_particle_mass_transfer.esm)."
+        },
+        "cond_l_hno3": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the liquid surface's HNO3 rate (astem_liquid_surface_equilibrium.esm, lifted over lev x bin)."
+        },
+        "cond_l_hcl": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the liquid surface's HCL rate (astem_liquid_surface_equilibrium.esm, lifted over lev x bin)."
+        },
+        "cond_l_nh3": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the liquid surface's NH3 rate (astem_liquid_surface_equilibrium.esm, lifted over lev x bin)."
+        },
+        "cond_s_hno3": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the solid surface's HNO3 rate (astem_solid_surface_equilibrium.esm, lifted over lev x bin)."
+        },
+        "cond_s_hcl": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the solid surface's HCL rate (astem_solid_surface_equilibrium.esm, lifted over lev x bin)."
+        },
+        "cond_s_nh3": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the solid surface's NH3 rate (astem_solid_surface_equilibrium.esm, lifted over lev x bin)."
+        },
+        "cond_m_hno3": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the mixed surface's HNO3 rate (astem_mixed_surface_equilibrium.esm, lifted over lev x bin), solid plus liquid."
+        },
+        "cond_m_hcl": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the mixed surface's HCL rate (astem_mixed_surface_equilibrium.esm, lifted over lev x bin), solid plus liquid."
+        },
+        "cond_m_nh3": {
+          "type": "parameter",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "default": 0.0,
+          "description": "Coupling target: the mixed surface's NH3 rate (astem_mixed_surface_equilibrium.esm, lifted over lev x bin), solid plus liquid."
+        },
+        "mw": {
+          "type": "unknown",
+          "units": "g/mol",
+          "shape": [
+            "gas"
+          ],
+          "description": "Their molecular weights (aerosolmtc's table)."
+        },
+        "vm": {
+          "type": "unknown",
+          "units": "cm^3/mol",
+          "shape": [
+            "gas"
+          ],
+          "description": "Their Fuller molar volumes."
+        },
+        "accom": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Accommodation coefficient, the same for every gas."
+        },
+        "t_bg": {
+          "type": "unknown",
+          "units": "K",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "t_k on lev x bin x gas, the axes Mtc is lifted over."
+        },
+        "p_bg": {
+          "type": "unknown",
+          "units": "atm",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "p_atm on lev x bin x gas."
+        },
+        "dp_bg": {
+          "type": "unknown",
+          "units": "cm",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "dp_wet on lev x bin x gas."
+        },
+        "num_bg": {
+          "type": "unknown",
+          "units": "1/cm^3",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "num on lev x bin x gas."
+        },
+        "mw_bg": {
+          "type": "unknown",
+          "units": "g/mol",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "mw on lev x bin x gas."
+        },
+        "vm_bg": {
+          "type": "unknown",
+          "units": "cm^3/mol",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "vm on lev x bin x gas."
+        },
+        "gas_bg": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "The cell's gases on lev x bin x gas."
+        },
+        "gas_hno3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev"
+          ],
+          "description": "Gas-phase HNO3 of the cell."
+        },
+        "gas_hcl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev"
+          ],
+          "description": "Gas-phase HCL of the cell."
+        },
+        "gas_nh3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev"
+          ],
+          "description": "Gas-phase NH3 of the cell."
+        },
+        "kg_hno3": {
+          "type": "unknown",
+          "units": "1/s",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "kg of HNO3."
+        },
+        "kg_hcl": {
+          "type": "unknown",
+          "units": "1/s",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "kg of HCL."
+        },
+        "kg_nh3": {
+          "type": "unknown",
+          "units": "1/s",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "kg of NH3."
+        },
+        "kel_hno3": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Kelvin factor of HNO3."
+        },
+        "kel_hcl": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Kelvin factor of HCL."
+        },
+        "kel_nh3": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Kelvin factor of NH3."
+        },
+        "so4_l": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Liquid SO4."
+        },
+        "msa_l": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Liquid MSA."
+        },
+        "nh4_l": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Liquid NH4."
+        },
+        "na_l": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Liquid Na."
+        },
+        "ca_l": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Liquid Ca."
+        },
+        "so4_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid SO4."
+        },
+        "msa_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid MSA."
+        },
+        "nh4_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid NH4."
+        },
+        "na_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid Na."
+        },
+        "ca_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid Ca."
+        },
+        "cl_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid Cl."
+        },
+        "nh4no3_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid NH4NO3."
+        },
+        "nh4cl_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid NH4Cl."
+        },
+        "nacl_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid NaCl."
+        },
+        "cacl2_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid CaCl2."
+        },
+        "caco3_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Solid CaCO3."
+        },
+        "salt_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Total solid soluble salt, the sum of the first NSALT solid electrolytes."
+        },
+        "gam_hno3": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Activity coefficient of HNO3 in solution."
+        },
+        "gam_hcl": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Activity coefficient of HCl in solution."
+        },
+        "act_nh4no3": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Activity of NH4NO3 in solution."
+        },
+        "act_nh4cl": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "Activity of NH4Cl in solution."
+        },
+        "has_aer": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "1 where the bin holds aerosol (state > 0)."
+        },
+        "route_mix": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "1 for a mixed bin holding solid NH4NO3 or NH4Cl: ASTEM_flux_mix, the mixed surface."
+        },
+        "route_solid": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "1 for an all-solid bin: the solid surface."
+        },
+        "route_liquid": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin"
+          ],
+          "description": "1 for an all-liquid bin, or a mixed bin without solid NH4NO3 or NH4Cl: the liquid surface."
+        },
+        "cond_s": {
+          "type": "unknown",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "The solid surface's semi-volatile rates on the gas axis (zero for H2SO4 and MSA, which the surface equilibria do not treat)."
+        },
+        "cond_l": {
+          "type": "unknown",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "The liquid surface's semi-volatile rates on the gas axis (zero for H2SO4 and MSA)."
+        },
+        "cond_m": {
+          "type": "unknown",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "The mixed surface's semi-volatile rates on the gas axis (zero for H2SO4 and MSA)."
+        },
+        "daer": {
+          "type": "unknown",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "bin",
+            "gas"
+          ],
+          "description": "Rate into each bin of the ion each gas condenses into (H2SO4 -> SO4, HNO3 -> NO3, HCl -> Cl, NH3 -> NH4, MSA -> MSA, one nmol for one nmol), into the bin's total phase: gas kg for the non-volatile H2SO4 and MSA in every bin holding aerosol; for HNO3, HCl and NH3 the solid surface's rate in an all-solid bin, the liquid surface's in an all-liquid bin or a mixed bin without solid NH4NO3/NH4Cl, the mixed surface's in a mixed bin with them (route_mix: ASTEM_flux_mix), and zero in a bin without aerosol."
+        },
+        "dgas": {
+          "type": "unknown",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "gas"
+          ],
+          "description": "Tendency of each condensing gas: minus the sum over bins of daer."
+        },
+        "balance": {
+          "type": "unknown",
+          "units": "nmol/(m^3*s)",
+          "shape": [
+            "lev",
+            "gas"
+          ],
+          "description": "dgas + the sum over bins of daer, species by species: zero (ASTEM's invariant gas + sum_bins aer(jtotal) in rate form)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "mw",
+          "rhs": {
+            "op": "makearray",
+            "args": [],
+            "regions": [
+              [
+                [
+                  1,
+                  1
+                ]
+              ],
+              [
+                [
+                  2,
+                  2
+                ]
+              ],
+              [
+                [
+                  3,
+                  3
+                ]
+              ],
+              [
+                [
+                  4,
+                  4
+                ]
+              ],
+              [
+                [
+                  5,
+                  5
+                ]
+              ]
+            ],
+            "values": [
+              "par.mw_h2so4",
+              "par.mw_hno3",
+              "par.mw_hcl",
+              "par.mw_nh3",
+              "par.mw_msa"
+            ]
+          }
+        },
+        {
+          "lhs": "vm",
+          "rhs": {
+            "op": "makearray",
+            "args": [],
+            "regions": [
+              [
+                [
+                  1,
+                  1
+                ]
+              ],
+              [
+                [
+                  2,
+                  2
+                ]
+              ],
+              [
+                [
+                  3,
+                  3
+                ]
+              ],
+              [
+                [
+                  4,
+                  4
+                ]
+              ],
+              [
+                [
+                  5,
+                  5
+                ]
+              ]
+            ],
+            "values": [
+              "par.vm_h2so4",
+              "par.vm_hno3",
+              "par.vm_hcl",
+              "par.vm_nh3",
+              "par.vm_msa"
+            ]
+          }
+        },
+        {
+          "lhs": "accom",
+          "rhs": "par.accom"
+        },
+        {
+          "lhs": "t_bg",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "t_k",
+                "k"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "p_bg",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "p_atm",
+                "k"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "dp_bg",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "dp_wet",
+                "k",
+                "b"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "num_bg",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "num",
+                "k",
+                "b"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "mw_bg",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "mw",
+                "g"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "vm_bg",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "vm",
+                "g"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "gas_bg",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "gas",
+                "k",
+                "g"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "gas_hno3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "gas",
+                "k",
+                2
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "gas_hcl",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "gas",
+                "k",
+                3
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "gas_nh3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "gas",
+                "k",
+                4
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "kg_hno3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "kg",
+                "k",
+                "b",
+                2
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "kg_hcl",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "kg",
+                "k",
+                "b",
+                3
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "kg_nh3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "kg",
+                "k",
+                "b",
+                4
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "kel_hno3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "kel",
+                "k",
+                "b",
+                2
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "kel_hcl",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "kel",
+                "k",
+                "b",
+                3
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "kel_nh3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "kel",
+                "k",
+                "b",
+                4
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "so4_l",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_l",
+                "k",
+                "b",
+                1
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "msa_l",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_l",
+                "k",
+                "b",
+                5
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "nh4_l",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_l",
+                "k",
+                "b",
+                4
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "na_l",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_l",
+                "k",
+                "b",
+                7
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "ca_l",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_l",
+                "k",
+                "b",
+                8
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "so4_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_s",
+                "k",
+                "b",
+                1
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "msa_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_s",
+                "k",
+                "b",
+                5
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "nh4_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_s",
+                "k",
+                "b",
+                4
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "na_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_s",
+                "k",
+                "b",
+                7
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "ca_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_s",
+                "k",
+                "b",
+                8
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "cl_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "aer_s",
+                "k",
+                "b",
+                3
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "nh4no3_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "elec_s",
+                "k",
+                "b",
+                5
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "nh4cl_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "elec_s",
+                "k",
+                "b",
+                6
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "nacl_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "elec_s",
+                "k",
+                "b",
+                12
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "cacl2_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "elec_s",
+                "k",
+                "b",
+                14
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "caco3_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "elec_s",
+                "k",
+                "b",
+                22
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "salt_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "s": {
+                "from": "salt"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "elec_s",
+                "k",
+                "b",
+                "s"
+              ]
+            },
+            "reduce": "+"
+          }
+        },
+        {
+          "lhs": "gam_hno3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "gam",
+                "k",
+                "b",
+                18
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "gam_hcl",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "gam",
+                "k",
+                "b",
+                19
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "act_nh4no3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "activity",
+                "k",
+                "b",
+                5
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "act_nh4cl",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "activity",
+                "k",
+                "b",
+                6
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "has_aer",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "state",
+                  0.0
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "route_mix",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "state",
+                      3.0
+                    ]
+                  },
+                  {
+                    "op": ">",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          "nh4no3_s",
+                          "nh4cl_s"
+                        ]
+                      },
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "route_solid",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "==",
+                "args": [
+                  "state",
+                  1.0
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "route_liquid",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "state",
+                      2.0
+                    ]
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "==",
+                        "args": [
+                          "state",
+                          3.0
+                        ]
+                      },
+                      {
+                        "op": "==",
+                        "args": [
+                          "route_mix",
+                          0.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "cond_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                {
+                  "op": "makearray",
+                  "args": [],
+                  "regions": [
+                    [
+                      [
+                        1,
+                        1
+                      ]
+                    ],
+                    [
+                      [
+                        2,
+                        2
+                      ]
+                    ],
+                    [
+                      [
+                        3,
+                        3
+                      ]
+                    ],
+                    [
+                      [
+                        4,
+                        4
+                      ]
+                    ],
+                    [
+                      [
+                        5,
+                        5
+                      ]
+                    ]
+                  ],
+                  "values": [
+                    0.0,
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_s_hno3",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_s_hcl",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_s_nh3",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    0.0
+                  ]
+                },
+                "g"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "cond_l",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                {
+                  "op": "makearray",
+                  "args": [],
+                  "regions": [
+                    [
+                      [
+                        1,
+                        1
+                      ]
+                    ],
+                    [
+                      [
+                        2,
+                        2
+                      ]
+                    ],
+                    [
+                      [
+                        3,
+                        3
+                      ]
+                    ],
+                    [
+                      [
+                        4,
+                        4
+                      ]
+                    ],
+                    [
+                      [
+                        5,
+                        5
+                      ]
+                    ]
+                  ],
+                  "values": [
+                    0.0,
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_l_hno3",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_l_hcl",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_l_nh3",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    0.0
+                  ]
+                },
+                "g"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "cond_m",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                {
+                  "op": "makearray",
+                  "args": [],
+                  "regions": [
+                    [
+                      [
+                        1,
+                        1
+                      ]
+                    ],
+                    [
+                      [
+                        2,
+                        2
+                      ]
+                    ],
+                    [
+                      [
+                        3,
+                        3
+                      ]
+                    ],
+                    [
+                      [
+                        4,
+                        4
+                      ]
+                    ],
+                    [
+                      [
+                        5,
+                        5
+                      ]
+                    ]
+                  ],
+                  "values": [
+                    0.0,
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_m_hno3",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_m_hcl",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_m_nh3",
+                        "k",
+                        "b"
+                      ]
+                    },
+                    0.0
+                  ]
+                },
+                "g"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "daer",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "or",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        "g",
+                        1
+                      ]
+                    },
+                    {
+                      "op": "==",
+                      "args": [
+                        "g",
+                        5
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "has_aer",
+                            "k",
+                            "b"
+                          ]
+                        },
+                        1.0
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_nv",
+                        "k",
+                        "b",
+                        "g"
+                      ]
+                    },
+                    0.0
+                  ]
+                },
+                {
+                  "op": "ifelse",
+                  "args": [
+                    {
+                      "op": "==",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "route_solid",
+                            "k",
+                            "b"
+                          ]
+                        },
+                        1.0
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "cond_s",
+                        "k",
+                        "b",
+                        "g"
+                      ]
+                    },
+                    {
+                      "op": "ifelse",
+                      "args": [
+                        {
+                          "op": "==",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "route_liquid",
+                                "k",
+                                "b"
+                              ]
+                            },
+                            1.0
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "cond_l",
+                            "k",
+                            "b",
+                            "g"
+                          ]
+                        },
+                        {
+                          "op": "ifelse",
+                          "args": [
+                            {
+                              "op": "==",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "route_mix",
+                                    "k",
+                                    "b"
+                                  ]
+                                },
+                                1.0
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "cond_m",
+                                "k",
+                                "b",
+                                "g"
+                              ]
+                            },
+                            0.0
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "dgas",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "g": {
+                "from": "gas"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "neg",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "daer",
+                    "k",
+                    "b",
+                    "g"
+                  ]
+                }
+              ]
+            },
+            "reduce": "+"
+          }
+        },
+        {
+          "lhs": "balance",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "g"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "g": {
+                "from": "gas"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "dgas",
+                    "k",
+                    "g"
+                  ]
+                },
+                {
+                  "op": "faq",
+                  "output_idx": [],
+                  "args": [],
+                  "ranges": {
+                    "b": {
+                      "from": "bin"
+                    }
+                  },
+                  "expr": {
+                    "op": "index",
+                    "args": [
+                      "daer",
+                      "k",
+                      "b",
+                      "g"
+                    ]
+                  },
+                  "reduce": "+"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

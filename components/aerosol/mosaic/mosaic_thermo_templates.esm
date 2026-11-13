@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "MosaicThermoTemplates",
-    "description": "Expression templates shared by MOSAIC's thermodynamics components (chem/module_mosaic_therm.F, WRF v4.8.0). The ZSR water of a bin is needed wherever the bin's water activity is: at the activity compute_activities is handed (aerosol_water_zsr.esm), at the fixed 0.6 of the hysteresis reference (aerosol_water_up), and inside the Kelvin iteration of aerosol_phase_state, where it is evaluated once per iterate. Writing it once is the reason these are templates. They read the consuming model's mounted parameter library by its mount name `tp` (mosaic_thermo_parameters.esm), and zsr_water reads the consumer's `elec` (electrolyte amounts, nmol/m3) and `v_kappa` (the kappa-weighted non-electrolyte dry volume) by bare name -- the keyed-factor convention of the EarthSciDiscretizations column rules.",
+    "description": "Expression templates shared by MOSAIC's thermodynamics components (chem/module_mosaic_therm.F, WRF v4.8.0). The ZSR water of a bin is needed wherever the bin's water activity is: at the activity compute_activities is handed (aerosol_water_zsr.esm), at the fixed 0.6 of the hysteresis reference (aerosol_water_up), and inside the Kelvin iteration of aerosol_phase_state, where it is evaluated once per iterate. Writing it once is the reason these are templates. The same holds for the sulfate ratio X_T (aerosol_xt), the sulfate-poor ion pairing (ion_pair_electrolyte, used by ions_to_electrolytes.esm and by MESA's liquid-electrolyte estimate) and fn_keq. They read the consuming model's mounted parameter library by its mount name `tp` (mosaic_thermo_parameters.esm), and zsr_water reads the consumer's `elec` (electrolyte amounts, nmol/m3) and `v_kappa` (the kappa-weighted non-electrolyte dry volume), ion_pair_electrolyte its `n_ion`, `cation_eq` and `anion_eq`, by bare name at the cell (k, b) the caller passes: every consumer carries the cell axes [lev, bin] (2026-11-12) -- the keyed-factor convention of the EarthSciDiscretizations column rules.",
     "authors": [
       "EqWeFiC"
     ],
@@ -197,9 +197,11 @@
     },
     "zsr_water": {
       "params": [
-        "a"
+        "a",
+        "k",
+        "b"
       ],
-      "description": "ZSR liquid water of a bin at water activity a, kg per m3 of air (FUNCTION aerosol_water): W = (sum over the first NZSR electrolytes of E_e/m_e(a) + 1e-3 v_kappa a/(1 - a)) 1e-9, every literal at its binary32 value. Reads the consumer's `elec`, `v_kappa` and metaparameter NZSR.",
+      "description": "ZSR liquid water of a bin at water activity a, kg per m3 of air (FUNCTION aerosol_water): W = (sum over the first NZSR electrolytes of E_e/m_e(a) + 1e-3 v_kappa a/(1 - a)) 1e-9, every literal at its binary32 value. Reads the consumer's `elec` and `v_kappa` of cell k, section b (both shaped [lev, bin, ...] in every consumer) and metaparameter NZSR.",
       "body": {
         "op": "*",
         "args": [
@@ -224,6 +226,8 @@
                       "op": "index",
                       "args": [
                         "elec",
+                        "k",
+                        "b",
                         "e"
                       ]
                     },
@@ -249,7 +253,14 @@
                         "op": "*",
                         "args": [
                           "tp.kappa_water_per_volume",
-                          "v_kappa"
+                          {
+                            "op": "index",
+                            "args": [
+                              "v_kappa",
+                              "k",
+                              "b"
+                            ]
+                          }
                         ]
                       },
                       "a"
@@ -267,6 +278,1186 @@
             ]
           },
           "tp.mol_per_nmol"
+        ]
+      }
+    },
+    "aerosol_xt": {
+      "params": [
+        "so4",
+        "msa",
+        "nh4",
+        "na",
+        "ca"
+      ],
+      "description": "MOSAIC's sulfate ratio X_T = (NH4 + Na + 2 Ca)/(SO4 + MSA/2) of a phase's species amounts, or -1 when the phase holds neither sulfate nor MSA (SUBROUTINE calculate_xt). Above 2 (or below 0) a particle is sulfate-POOR, below 2 sulfate-RICH.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          {
+            "op": ">",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  "so4",
+                  {
+                    "op": "*",
+                    "args": [
+                      0.5,
+                      "msa"
+                    ]
+                  }
+                ]
+              },
+              0.0
+            ]
+          },
+          {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      "nh4",
+                      "na"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      "ca"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "+",
+                "args": [
+                  "so4",
+                  {
+                    "op": "*",
+                    "args": [
+                      0.5,
+                      "msa"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          -1.0
+        ]
+      }
+    },
+    "ion_pair_electrolyte": {
+      "params": [
+        "e",
+        "k",
+        "b"
+      ],
+      "description": "Electrolyte e formed by EQUIVALENT-FRACTION PAIRING of the ions in the sulfate-poor domain (ions_to_electrolytes, mesa_estimate_eleliquid): with x_c = n_c z_c / sum over cations of n z and x_a likewise over the anions, E_e = (x_c n_a M_a + x_a n_c M_c)/M_e for e's cation c and anion a (tp.pair_cation, tp.pair_anion), so every cation is shared among the anions in proportion to their charge equivalents and vice versa. 0 for an electrolyte that is not a pair, and for every electrolyte when either sum is zero (the Fortran returns with all of them zero). Reads the consumer's n_ion (ion amounts in the `ion` order, nmol/m3), cation_eq and anion_eq (the two charge sums) of cell k, section b by bare name (shaped [lev, bin, ...] in every consumer), and the mounted parameter library `tp`.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      {
+                        "op": "faq",
+                        "output_idx": [],
+                        "reduce": "+",
+                        "args": [],
+                        "ranges": {
+                          "i": {
+                            "from": "ion"
+                          }
+                        },
+                        "expr": {
+                          "op": "index",
+                          "args": [
+                            "tp.pair_cation",
+                            "e",
+                            "i"
+                          ]
+                        }
+                      },
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "!=",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "cation_eq",
+                          "k",
+                          "b"
+                        ]
+                      },
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "!=",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "anion_eq",
+                      "k",
+                      "b"
+                    ]
+                  },
+                  0.0
+                ]
+              }
+            ]
+          },
+          {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "faq",
+                        "output_idx": [],
+                        "reduce": "+",
+                        "args": [],
+                        "ranges": {
+                          "i": {
+                            "from": "ion"
+                          }
+                        },
+                        "expr": {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "tp.pair_cation",
+                                "e",
+                                "i"
+                              ]
+                            },
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "n_ion",
+                                        "k",
+                                        "b",
+                                        "i"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "tp.z_ion",
+                                        "i"
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "cation_eq",
+                                    "k",
+                                    "b"
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "op": "faq",
+                        "output_idx": [],
+                        "reduce": "+",
+                        "args": [],
+                        "ranges": {
+                          "i": {
+                            "from": "ion"
+                          }
+                        },
+                        "expr": {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "tp.pair_anion",
+                                "e",
+                                "i"
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "n_ion",
+                                    "k",
+                                    "b",
+                                    "i"
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "tp.mw_ion",
+                                    "i"
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "faq",
+                        "output_idx": [],
+                        "reduce": "+",
+                        "args": [],
+                        "ranges": {
+                          "i": {
+                            "from": "ion"
+                          }
+                        },
+                        "expr": {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "tp.pair_anion",
+                                "e",
+                                "i"
+                              ]
+                            },
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "n_ion",
+                                        "k",
+                                        "b",
+                                        "i"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "tp.z_ion",
+                                        "i"
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "anion_eq",
+                                    "k",
+                                    "b"
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "op": "faq",
+                        "output_idx": [],
+                        "reduce": "+",
+                        "args": [],
+                        "ranges": {
+                          "i": {
+                            "from": "ion"
+                          }
+                        },
+                        "expr": {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "tp.pair_cation",
+                                "e",
+                                "i"
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "n_ion",
+                                    "k",
+                                    "b",
+                                    "i"
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "tp.mw_ion",
+                                    "i"
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "tp.mw_el",
+                  "e"
+                ]
+              }
+            ]
+          },
+          0.0
+        ]
+      }
+    },
+    "fn_keq": {
+      "params": [
+        "k298",
+        "a",
+        "b",
+        "t",
+        "t_ref"
+      ],
+      "description": "MOSAIC's equilibrium-constant temperature dependence, FUNCTION fn_keq: K(T) = K298 exp(a (tt - 1) + b (1 + ln tt - tt)) with tt = t_ref/T (t_ref the binary32 298.15).",
+      "body": {
+        "op": "*",
+        "args": [
+          "k298",
+          {
+            "op": "exp",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "a",
+                      {
+                        "op": "-",
+                        "args": [
+                          {
+                            "op": "/",
+                            "args": [
+                              "t_ref",
+                              "t"
+                            ]
+                          },
+                          1.0
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "b",
+                      {
+                        "op": "-",
+                        "args": [
+                          {
+                            "op": "+",
+                            "args": [
+                              1.0,
+                              {
+                                "op": "log",
+                                "args": [
+                                  {
+                                    "op": "/",
+                                    "args": [
+                                      "t_ref",
+                                      "t"
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "/",
+                            "args": [
+                              "t_ref",
+                              "t"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "mtem_fit_activity": {
+      "params": [
+        "a",
+        "e"
+      ],
+      "description": "Water activity a held at or above solvent electrolyte e's MTEM fit limit, max(a, a_min,e) (FUNCTION fnlog_gamz). Unlike zsr_fit_activity there is no upper cap.",
+      "body": {
+        "op": "max",
+        "args": [
+          "a",
+          {
+            "op": "index",
+            "args": [
+              "tp.aw_min",
+              "e"
+            ]
+          }
+        ]
+      }
+    },
+    "mtem_log_gamz": {
+      "params": [
+        "a",
+        "ja",
+        "je"
+      ],
+      "description": "log10 of the binary MTEM activity coefficient of electrolyte ja in a binary solution of electrolyte je at water activity a (FUNCTION fnlog_gamz): sum_{p=1..6} b_mtem[p, ja, je] a^(p-1) on the activity held at the fit's lower limit (mtem_fit_activity). Zero for the pairs mtem_compute_log_gamz does not list, since b_mtem is zero there.",
+      "body": {
+        "op": "faq",
+        "output_idx": [],
+        "reduce": "+",
+        "args": [],
+        "ranges": {
+          "p": {
+            "from": "pc"
+          }
+        },
+        "expr": {
+          "op": "*",
+          "args": [
+            {
+              "op": "index",
+              "args": [
+                "tp.b_mtem",
+                "p",
+                "ja",
+                "je"
+              ]
+            },
+            {
+              "op": "^",
+              "args": [
+                {
+                  "op": "apply_expression_template",
+                  "args": [],
+                  "name": "mtem_fit_activity",
+                  "bindings": {
+                    "a": "a",
+                    "e": "je"
+                  }
+                },
+                {
+                  "op": "-",
+                  "args": [
+                    "p",
+                    1
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "mosaic_quadratic": {
+      "params": [
+        "a",
+        "b",
+        "c",
+        "xs"
+      ],
+      "description": "MOSAIC's FUNCTION quadratic (module_mosaic_therm.F): the larger root of a z^2 + b z + c = 0, max((-b + sqrt(b^2 - 4ac))/2a, (-b - sqrt(b^2 - 4ac))/2a), except where x = 4 (a/b)(c/b) is small, |x| < xs (the caller passes 1.e-6 at its binary32 value, ap.series_x), where the root is taken from the series (-b/2a)(x/2 + x^2/8 + x^3/16), folded to -b/a minus itself where that is negative (x = 1e6 when b = 0, so the closed form applies). ASTEM's surface equilibria solve every two-gas surface balance with it: an acid and NH3 condensing as one salt, kg_NH3 (g_NH3 - s) = kg_acid (g_acid - K/s), is kg_NH3 s^2 + (kg_acid g_acid - kg_NH3 g_NH3) s - kg_acid K = 0 for the surface NH3 s. It is an exact algebraic root, not an iteration.",
+      "body": {
+        "op": "ifelse",
+        "args": [
+          {
+            "op": "<",
+            "args": [
+              {
+                "op": "abs",
+                "args": [
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": "==",
+                        "args": [
+                          "b",
+                          0.0
+                        ]
+                      },
+                      1000000.0,
+                      {
+                        "op": "*",
+                        "args": [
+                          4.0,
+                          {
+                            "op": "/",
+                            "args": [
+                              "a",
+                              "b"
+                            ]
+                          },
+                          {
+                            "op": "/",
+                            "args": [
+                              "c",
+                              "b"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "xs"
+            ]
+          },
+          {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "<",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              -0.5,
+                              "b"
+                            ]
+                          },
+                          "a"
+                        ]
+                      },
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              0.5,
+                              {
+                                "op": "ifelse",
+                                "args": [
+                                  {
+                                    "op": "==",
+                                    "args": [
+                                      "b",
+                                      0.0
+                                    ]
+                                  },
+                                  1000000.0,
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      4.0,
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          "a",
+                                          "b"
+                                        ]
+                                      },
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          "c",
+                                          "b"
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              0.125,
+                              {
+                                "op": "^",
+                                "args": [
+                                  {
+                                    "op": "ifelse",
+                                    "args": [
+                                      {
+                                        "op": "==",
+                                        "args": [
+                                          "b",
+                                          0.0
+                                        ]
+                                      },
+                                      1000000.0,
+                                      {
+                                        "op": "*",
+                                        "args": [
+                                          4.0,
+                                          {
+                                            "op": "/",
+                                            "args": [
+                                              "a",
+                                              "b"
+                                            ]
+                                          },
+                                          {
+                                            "op": "/",
+                                            "args": [
+                                              "c",
+                                              "b"
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  2.0
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              0.0625,
+                              {
+                                "op": "^",
+                                "args": [
+                                  {
+                                    "op": "ifelse",
+                                    "args": [
+                                      {
+                                        "op": "==",
+                                        "args": [
+                                          "b",
+                                          0.0
+                                        ]
+                                      },
+                                      1000000.0,
+                                      {
+                                        "op": "*",
+                                        "args": [
+                                          4.0,
+                                          {
+                                            "op": "/",
+                                            "args": [
+                                              "a",
+                                              "b"
+                                            ]
+                                          },
+                                          {
+                                            "op": "/",
+                                            "args": [
+                                              "c",
+                                              "b"
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  3.0
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  0.0
+                ]
+              },
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "b"
+                        ]
+                      },
+                      "a"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "/",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              -0.5,
+                              "b"
+                            ]
+                          },
+                          "a"
+                        ]
+                      },
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              0.5,
+                              {
+                                "op": "ifelse",
+                                "args": [
+                                  {
+                                    "op": "==",
+                                    "args": [
+                                      "b",
+                                      0.0
+                                    ]
+                                  },
+                                  1000000.0,
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      4.0,
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          "a",
+                                          "b"
+                                        ]
+                                      },
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          "c",
+                                          "b"
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              0.125,
+                              {
+                                "op": "^",
+                                "args": [
+                                  {
+                                    "op": "ifelse",
+                                    "args": [
+                                      {
+                                        "op": "==",
+                                        "args": [
+                                          "b",
+                                          0.0
+                                        ]
+                                      },
+                                      1000000.0,
+                                      {
+                                        "op": "*",
+                                        "args": [
+                                          4.0,
+                                          {
+                                            "op": "/",
+                                            "args": [
+                                              "a",
+                                              "b"
+                                            ]
+                                          },
+                                          {
+                                            "op": "/",
+                                            "args": [
+                                              "c",
+                                              "b"
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  2.0
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "*",
+                            "args": [
+                              0.0625,
+                              {
+                                "op": "^",
+                                "args": [
+                                  {
+                                    "op": "ifelse",
+                                    "args": [
+                                      {
+                                        "op": "==",
+                                        "args": [
+                                          "b",
+                                          0.0
+                                        ]
+                                      },
+                                      1000000.0,
+                                      {
+                                        "op": "*",
+                                        "args": [
+                                          4.0,
+                                          {
+                                            "op": "/",
+                                            "args": [
+                                              "a",
+                                              "b"
+                                            ]
+                                          },
+                                          {
+                                            "op": "/",
+                                            "args": [
+                                              "c",
+                                              "b"
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  3.0
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          -0.5,
+                          "b"
+                        ]
+                      },
+                      "a"
+                    ]
+                  },
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          0.5,
+                          {
+                            "op": "ifelse",
+                            "args": [
+                              {
+                                "op": "==",
+                                "args": [
+                                  "b",
+                                  0.0
+                                ]
+                              },
+                              1000000.0,
+                              {
+                                "op": "*",
+                                "args": [
+                                  4.0,
+                                  {
+                                    "op": "/",
+                                    "args": [
+                                      "a",
+                                      "b"
+                                    ]
+                                  },
+                                  {
+                                    "op": "/",
+                                    "args": [
+                                      "c",
+                                      "b"
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          0.125,
+                          {
+                            "op": "^",
+                            "args": [
+                              {
+                                "op": "ifelse",
+                                "args": [
+                                  {
+                                    "op": "==",
+                                    "args": [
+                                      "b",
+                                      0.0
+                                    ]
+                                  },
+                                  1000000.0,
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      4.0,
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          "a",
+                                          "b"
+                                        ]
+                                      },
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          "c",
+                                          "b"
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              2.0
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          0.0625,
+                          {
+                            "op": "^",
+                            "args": [
+                              {
+                                "op": "ifelse",
+                                "args": [
+                                  {
+                                    "op": "==",
+                                    "args": [
+                                      "b",
+                                      0.0
+                                    ]
+                                  },
+                                  1000000.0,
+                                  {
+                                    "op": "*",
+                                    "args": [
+                                      4.0,
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          "a",
+                                          "b"
+                                        ]
+                                      },
+                                      {
+                                        "op": "/",
+                                        "args": [
+                                          "c",
+                                          "b"
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              3.0
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "max",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "b"
+                        ]
+                      },
+                      {
+                        "op": "sqrt",
+                        "args": [
+                          {
+                            "op": "-",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "b",
+                                  "b"
+                                ]
+                              },
+                              {
+                                "op": "*",
+                                "args": [
+                                  4.0,
+                                  "a",
+                                  "c"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      "a"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "b"
+                        ]
+                      },
+                      {
+                        "op": "sqrt",
+                        "args": [
+                          {
+                            "op": "-",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "b",
+                                  "b"
+                                ]
+                              },
+                              {
+                                "op": "*",
+                                "args": [
+                                  4.0,
+                                  "a",
+                                  "c"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      2.0,
+                      "a"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
         ]
       }
     }

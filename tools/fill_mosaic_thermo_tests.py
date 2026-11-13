@@ -38,6 +38,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 from esm_dump import load  # noqa: E402
+from mosaic_cell_axes import cell_axes  # noqa: E402
 
 HERE = os.path.join(os.path.dirname(__file__), "..", "components", "aerosol", "mosaic")
 WATER = os.path.join(HERE, "aerosol_water_zsr.esm")
@@ -220,7 +221,7 @@ def main(dump_dir: str, replay: str | None = None) -> None:
     for path, model, tests in ((WATER, "MosaicAerosolWaterZSR", wtests), (ACT, "MosaicMtemActivities", atests),
                                (MTEM, "MosaicMtemBinaryLogGamma", mtests)):
         doc = json.load(open(path))
-        doc["models"][model]["tests"] = tests
+        doc["models"][model]["tests"] = cell_axes(doc, model, tests, path)
         with open(path, "w") as f:
             json.dump(doc, f, indent=2)
             f.write("\n")

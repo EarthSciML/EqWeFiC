@@ -1,0 +1,3828 @@
+{
+  "esm": "1.2.0",
+  "metadata": {
+    "name": "MosaicAstemMixedSurfaceEquilibrium",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "description": "The PHYSICS of MOSAIC's gas-particle partitioning of HNO3, HCl and NH3 onto one MIXED size bin that holds solid NH4NO3 and/or NH4Cl beside a liquid: SUBROUTINE ASTEM_flux_mix with ASTEM_flux_mix_case4a / case4b (chem/module_mosaic_therm.F, WRF v4.8.0), which ASTEM_semi_volatiles calls for such a bin (any other mixed bin goes to ASTEM_flux_wet). It writes which equilibrium holds at the surface and the instantaneous rates kg (gas - surface) that follow; ASTEM's integrator (the explicit solid and semi-implicit liquid updates, the 1% equilibrium tests that switch a salt off -- signed for a liquid, FORTRAN_BUGS B31 -- and the step choice) is not here (CLAUDE.md: numerical solvers belong to EarthSciIntegrator).\n\nTHE CASES, as ASTEM_flux_mix tests them, from the bin's LIQUID sulfate ratio and its solid salts:\n  1. solid CaCO3, or 2. a sulfate-rich liquid (0 <= X_T < 1.9999): handed to the liquid surface (ASTEM_flux_wet_case1 / case2), so the rates are astem_liquid_surface_equilibrium.esm's (wet; never reached by a bin MOSAIC's phase state can produce in the hand scan, since conform_electrolytes leaves no CaCO3 beside a liquid and no NH4NO3 or NH4Cl beside a sulfate-rich one, but transcribed).\n  3. solid NaCl or CaCl2 with HNO3 in the gas: the solid surface's case 3 -- HNO3 displaces HCl one for one, and NH4Cl forms or evaporates at Keq_sg(2) (ASTEM_flux_dry_case3a/3b).\n  4. solid NH4NO3 and solid NH4Cl: the solid surface's case 4 (ASTEM_flux_dry_case4) at the pure solids' products.\n  4a. solid NH4NO3 only: the solid NH4NO3 surface (ASTEM_flux_dry_case4a at Keq_sg(1)) AND, beside it, the liquid's NH4Cl in solution equilibrium, s_NH3 s_HCl = keq_nh4cl = kel_NH3 kel_HCl a_NH4Cl kp_nh4cl with equal NH3 and HCl fluxes (ASTEM_flux_wet_case3b): two surfaces on one particle, each balancing NH3 against its own acid, and the bin takes both -- its NH3 rate is the sum. Nothing caps that sum at the diffusion limit kg_NH3 g_NH3 (each surface's own NH3 flux is capped, their sum is not; ASTEM_flux_dry_case4ab does scale two solid salts together): FORTRAN_BUGS B32, reproduced here so the rates are the Fortran's.\n  4b. solid NH4Cl only: the solid NH4Cl surface and the liquid's NH4NO3 (ASTEM_flux_wet_case3a), likewise.\nA single-salt surface's NH3 is the larger root of kg_NH3 s^2 + (kg_acid g_acid - kg_NH3 g_NH3) s - kg_acid K = 0 (FUNCTION quadratic, template mosaic_quadratic) -- the same balance the solid surface solves, with the solution's product K in place of the solid's. ASTEM_flux_mix's cases 5 and 6 (no solid NH4NO3 or NH4Cl) cannot be reached from ASTEM_semi_volatiles, which calls it only when one is present; the rates are 0 there.\n\nWHAT IS MOUNTED AROUND IT. The solid pieces are astem_solid_surface_equilibrium.esm's (acid_hno3, f3b, f4a, f4b, scale4, nh3_need) evaluated with mixed = 1, because ASTEM_flux_mix resets Keq_nh4no3_0 = Keq_sg(1), Keq_nh4cl_0 = Keq_sg(2) where ASTEM_flux_dry uses min(Kp0, Keq_sg); the solution products keq_nh4no3 / keq_nh4cl and the case 1/2 rates are astem_liquid_surface_equilibrium.esm's. The coupling documents lift all three pointwise over lev x bin (couplings/mosaic_astem_rates.esm, couplings/mosaic_column.esm) and astem_rate_assembly.esm takes this component's rates for its route_mix bins.\n\nNOT TRANSCRIBED (state edits, which the tests feed the state AFTER): absorb_tiny_nh4cl/nh4no3 and degas_tiny_nh4cl/nh4no3 before case 4a/4b (they move 1% of a gas or of the electrolytes into or out of the solution so that the salt's activity is defined), degas_solid_nh4no3/nh4cl (an undersaturated salt below ptol_mol_astem evaporated at once). Nor the H+ molality ASTEM_flux_mix re-diagnoses from the surface HNO3 or HCl: it feeds no rate.\n\nReference: hand-specified mixed bins run through WRF's own compiled ASTEM (kernels/mosaic_therm_driver mode 6; chem170_scm/mosaic_astem/make_astem_mix_hand.py -> mix.tape; data/eqwefic/notes/chem170_mosaic_astem_capture.md), real(kind=8), rel 1e-9. The chem_opt = 170 column never reaches ASTEM_flux_mix.",
+    "references": [
+      {
+        "citation": "Zaveri, R.A., Easter, R.C., Fast, J.D., Peters, L.K. (2008). MOSAIC. J. Geophys. Res. 113, D13204."
+      },
+      {
+        "citation": "WRF v4.8.0 chem/module_mosaic_therm.F, ASTEM_flux_mix, ASTEM_flux_mix_case4a/4b, ASTEM_flux_wet_case3a/3b, FUNCTION quadratic"
+      }
+    ]
+  },
+  "models": {
+    "MosaicAstemMixedSurfaceEquilibrium": {
+      "expression_template_imports": [
+        {
+          "ref": "./mosaic_thermo_templates.esm"
+        }
+      ],
+      "subsystems": {
+        "ap": {
+          "ref": "./mosaic_astem_parameters.esm"
+        }
+      },
+      "variables": {
+        "gas_hno3": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Gas-phase HNO3, gas(ihno3_g), as ASTEM_flux_mix sees it (after its tiny absorptions and degassings)."
+        },
+        "gas_hcl": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Gas-phase HCl, gas(ihcl_g), likewise."
+        },
+        "gas_nh3": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Gas-phase NH3, gas(inh3_g), likewise."
+        },
+        "kg_hno3": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Mass-transfer coefficient of HNO3 to this bin, kg(ihno3_g, ibin) (gas_particle_mass_transfer.esm)."
+        },
+        "kg_hcl": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Mass-transfer coefficient of HCl to this bin."
+        },
+        "kg_nh3": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 0.0,
+          "description": "Mass-transfer coefficient of NH3 to this bin."
+        },
+        "so4_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid sulfate aer(iso4_a, jliquid, ibin): with msa_l, nh4_l, na_l and ca_l it sets the LIQUID's sulfate ratio X_T, which decides mixed case 2."
+        },
+        "msa_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid MSA."
+        },
+        "nh4_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid NH4."
+        },
+        "na_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid Na."
+        },
+        "ca_l": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Liquid Ca."
+        },
+        "caco3_s": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Solid CaCO3 electrolyte(jcaco3, jsolid, ibin): any makes mixed case 1 (its percentage of the solid salts is positive exactly when the amount is)."
+        },
+        "nacl_s": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Solid NaCl electrolyte(jnacl, jsolid, ibin)."
+        },
+        "cacl2_s": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Solid CaCl2 electrolyte(jcacl2, jsolid, ibin)."
+        },
+        "nh4no3_s": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Solid NH4NO3 electrolyte(jnh4no3, jsolid, ibin)."
+        },
+        "nh4cl_s": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "default": 0.0,
+          "description": "Solid NH4Cl electrolyte(jnh4cl, jsolid, ibin)."
+        },
+        "keq_nh4no3": {
+          "type": "parameter",
+          "units": "nmol^2/m^6",
+          "default": 0.0,
+          "description": "Coupling target: [NH3]s [HNO3]s over the bin's solution, kel_NH3 kel_HNO3 a_NH4NO3 kp_nh4no3 (astem_liquid_surface_equilibrium.esm keq_nh4no3)."
+        },
+        "keq_nh4cl": {
+          "type": "parameter",
+          "units": "nmol^2/m^6",
+          "default": 0.0,
+          "description": "Coupling target: [NH3]s [HCl]s over the bin's solution (astem_liquid_surface_equilibrium.esm keq_nh4cl)."
+        },
+        "cond_l_hno3": {
+          "type": "parameter",
+          "units": "nmol/(m^3 s)",
+          "default": 0.0,
+          "description": "Coupling target: the liquid surface's HNO3 rate (astem_liquid_surface_equilibrium.esm), what mixed cases 1 and 2 hand the bin to."
+        },
+        "cond_l_hcl": {
+          "type": "parameter",
+          "units": "nmol/(m^3 s)",
+          "default": 0.0,
+          "description": "Coupling target: the liquid surface's HCl rate."
+        },
+        "cond_l_nh3": {
+          "type": "parameter",
+          "units": "nmol/(m^3 s)",
+          "default": 0.0,
+          "description": "Coupling target: the liquid surface's NH3 rate."
+        },
+        "acid_hno3": {
+          "type": "parameter",
+          "units": "nmol/(m^3 s)",
+          "default": 0.0,
+          "description": "Coupling target: the solid surface's irreversible HNO3 uptake kg g (astem_solid_surface_equilibrium.esm acid_hno3; case 3a)."
+        },
+        "f3b": {
+          "type": "parameter",
+          "units": "nmol/(m^3 s)",
+          "default": 0.0,
+          "description": "Coupling target: the solid surface's NH4Cl (3b) NH3 = HCl rate, evaluated with mixed = 1 (astem_solid_surface_equilibrium.esm f3b)."
+        },
+        "f4a": {
+          "type": "parameter",
+          "units": "nmol/(m^3 s)",
+          "default": 0.0,
+          "description": "Coupling target: the solid surface's NH4NO3 (4a) HNO3 = NH3 rate at Keq_sg(1), mixed = 1 (f4a)."
+        },
+        "f4b": {
+          "type": "parameter",
+          "units": "nmol/(m^3 s)",
+          "default": 0.0,
+          "description": "Coupling target: the solid surface's NH4Cl (4b) HCl = NH3 rate at Keq_sg(2), mixed = 1 (f4b)."
+        },
+        "scale4": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "Coupling target: the solid surface's NH3-supply scaling of the two acid fluxes when both salts are active (scale4)."
+        },
+        "nh3_need": {
+          "type": "parameter",
+          "units": "nmol/(m^3 s)",
+          "default": 0.0,
+          "description": "Coupling target: f4a + f4b, the NH3 the two solid salts need (nh3_need)."
+        },
+        "x_t": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Sulfate ratio of the LIQUID, template aerosol_xt (ASTEM_flux_mix's ions_to_electrolytes(jliquid))."
+        },
+        "wet": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for mixed cases 1 and 2, which ASTEM_flux_mix hands to the liquid surface (ASTEM_flux_wet_case1 / case2): solid CaCO3, or a sulfate-rich liquid, 0 <= X_T < 1.9999."
+        },
+        "volatile_cl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Solid chloride HNO3 can displace, NaCl + CaCl2."
+        },
+        "case3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for mixed case 3: not wet, solid NaCl or CaCl2, and HNO3 in the gas -- the solid surface's case 3 (3a, and 3b where NH4Cl can form or is present)."
+        },
+        "case4": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for mixed case 4: not wet, not case 3, solid NH4NO3 AND solid NH4Cl -- the solid surface's case 4."
+        },
+        "case4a": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for mixed case 4a: not wet, not case 3, solid NH4NO3 but no solid NH4Cl -- solid NH4NO3 beside liquid NH4Cl (ASTEM_flux_mix_case4a)."
+        },
+        "case4b": {
+          "type": "unknown",
+          "units": "1",
+          "description": "1 for mixed case 4b: not wet, not case 3, solid NH4Cl but no solid NH4NO3 -- solid NH4Cl beside liquid NH4NO3 (ASTEM_flux_mix_case4b)."
+        },
+        "on_l_nh4cl": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 4a: 1 unless g_NH3 g_HCl = 0 or keq_nh4cl = 0 -- the liquid NH4Cl surface exchanges."
+        },
+        "qcl_b": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Case 4a liquid NH4Cl: b = -kg_NH3 g_NH3 + kg_HCl g_HCl."
+        },
+        "qcl_c": {
+          "type": "unknown",
+          "units": "nmol^2/(m^6 s)",
+          "description": "Case 4a liquid NH4Cl: c = -kg_HCl keq_nh4cl."
+        },
+        "scl_nh3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 4a: surface NH3 over the liquid NH4Cl, the larger root of kg_NH3 s^2 + qcl_b s + qcl_c = 0 (template mosaic_quadratic), from s_NH3 s_HCl = keq_nh4cl and equal NH3 and HCl fluxes (ASTEM_flux_wet_case3b)."
+        },
+        "scl_hcl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 4a: surface HCl over the liquid NH4Cl, keq_nh4cl / scl_nh3."
+        },
+        "lcl_hcl": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Case 4a: liquid HCl rate kg_HCl (g_HCl - scl_hcl), 0 where the liquid NH4Cl surface is off."
+        },
+        "lcl_nh3": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Case 4a: liquid NH3 rate kg_NH3 (g_NH3 - scl_nh3), 0 where off."
+        },
+        "on_l_nh4no3": {
+          "type": "unknown",
+          "units": "1",
+          "description": "Case 4b: 1 unless g_NH3 g_HNO3 = 0 or keq_nh4no3 = 0 -- the liquid NH4NO3 surface exchanges."
+        },
+        "qno3_b": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Case 4b liquid NH4NO3: b = -kg_NH3 g_NH3 + kg_HNO3 g_HNO3."
+        },
+        "qno3_c": {
+          "type": "unknown",
+          "units": "nmol^2/(m^6 s)",
+          "description": "Case 4b liquid NH4NO3: c = -kg_HNO3 keq_nh4no3."
+        },
+        "sno3_nh3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 4b: surface NH3 over the liquid NH4NO3 (template mosaic_quadratic; ASTEM_flux_wet_case3a)."
+        },
+        "sno3_hno3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Case 4b: surface HNO3 over the liquid NH4NO3, keq_nh4no3 / sno3_nh3."
+        },
+        "lno3_hno3": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Case 4b: liquid HNO3 rate kg_HNO3 (g_HNO3 - sno3_hno3), 0 where the liquid NH4NO3 surface is off."
+        },
+        "lno3_nh3": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "Case 4b: liquid NH3 rate kg_NH3 (g_NH3 - sno3_nh3), 0 where off."
+        },
+        "cond_hno3": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "HNO3 condensation rate onto this mixed bin, solid plus liquid, by mixed case; negative is evaporation."
+        },
+        "cond_hcl": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "HCl condensation rate onto this mixed bin, solid plus liquid."
+        },
+        "cond_nh3": {
+          "type": "unknown",
+          "units": "nmol/(m^3 s)",
+          "description": "NH3 condensation rate onto this mixed bin, solid plus liquid."
+        }
+      },
+      "equations": [
+        {
+          "lhs": "x_t",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "aerosol_xt",
+            "bindings": {
+              "so4": "so4_l",
+              "msa": "msa_l",
+              "nh4": "nh4_l",
+              "na": "na_l",
+              "ca": "ca_l"
+            }
+          }
+        },
+        {
+          "lhs": "wet",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "caco3_s",
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "<",
+                        "args": [
+                          "x_t",
+                          "ap.xt_rich"
+                        ]
+                      },
+                      {
+                        "op": ">=",
+                        "args": [
+                          "x_t",
+                          0.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "volatile_cl",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "nacl_s",
+              "cacl2_s"
+            ]
+          }
+        },
+        {
+          "lhs": "case3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      "wet",
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "volatile_cl",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": ">",
+                        "args": [
+                          "gas_hno3",
+                          0.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "case4",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "==",
+                        "args": [
+                          "wet",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": "==",
+                        "args": [
+                          "case3",
+                          0.0
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "nh4no3_s",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": ">",
+                        "args": [
+                          "nh4cl_s",
+                          0.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "case4a",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "==",
+                        "args": [
+                          "wet",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": "==",
+                        "args": [
+                          "case3",
+                          0.0
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "nh4no3_s",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": "<=",
+                        "args": [
+                          "nh4cl_s",
+                          0.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "case4b",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "==",
+                        "args": [
+                          "wet",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": "==",
+                        "args": [
+                          "case3",
+                          0.0
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "nh4cl_s",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": "<=",
+                        "args": [
+                          "nh4no3_s",
+                          0.0
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              1.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "on_l_nh4cl",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "gas_nh3",
+                          "gas_hcl"
+                        ]
+                      },
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "keq_nh4cl",
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              0.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "qcl_b",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "kg_nh3",
+                      "gas_nh3"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "kg_hcl",
+                  "gas_hcl"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "qcl_c",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "kg_hcl",
+                  "keq_nh4cl"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "scl_nh3",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mosaic_quadratic",
+            "bindings": {
+              "a": "kg_nh3",
+              "b": "qcl_b",
+              "c": "qcl_c",
+              "xs": "ap.series_x"
+            }
+          }
+        },
+        {
+          "lhs": "scl_hcl",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "keq_nh4cl",
+              "scl_nh3"
+            ]
+          }
+        },
+        {
+          "lhs": "lcl_hcl",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "on_l_nh4cl",
+                  0.0
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "kg_hcl",
+                  {
+                    "op": "-",
+                    "args": [
+                      "gas_hcl",
+                      "scl_hcl"
+                    ]
+                  }
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "lcl_nh3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "on_l_nh4cl",
+                  0.0
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "kg_nh3",
+                  {
+                    "op": "-",
+                    "args": [
+                      "gas_nh3",
+                      "scl_nh3"
+                    ]
+                  }
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "on_l_nh4no3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "==",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "gas_nh3",
+                          "gas_hno3"
+                        ]
+                      },
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "==",
+                    "args": [
+                      "keq_nh4no3",
+                      0.0
+                    ]
+                  }
+                ]
+              },
+              0.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": "qno3_b",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "kg_nh3",
+                      "gas_nh3"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "kg_hno3",
+                  "gas_hno3"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "qno3_c",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "kg_hno3",
+                  "keq_nh4no3"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "sno3_nh3",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "mosaic_quadratic",
+            "bindings": {
+              "a": "kg_nh3",
+              "b": "qno3_b",
+              "c": "qno3_c",
+              "xs": "ap.series_x"
+            }
+          }
+        },
+        {
+          "lhs": "sno3_hno3",
+          "rhs": {
+            "op": "/",
+            "args": [
+              "keq_nh4no3",
+              "sno3_nh3"
+            ]
+          }
+        },
+        {
+          "lhs": "lno3_hno3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "on_l_nh4no3",
+                  0.0
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "kg_hno3",
+                  {
+                    "op": "-",
+                    "args": [
+                      "gas_hno3",
+                      "sno3_hno3"
+                    ]
+                  }
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "lno3_nh3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "on_l_nh4no3",
+                  0.0
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "kg_nh3",
+                  {
+                    "op": "-",
+                    "args": [
+                      "gas_nh3",
+                      "sno3_nh3"
+                    ]
+                  }
+                ]
+              },
+              0.0
+            ]
+          }
+        },
+        {
+          "lhs": "cond_hno3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "wet",
+                  0.0
+                ]
+              },
+              "cond_l_hno3",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "case3",
+                      0.0
+                    ]
+                  },
+                  "acid_hno3",
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "case4",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          "scale4",
+                          "f4a"
+                        ]
+                      },
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": ">",
+                            "args": [
+                              "case4a",
+                              0.0
+                            ]
+                          },
+                          "f4a",
+                          {
+                            "op": "ifelse",
+                            "args": [
+                              {
+                                "op": ">",
+                                "args": [
+                                  "case4b",
+                                  0.0
+                                ]
+                              },
+                              "lno3_hno3",
+                              0.0
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "cond_hcl",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "wet",
+                  0.0
+                ]
+              },
+              "cond_l_hcl",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "case3",
+                      0.0
+                    ]
+                  },
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "acid_hno3"
+                        ]
+                      },
+                      "f3b"
+                    ]
+                  },
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "case4",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          "scale4",
+                          "f4b"
+                        ]
+                      },
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": ">",
+                            "args": [
+                              "case4a",
+                              0.0
+                            ]
+                          },
+                          "lcl_hcl",
+                          {
+                            "op": "ifelse",
+                            "args": [
+                              {
+                                "op": ">",
+                                "args": [
+                                  "case4b",
+                                  0.0
+                                ]
+                              },
+                              "f4b",
+                              0.0
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "cond_nh3",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "wet",
+                  0.0
+                ]
+              },
+              "cond_l_nh3",
+              {
+                "op": "ifelse",
+                "args": [
+                  {
+                    "op": ">",
+                    "args": [
+                      "case3",
+                      0.0
+                    ]
+                  },
+                  "f3b",
+                  {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": ">",
+                        "args": [
+                          "case4",
+                          0.0
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          "scale4",
+                          "nh3_need"
+                        ]
+                      },
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": ">",
+                            "args": [
+                              "case4a",
+                              0.0
+                            ]
+                          },
+                          {
+                            "op": "+",
+                            "args": [
+                              "f4a",
+                              "lcl_nh3"
+                            ]
+                          },
+                          {
+                            "op": "ifelse",
+                            "args": [
+                              {
+                                "op": ">",
+                                "args": [
+                                  "case4b",
+                                  0.0
+                                ]
+                              },
+                              {
+                                "op": "+",
+                                "args": [
+                                  "f4b",
+                                  "lno3_nh3"
+                                ]
+                              },
+                              0.0
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "tests": [
+        {
+          "id": "astemmix_case3_mix3_nacl_ac_50",
+          "description": "Hand-specified bin 'mix3_nacl_ac_50' (mixed, solid NaCl and NH4Cl, HNO3 in the gas: mix case 3 (HNO3 displaces HCl, NH4Cl evaporates); chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 3). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 0.5,
+            "gas_nh3": 1.0,
+            "kg_hno3": 0.00018759606335266233,
+            "kg_hcl": 0.000246003582140024,
+            "kg_nh3": 0.00036013014007250894,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 0.1972063796826411,
+            "na_l": 0.22637562717021442,
+            "ca_l": 0.2,
+            "caco3_s": 0.0,
+            "nacl_s": 0.9832283404957258,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 1.802793620317359,
+            "keq_nh4no3": 4288.851216287155,
+            "keq_nh4cl": 20819.865077207687,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.00018759606335266233,
+            "f3b": -0.042085900031288544,
+            "f4a": 0.0,
+            "f4b": 0.0,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.00018759606335266233,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.22734960946412e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.042273496094641205,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.22734960946412e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.042085900031288544,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.22734960946412e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case3_mix3_nacl_ac_super_40",
+          "description": "Hand-specified bin 'mix3_nacl_ac_super_40' (mix case 3 with NH4Cl supersaturated in the gas (3b condenses); chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 3). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 300.0,
+            "gas_nh3": 300.0,
+            "kg_hno3": 0.00018004455336723344,
+            "kg_hcl": 0.00023611215708342498,
+            "kg_nh3": 0.00034565808944938035,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 0.043698772390041496,
+            "na_l": 0.05721632790517983,
+            "ca_l": 0.2,
+            "caco3_s": 0.0,
+            "nacl_s": 0.9746732567199424,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 1.9563012276099585,
+            "keq_nh4no3": 4357.949017260809,
+            "keq_nh4cl": 21076.015370423273,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.00018004455336723344,
+            "f3b": 0.043442390718192656,
+            "f4a": 0.0,
+            "f4b": 0.0,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.00018004455336723344,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.344239071819266e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.043262346164825424,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.344239071819266e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 0.043442390718192656,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.344239071819266e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4_mix4_an_ac_45",
+          "description": "Hand-specified bin 'mix4_an_ac_45' (mixed, solid NH4NO3 and NH4Cl: mix case 4, both evaporate; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 0.5,
+            "gas_nh3": 1.0,
+            "kg_hno3": 0.00018261870590693827,
+            "kg_hcl": 0.00023948402435619497,
+            "kg_nh3": 0.00035059149967644874,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 0.7656562157732667,
+            "na_l": 0.0,
+            "ca_l": 0.3,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 1.404958543323397,
+            "nh4cl_s": 1.8293852409033364,
+            "keq_nh4no3": 10188.224665161762,
+            "keq_nh4cl": 20711.12604171191,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": -0.02539082215713298,
+            "f4b": -0.04097086414605784,
+            "scale4": 1.0,
+            "nh3_need": -0.06636168630319082
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.02539082215713298,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.636168630319082e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.04097086414605784,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.636168630319082e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.06636168630319082,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.636168630319082e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4_mix4_an_ac_super_40",
+          "description": "Hand-specified bin 'mix4_an_ac_super_40' (mix case 4, both condense; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 300.0,
+            "gas_hcl": 300.0,
+            "gas_nh3": 300.0,
+            "kg_hno3": 0.00017702265913939572,
+            "kg_hcl": 0.00023215368071374755,
+            "kg_nh3": 0.00033986632215784654,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 0.2672035680607525,
+            "na_l": 0.0,
+            "ca_l": 0.3,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 1.800677721251419,
+            "nh4cl_s": 1.9321187106878288,
+            "keq_nh4no3": 10167.528271713401,
+            "keq_nh4cl": 20920.01369813057,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.04267277983994522,
+            "f4b": 0.0427141972643811,
+            "scale4": 1.0,
+            "nh3_need": 0.08538697710432633
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.04267277983994522,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.538697710432632e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.0427141972643811,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.538697710432632e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 0.08538697710432633,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.538697710432632e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4_mix4_an_ac_nh3lim_40",
+          "description": "Hand-specified bin 'mix4_an_ac_nh3lim_40' (mix case 4, acids supersaturated with little NH3: the acid fluxes scaled to the NH3 supply; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 300000.0,
+            "gas_hcl": 300000.0,
+            "gas_nh3": 0.1,
+            "kg_hno3": 0.00017702265913939572,
+            "kg_hcl": 0.00023215368071374755,
+            "kg_nh3": 0.00033986632215784654,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 0.2672035680607525,
+            "na_l": 0.0,
+            "ca_l": 0.3,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 1.800677721251419,
+            "nh4cl_s": 1.9321187106878288,
+            "keq_nh4no3": 10167.528271713401,
+            "keq_nh4cl": 20920.01369813057,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 2.233834753842763e-05,
+            "f4b": 1.1082648865153324e-05,
+            "scale4": 1.0,
+            "nh3_need": 3.342099640358096e-05
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 2.233834753842763e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.342099640358096e-17
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 1.1082648865153324e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.342099640358096e-17
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 3.342099640358096e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.342099640358096e-17
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4a_mix4a_an_60",
+          "description": "Hand-specified bin 'mix4a_an_60' (mixed, solid NH4NO3 only, chloride-free liquid with HCl in the gas: absorb_tiny_nh4cl, then mix case 4a (liquid NH4Cl evaporates); chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4a). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate. ASTEM's signed liquid equilibrium test skipped the evaporating liquid (HCl, NH3: FORTRAN_BUGS B31); the rate asserted is the continuous one, which evaporates it.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 0.4950000001117587,
+            "gas_nh3": 0.9950000001117587,
+            "kg_hno3": 0.00023797333480412867,
+            "kg_hcl": 0.0003119718059830158,
+            "kg_nh3": 0.00045663379408402273,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 3.049016005572569,
+            "na_l": 1.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.9559839943156724,
+            "nh4cl_s": 0.0,
+            "keq_nh4no3": 10081.685245226534,
+            "keq_nh4cl": 98.97680328324671,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": -0.03308010716411056,
+            "f4b": 0.0,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4cl",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "scl_nh3",
+              "time": 0.0,
+              "expected": 8.558154070475839,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.558154070475838e-12
+              }
+            },
+            {
+              "variable": "scl_hcl",
+              "time": 0.0,
+              "expected": 11.565204653734813,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1565204653734814e-11
+              }
+            },
+            {
+              "variable": "lcl_hcl",
+              "time": 0.0,
+              "expected": -0.0034535917383923705,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.608017782388829e-15
+              }
+            },
+            {
+              "variable": "lcl_nh3",
+              "time": 0.0,
+              "expected": -0.0034535917383923696,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.907942363557005e-15
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.03308010716411056,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.6533698902502926e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.0034535917383923705,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.6533698902502926e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.03653369890250293,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.6533698902502926e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4a_mix4a_an_nohcl_60",
+          "description": "Hand-specified bin 'mix4a_an_nohcl_60' (mix case 4a without HCl anywhere: the liquid NH4Cl surface is off; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4a). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 0.0,
+            "gas_nh3": 1.0,
+            "kg_hno3": 0.00023797333480412867,
+            "kg_hcl": 0.0003119718059830158,
+            "kg_nh3": 0.00045663379408402273,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 3.0440160056843277,
+            "na_l": 1.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.9559839943156724,
+            "nh4cl_s": 0.0,
+            "keq_nh4no3": 10096.354653875069,
+            "keq_nh4cl": 0.0,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": -0.03307896929403718,
+            "f4b": 0.0,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4cl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "lcl_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "lcl_nh3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.03307896929403718,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.3078969294037186e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.3078969294037186e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.03307896929403718,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.3078969294037186e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4a_mix4a_an_hiac_60",
+          "description": "Hand-specified bin 'mix4a_an_hiac_60' (mix case 4a with NH4Cl supersaturated over the liquid: solid NH4NO3 evaporates while liquid NH4Cl condenses; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4a). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 299.9500000011176,
+            "gas_nh3": 299.9500000011176,
+            "kg_hno3": 0.00023797333480412867,
+            "kg_hcl": 0.0003119718059830158,
+            "kg_nh3": 0.00045663379408402273,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 3.0940160045667406,
+            "na_l": 1.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.9559839943156724,
+            "nh4cl_s": 0.0,
+            "keq_nh4no3": 9952.755087056552,
+            "keq_nh4cl": 973.3126744922123,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": -0.007496186622708139,
+            "f4b": 0.0,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4cl",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "scl_nh3",
+              "time": 0.0,
+              "expected": 101.57122296588174,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0157122296588174e-10
+              }
+            },
+            {
+              "variable": "scl_hcl",
+              "time": 0.0,
+              "expected": 9.582563309483362,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.582563309483361e-12
+              }
+            },
+            {
+              "variable": "lcl_hcl",
+              "time": 0.0,
+              "expected": 0.09058645362334813,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.357594320495424e-14
+              }
+            },
+            {
+              "variable": "lcl_nh3",
+              "time": 0.0,
+              "expected": 0.09058645362334813,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.3696730653601292e-13
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.007496186622708139,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.058645362334813e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.09058645362334813,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.058645362334813e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 0.08309026700064,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.058645362334813e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4a_mix4a_an_degas_55",
+          "description": "Hand-specified bin 'mix4a_an_degas_55' (mix case 4a, chloride in the liquid but no HCl in the gas: degas_tiny_nh4cl first; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4a). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate. ASTEM's signed liquid equilibrium test skipped the evaporating liquid (HCl, NH3: FORTRAN_BUGS B31); the rate asserted is the continuous one, which evaporates it.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 0.004176263829417031,
+            "gas_nh3": 1.004176263829417,
+            "kg_hno3": 0.00021874478993171373,
+            "kg_hcl": 0.0002867961363982582,
+            "kg_nh3": 0.00041980755591302553,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 2.530776397692965,
+            "na_l": 0.5,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 1.9650473384776177,
+            "nh4cl_s": 0.0,
+            "keq_nh4no3": 10125.960532385188,
+            "keq_nh4cl": 16827.161267991665,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": -0.030407812777936093,
+            "f4b": 0.0,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4cl",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "scl_nh3",
+              "time": 0.0,
+              "expected": 107.71964521776495,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0771964521776495e-10
+              }
+            },
+            {
+              "variable": "scl_hcl",
+              "time": 0.0,
+              "expected": 156.21255745852156,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5621255745852156e-10
+              }
+            },
+            {
+              "variable": "lcl_hcl",
+              "time": 0.0,
+              "expected": -0.04479996019966404,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.48011579359949e-14
+              }
+            },
+            {
+              "variable": "lcl_nh3",
+              "time": 0.0,
+              "expected": -0.04479996019966403,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.522152098268813e-14
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.030407812777936093,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.520777297760012e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.04479996019966404,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.520777297760012e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.07520777297760012,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 7.520777297760012e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4a_mix4a_as_an_68",
+          "description": "Hand-specified bin 'mix4a_as_an_68' (mix case 4a with sulfate in the liquid (X_T >= 2); chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4a). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate. ASTEM's signed liquid equilibrium test skipped the evaporating liquid (HCl, NH3: FORTRAN_BUGS B31); the rate asserted is the continuous one, which evaporates it.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 0.4950000001117587,
+            "gas_nh3": 0.9950000001117587,
+            "kg_hno3": 0.00023573083573730276,
+            "kg_hcl": 0.00030903596748423784,
+            "kg_nh3": 0.00045233950563167917,
+            "so4_l": 0.2,
+            "msa_l": 0.0,
+            "nh4_l": 3.5877314732602184,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.8172685266280235,
+            "nh4cl_s": 0.0,
+            "keq_nh4no3": 10035.105998096771,
+            "keq_nh4cl": 86.80371157430812,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": -0.03276869747004081,
+            "f4b": 0.0,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4cl",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "scl_nh3",
+              "time": 0.0,
+              "expected": 8.036307277094576,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.036307277094575e-12
+              }
+            },
+            {
+              "variable": "scl_hcl",
+              "time": 0.0,
+              "expected": 10.801442575711329,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.080144257571133e-11
+              }
+            },
+            {
+              "variable": "lcl_hcl",
+              "time": 0.0,
+              "expected": -0.0031850614526711535,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.3380342566103885e-15
+              }
+            },
+            {
+              "variable": "lcl_nh3",
+              "time": 0.0,
+              "expected": -0.003185061452671152,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.635139260825226e-15
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.03276869747004081,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.5953758922711964e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.0031850614526711535,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.5953758922711964e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.035953758922711965,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.5953758922711964e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4b_mix4b_ac_an_66",
+          "description": "Hand-specified bin 'mix4b_ac_an_66' (mixed, solid NH4Cl only, nitrate in the liquid: mix case 4b (liquid NH4NO3 evaporates); chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4b). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate. ASTEM's signed liquid equilibrium test skipped the evaporating liquid (HNO3, NH3: FORTRAN_BUGS B31); the rate asserted is the continuous one, which evaporates it.",
+          "parameter_overrides": {
+            "gas_hno3": 1.0,
+            "gas_hcl": 0.5,
+            "gas_nh3": 1.0,
+            "kg_hno3": 0.00019143446619642146,
+            "kg_hcl": 0.00025103106160422506,
+            "kg_nh3": 0.0003674855840298254,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 1.530629016457298,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 3.469370983542702,
+            "keq_nh4no3": 6878.610940036237,
+            "keq_nh4cl": 20548.29615602045,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.0,
+            "f4b": -0.04294573707030292,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4no3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sno3_nh3",
+              "time": 0.0,
+              "expected": 60.10050644009578,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.010050644009577e-11
+              }
+            },
+            {
+              "variable": "sno3_hno3",
+              "time": 0.0,
+              "expected": 114.45179662325113,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1445179662325113e-10
+              }
+            },
+            {
+              "variable": "lno3_hno3",
+              "time": 0.0,
+              "expected": -0.02171858412559705,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.1910018591793472e-14
+              }
+            },
+            {
+              "variable": "lno3_nh3",
+              "time": 0.0,
+              "expected": -0.021718584125597053,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.2086069709626878e-14
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.02171858412559705,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.466432119589997e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.04294573707030292,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.466432119589997e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.06466432119589997,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.466432119589997e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4b_mix4b_ac_an_hian_64",
+          "description": "Hand-specified bin 'mix4b_ac_an_hian_64' (mix case 4b with NH4NO3 supersaturated over the liquid: solid NH4Cl evaporates while liquid NH4NO3 condenses; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4b). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 300.0,
+            "gas_hcl": 1.0,
+            "gas_nh3": 300.0,
+            "kg_hno3": 0.00018579051408268966,
+            "kg_hcl": 0.00024363863417705233,
+            "kg_nh3": 0.0003566700579707948,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 1.4213150099296867,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 3.5786849900703133,
+            "keq_nh4no3": 7982.183503942222,
+            "keq_nh4cl": 20319.102891403734,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.0,
+            "f4b": -0.01424970842452692,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4no3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sno3_nh3",
+              "time": 0.0,
+              "expected": 168.417414189731,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.68417414189731e-10
+              }
+            },
+            {
+              "variable": "sno3_hno3",
+              "time": 0.0,
+              "expected": 47.395238445769486,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.7395238445769484e-11
+              }
+            },
+            {
+              "variable": "lno3_hno3",
+              "time": 0.0,
+              "expected": 0.04693156850889573,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.57371542248069e-14
+              }
+            },
+            {
+              "variable": "lno3_nh3",
+              "time": 0.0,
+              "expected": 0.046931568508895724,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0700101739123843e-13
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.04693156850889573,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.693156850889573e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.01424970842452692,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.693156850889573e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 0.032681860084368804,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.693156850889573e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4b_mix4b_ac_nohno3_66",
+          "description": "Hand-specified bin 'mix4b_ac_nohno3_66' (mix case 4b, nitrate in the liquid but no HNO3 in the gas: degas_tiny_nh4no3 first; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4b). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate. ASTEM's signed liquid equilibrium test skipped the evaporating liquid (HNO3, NH3: FORTRAN_BUGS B31); the rate asserted is the continuous one, which evaporates it.",
+          "parameter_overrides": {
+            "gas_hno3": 0.009999999776482582,
+            "gas_hcl": 0.5,
+            "gas_nh3": 1.0099999997764826,
+            "kg_hno3": 0.00019143446619642146,
+            "kg_hcl": 0.00025103106160422506,
+            "kg_nh3": 0.0003674855840298254,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 1.5206290166808154,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 3.469370983542702,
+            "keq_nh4no3": 6854.357511239215,
+            "keq_nh4cl": 20672.86400274253,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.0,
+            "f4b": -0.04294390482829357,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4no3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sno3_nh3",
+              "time": 0.0,
+              "expected": 60.2593749124096,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.02593749124096e-11
+              }
+            },
+            {
+              "variable": "sno3_hno3",
+              "time": 0.0,
+              "expected": 113.74757075064934,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.1374757075064935e-10
+              }
+            },
+            {
+              "variable": "lno3_hno3",
+              "time": 0.0,
+              "expected": -0.021773291143171065,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.177520548779024e-14
+              }
+            },
+            {
+              "variable": "lno3_nh3",
+              "time": 0.0,
+              "expected": -0.021773291143171065,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.2144451582959046e-14
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.021773291143171065,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.471719597146463e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.04294390482829357,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.471719597146463e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.06471719597146464,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.471719597146463e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4b_mix4b_ac_nacl_72",
+          "description": "Hand-specified bin 'mix4b_ac_nacl_72' (mix case 4b, nitrate-free sodium chloride liquid with HNO3 in the gas: absorb_tiny_nh4no3 first; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4b). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate. ASTEM's signed liquid equilibrium test skipped the evaporating liquid (HNO3, NH3: FORTRAN_BUGS B31); the rate asserted is the continuous one, which evaporates it.",
+          "parameter_overrides": {
+            "gas_hno3": 0.9900000002235174,
+            "gas_hcl": 0.5,
+            "gas_nh3": 0.9900000002235174,
+            "kg_hno3": 0.00024338837719148758,
+            "kg_hcl": 0.000319060827851487,
+            "kg_nh3": 0.00046700281358767504,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 1.1593405971667603,
+            "na_l": 1.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 2.8506594026097223,
+            "keq_nh4no3": 22.863279905647477,
+            "keq_nh4cl": 20286.7977814743,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.0,
+            "f4b": -0.05458223184149648,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4no3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sno3_nh3",
+              "time": 0.0,
+              "expected": 3.697057827965981,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.697057827965981e-12
+              }
+            },
+            {
+              "variable": "sno3_hno3",
+              "time": 0.0,
+              "expected": 6.184182387600418,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.184182387600418e-12
+              }
+            },
+            {
+              "variable": "lno3_hno3",
+              "time": 0.0,
+              "expected": -0.0012642036221002706,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.5051581155742447e-15
+              }
+            },
+            {
+              "variable": "lno3_nh3",
+              "time": 0.0,
+              "expected": -0.0012642036221002704,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.726536407656452e-15
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.0012642036221002706,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.584643546359675e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.05458223184149648,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.584643546359675e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.05584643546359675,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.584643546359675e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4b_mix4b_an_ac_nh3lim_60",
+          "description": "Hand-specified bin 'mix4b_an_ac_nh3lim_60' (mix case 4b with the acids supersaturated and little NH3; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4b). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 300000.0,
+            "gas_hcl": 300000.0,
+            "gas_nh3": 0.1,
+            "kg_hno3": 0.0002253852687247923,
+            "kg_hcl": 0.00029549094220851865,
+            "kg_nh3": 0.0004325264424905807,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 2.8715714245093604,
+            "na_l": 0.0,
+            "ca_l": 0.3,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 1.1284285754906398,
+            "keq_nh4no3": 8448.616253014225,
+            "keq_nh4cl": 20583.382934498342,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.0,
+            "f4b": 1.4106135658234602e-05,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4no3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sno3_nh3",
+              "time": 0.0,
+              "expected": 0.028162067118202797,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.8162067118202795e-14
+              }
+            },
+            {
+              "variable": "sno3_hno3",
+              "time": 0.0,
+              "expected": 299999.8621391463,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.999998621391463e-07
+              }
+            },
+            {
+              "variable": "lno3_hno3",
+              "time": 0.0,
+              "expected": 3.107180555569734e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 6.761558061743769e-11
+              }
+            },
+            {
+              "variable": "lno3_nh3",
+              "time": 0.0,
+              "expected": 3.107180554524086e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.325264424905807e-17
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 3.107180555569734e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.517794120347546e-17
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 1.4106135658234602e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.517794120347546e-17
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 4.517794120347546e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.517794120347546e-17
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4b_mix4b_as_ac_76",
+          "description": "Hand-specified bin 'mix4b_as_ac_76' (mix case 4b with sulfate in the liquid; chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4b). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate. ASTEM's signed liquid equilibrium test skipped the evaporating liquid (HNO3, NH3: FORTRAN_BUGS B31); the rate asserted is the continuous one, which evaporates it.",
+          "parameter_overrides": {
+            "gas_hno3": 0.9900000002235174,
+            "gas_hcl": 0.5,
+            "gas_nh3": 0.9900000002235174,
+            "kg_hno3": 0.00018094071510808599,
+            "kg_hcl": 0.0002372860442653737,
+            "kg_nh3": 0.00034737562209021894,
+            "so4_l": 0.2,
+            "msa_l": 0.0,
+            "nh4_l": 0.9098223876196325,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 3.5001776121568504,
+            "keq_nh4no3": 115.61820342152464,
+            "keq_nh4cl": 20212.28516965657,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.0,
+            "f4b": -0.040596673836486845,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4no3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sno3_nh3",
+              "time": 0.0,
+              "expected": 8.001143024094647,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 8.001143024094647e-12
+              }
+            },
+            {
+              "variable": "sno3_hno3",
+              "time": 0.0,
+              "expected": 14.450210810299467,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.4450210810299466e-11
+              }
+            },
+            {
+              "variable": "lno3_hno3",
+              "time": 0.0,
+              "expected": -0.0024355001694807317,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.6146314774781803e-15
+              }
+            },
+            {
+              "variable": "lno3_nh3",
+              "time": 0.0,
+              "expected": -0.0024355001694807326,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.7794020354276934e-15
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": -0.0024355001694807317,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.303217400596758e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": -0.040596673836486845,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.303217400596758e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": -0.04303217400596758,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 4.303217400596758e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4a_mix4a_an_bothcond_60",
+          "description": "Hand-specified bin 'mix4a_an_bothcond_60' (mix case 4a with both the solid NH4NO3 and the liquid NH4Cl condensing on little NH3: their NH3 uptakes add to 1.87 kg_NH3 g_NH3, above the diffusion limit (FORTRAN_BUGS B32); chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4a). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 3000.0,
+            "gas_hcl": 2999.9500000011176,
+            "gas_nh3": 29.950000001117587,
+            "kg_hno3": 0.00023797333480412867,
+            "kg_hcl": 0.0003119718059830158,
+            "kg_nh3": 0.00045663379408402273,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 3.0940160045667406,
+            "na_l": 1.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.9559839943156724,
+            "nh4cl_s": 0.0,
+            "keq_nh4no3": 9952.755087056552,
+            "keq_nh4cl": 973.3126744922123,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.01208420895192863,
+            "f4b": 0.0,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4cl",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "scl_nh3",
+              "time": 0.0,
+              "expected": 0.32920065566083023,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.2920065566083023e-13
+              }
+            },
+            {
+              "variable": "scl_hcl",
+              "time": 0.0,
+              "expected": 2956.593973175435,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.9565939731754352e-09
+              }
+            },
+            {
+              "variable": "lcl_hcl",
+              "time": 0.0,
+              "expected": 0.013525857989056225,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 9.35899819359097e-13
+              }
+            },
+            {
+              "variable": "lcl_nh3",
+              "time": 0.0,
+              "expected": 0.013525857988917455,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.3676182133326807e-14
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.01208420895192863,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.5610066940846086e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.013525857989056225,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.5610066940846086e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 0.025610066940846086,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.5610066940846086e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4b_mix4b_ac_bothcond_64",
+          "description": "Hand-specified bin 'mix4b_ac_bothcond_64' (mix case 4b with both the solid NH4Cl and the liquid NH4NO3 condensing on little NH3: 1.68 kg_NH3 g_NH3 (B32); chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4b). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 3000.0,
+            "gas_hcl": 3000.0,
+            "gas_nh3": 30.0,
+            "kg_hno3": 0.00018579051408268966,
+            "kg_hcl": 0.00024363863417705233,
+            "kg_nh3": 0.0003566700579707948,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 1.4213150099296867,
+            "na_l": 0.0,
+            "ca_l": 0.0,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 0.0,
+            "nh4cl_s": 3.5786849900703133,
+            "keq_nh4no3": 7982.183503942222,
+            "keq_nh4cl": 20319.102891403734,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 0.0,
+            "f4b": 0.008268309442046099,
+            "scale4": 1.0,
+            "nh3_need": 0.0
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "on_l_nh4no3",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "sno3_nh3",
+              "time": 0.0,
+              "expected": 2.7080221655764354,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.7080221655764354e-12
+              }
+            },
+            {
+              "variable": "sno3_hno3",
+              "time": 0.0,
+              "expected": 2947.6064137913427,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 2.9476064137913425e-09
+              }
+            },
+            {
+              "variable": "lno3_hno3",
+              "time": 0.0,
+              "expected": 0.009734231316342164,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 5.57371542248069e-13
+              }
+            },
+            {
+              "variable": "lno3_nh3",
+              "time": 0.0,
+              "expected": 0.0097342313163415,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.0700101739123844e-14
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 0.009734231316342164,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.80025407583876e-14
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 0.008268309442046099,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.80025407583876e-14
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 0.0180025407583876,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 1.80025407583876e-14
+              }
+            }
+          ]
+        },
+        {
+          "id": "astemmix_case4_mix4_an_ac_scaled_40",
+          "description": "Hand-specified bin 'mix4_an_ac_scaled_40' (mix case 4 with both acids so supersaturated that the two salts need more NH3 than kg_NH3 g_NH3 supplies: the acid fluxes scaled together (ASTEM_flux_dry_case4ab); chem170_scm/mosaic_astem/make_astem_mix_hand.py), run through WRF's own compiled ASTEM_semi_volatiles by kernels/mosaic_therm_driver mode 6 at T = 290 K, p = 0.9 atm, 1000 particles/cm3 (mix.tape) (route 3: ASTEM_flux_mix, mixed case 4). Inputs are the state ASTEM_flux_mix formed its fluxes at (FXO record, after its tiny absorptions/degassings), kg (BIN record), the solution products kel kel a kp (AIN/FXO); the solid half enters as the solid fluxes ASTEM formed (the solid component's astemmix_dry_* tests check those). Expected: the case flags, the liquid single-salt surface (sfc_a, kg df_gas_l) and the bin rates flux_s + kg df_gas_l. rel 1e-9, absolute floor 1e-12 of the largest rate.",
+          "parameter_overrides": {
+            "gas_hno3": 3000000.0,
+            "gas_hcl": 3000000.0,
+            "gas_nh3": 0.1,
+            "kg_hno3": 0.00017702265913939572,
+            "kg_hcl": 0.00023215368071374755,
+            "kg_nh3": 0.00033986632215784654,
+            "so4_l": 0.0,
+            "msa_l": 0.0,
+            "nh4_l": 0.2672035680607525,
+            "na_l": 0.0,
+            "ca_l": 0.3,
+            "caco3_s": 0.0,
+            "nacl_s": 0.0,
+            "cacl2_s": 0.0,
+            "nh4no3_s": 1.800677721251419,
+            "nh4cl_s": 1.9321187106878288,
+            "keq_nh4no3": 10167.528271713401,
+            "keq_nh4cl": 20920.01369813057,
+            "cond_l_hno3": 0.0,
+            "cond_l_hcl": 0.0,
+            "cond_l_nh3": 0.0,
+            "acid_hno3": 0.0,
+            "f3b": 0.0,
+            "f4a": 1.728994261263964e-05,
+            "f4b": 1.6696689603145018e-05,
+            "scale4": 1.0,
+            "nh3_need": 3.398663221578466e-05
+          },
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "assertions": [
+            {
+              "variable": "wet",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case3",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4",
+              "time": 0.0,
+              "expected": 1.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4a",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "case4b",
+              "time": 0.0,
+              "expected": 0.0,
+              "tolerance": {
+                "abs": 0.0,
+                "rel": 0.0
+              }
+            },
+            {
+              "variable": "cond_hno3",
+              "time": 0.0,
+              "expected": 1.728994261263964e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.398663221578466e-17
+              }
+            },
+            {
+              "variable": "cond_hcl",
+              "time": 0.0,
+              "expected": 1.6696689603145018e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.398663221578466e-17
+              }
+            },
+            {
+              "variable": "cond_nh3",
+              "time": 0.0,
+              "expected": 3.398663221578466e-05,
+              "tolerance": {
+                "rel": 1e-09,
+                "abs": 3.398663221578466e-17
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

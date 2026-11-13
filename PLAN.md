@@ -656,7 +656,7 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
         a per-level `T` into an inline 0-D reaction system gave the right
         per-level tendency (`colrs_inline.esm`), and the same for a 0-D model
         mounted by `models.<k>` ref (`col_scalar.esm`). So CBM-Z does not
-        need rewriting over `lev`; its rate constants (T, M, 14 j-values,
+        need rewriting over `lev`; its rate constants (T, M, 11 j-values,
         and the ten peroxy-pool concentrations that close back onto the
         mechanism's own species) would be lifted with it.
       * **But the runner's assertion surface on a lifted field is broken:**
@@ -673,16 +673,52 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
         a wrapper model, or the newer binary (spec says all five bindings now
         mount the form) -- the latter needs the user's go-ahead.
       * **Species axes are needed elsewhere too.** `chem_vertical_mixing.esm`
-        (vertmx) and `wrf_wesely/deposition_velocity.esm` are one species
+        (vertmx) and `wrf_wesely/deposition_velocity.esm` were one species
         per instance (`C[lev]`, scalar `vd`/`igas`), exactly the shape
-        WetDepLS had; they need the same `spc` axis (gases for Wesely; every
-        transported species for vertmx) before a 233-species column is one
-        mount each. Emissions already output per-species columns.
-      * **Photolysis is one level per instance.** `madronich_column.esm`
-        returns j-values at a single `jlev`, and its channel set is RADM2's
-        21; CBM-Z's rate constants read 14 `j_*`. The column needs the
-        j-values lifted over `lev` (or a `lev` axis in `j_values.esm`) and a
-        stated channel map -- check which `phot_opt` the chem170 run used.
+        WetDepLS had. **Done 2026-11-12 for Wesely** (on `main`): `igas`,
+        `srfres` and everything downstream of them (Rb, vg_max, vg_ref, vd,
+        k_dep) are `[spc]`, the meteorology-only chain (stability function,
+        Ra, cellvg's integral) is shared, and the per-species equations are
+        plain arithmetic on `[spc]` arrays (name-aligned broadcast, esm-spec
+        4.3.4). 406/406 unchanged in count (64 tests of 6 gases instead of 406
+        one-gas tests). `surface_resistance.esm` (Rc) is still one gas per
+        instance and needs the same axis before the column can feed Wesely.
+        **vertmx is done but NOT on `main`:** every lowering rule on ESD `main`
+        is `where`-constrained to a bare `[lev]` field, so `D(K*D(C, lev), lev)`
+        on a `[lev, spc]` field is `unlowered_operator` (probe:
+        `data/eqwefic/phase3_probes/species_axis/vertmix_2d_probe.esm`). A
+        tracer variant of the rule (`varcoeff_face_laplacian_lev_flux_bc_tracer`,
+        `[lev, tracer]` with the axis renamed at the import edge) is on the
+        LOCAL ESD branch `eqwefic/column-tracer-diffusion` (be00bcf, worktree
+        `../EarthSciDiscretizations-tracerdiff`, not pushed), and the
+        species-axis vertmix that uses it is on the local EqWeFiC branch
+        `vertmix/species-axis` (fc1a80d, worktree `../EqWeFiC-vertmix-spc`):
+        2360/2360 against the real64 vertmx kernel, ten species per test. It
+        lands on `main` when the rule is on ESD `main` (the ESD PR still needs
+        a `problems/` driver and an AST conformance golden). Also found while
+        writing it: on `be1fafe6d` a `makearray` region `[[1,1],[1,N]]` filled
+        by a rank-1 `[N]` value silently makes the WHOLE array NaN (spec 4.3.2
+        says singleton dimensions are excluded from the shape match); the rule
+        writes `output_idx: [1, s]` to avoid it. CLI finding, not filed.
+      * **Photolysis (checked 2026-11-12).** The chem170 run uses
+        **`phot_opt = 1` (Madronich)** (`data/eqwefic/chem170_scm/namelist.input`),
+        the same scheme the RADM2 work built. CBM-Z (`cbmz_mosaic.eqn`) reads
+        **11** distinct channels, not 14 -- `o31d, o33p, no2, no3o, hno2,
+        hno3, hno4, h2o2, ch2or, ch2om, n2o5`; the other photolyses are fixed
+        multiples of these (CH3OOH, ETHOOH and ROOH at 0.7 j_h2o2; ALD2 4.6e-4
+        and AONE 7.8e-5 j_no2; MGLY 9.64 and OPEN 9.04 j_ch2or; ...), which
+        `cbmz_rate_constants.esm` already writes. The KPP interface is
+        `jv(Pj_x) = ph_x/60`, and `j_values.esm`'s outputs are already that
+        jv in s^-1, so **the map is the identity on names for ten channels**
+        (`j_o31d, j_o33p, j_no2, j_no3o, j_hno2, j_hno3, j_hno4, j_h2o2,
+        j_ch2or, j_ch2om`). **`j_n2o5` must be bound to 0:** Madronich has no
+        N2O5 channel and `ph_n2o5` is filled only by Fast-J, so in the
+        reference `jv(23)` is exactly zero at every level of every dumped step
+        (FORTRAN_BUGS B28). The remaining gap is levels, not channels:
+        `madronich_column.esm` returns `j_col` at one `jlev`, so the column
+        needs `j_values` over every level (a `lev` axis, or the pointwise lift
+        once the lifted-assertion defect above is fixed); the 11 channels
+        then feed the lifted CBM-Z level by level.
       * **What the coupling itself is:** per species, d c/dt = chemistry
         (lifted CBM-Z, ppmv <-> molec/cm^3 by `conv = 1e-6 dens2con_a rho`)
         + vertmx (with the Wesely flux as its lower boundary) + emissions

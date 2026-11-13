@@ -1,5 +1,5 @@
 {
- "esm": "1.2.0",
+ "esm": "2.0.0",
  "metadata": {
   "name": "RRTMColumn",
   "description": "The RRTM radiation column that WRF builds from a model column (SUBROUTINE MM5ATM and the column-amount part of SETCOEF in phys/module_ra_rrtm.F, WRF 4.8): the NLEV model layers plus NBUF buffer layers above the model top, on the index sets `rlay` (RRTM layers, 1 = lowest, NLEV + NBUF members) and `rlev` (RRTM levels, 1 = surface, NLEV + NBUF + 1 members). MM5ATM: (1) the model part is a plain copy in the bottom-up order shared by this grid (PZ(L) = Pw(kte+1-L) undoes the top-down order of the wrapper's 1-D arrays): pz = p_e/100 hPa, tz = T_e, pavel = p/100, tavel = T for the model layers; (2) the buffer part continues the column to p = 0 in steps of deltap = 4 hPa (pz[j] = p_top - deltap (j - NLEV - 1) for the NBUF - 1 full buffer levels, then pz[NLEV+NBUF+1] = 0, so the top buffer layer is thinner) with layer pressures the level means; (3) buffer temperatures follow the MM5 standard atmosphere T_std(p) (the 60-point PPROF/TPROF table, linear in pressure, clamped to its 0.10 hPa end; template standard_atmosphere_temperature) shifted so that it is continuous at the model top, tz = T_std(pz) + (T_e[top] - T_std(p_top)), and tavel the level means; (4) the dry-air column of every layer coldry = (dp/g)(N_A/amm)/(1 + w) in molecules/cm^2 with w the water-vapour volume mixing ratio (qv amdw, floored at 1e-12 kg/kg, in the model layers; the constant 5e-6 above the model top) and amm = (1 - w) amd + w amw the moist molecular weight; (5) the scaled molecular column amounts of SETCOEF, col_x = 1e-20 coldry vmr_x for H2O, CO2 (co2vmr), N2O (n2ovmr) and CH4 (ch4vmr), all uniform above the model top except H2O (the O2 column COLO2 is identically 0, because MM5ATM never fills WKL(7), and RRTM's longwave bands do not read it); (6) the longwave cloud optical depth of the model layers, taucloud = abcw CLWP + abice CIWP + abrn PLWP + absn PIWP with the paths in g/m^2 (CLWP = rho qc dz, the ice path likewise, and the (rho q)^0.75 rain and snow paths), 0 above the model top, and the layer cloud fraction cldfrac = cldfra forced to 1 where taucloud > 0.01 and 0 above the model top; (7) the surface boundary temperature tbound = tsk capped at 339.99 K (the Planck table limit) and the 16-band surface emissivity semiss = emiss. NOT in this component: the ozone column colo3, which MM5ATM takes from the O3DATA annual-mean climatology (31-bin layer-mean average of the summer/winter tables, INIRAD) evaluated on the EXTENDED column PZR -- a pressure-weighted mean of a piecewise-constant profile that will be written as an `integral` over pressure in the next pass (the dumped o3prof is the same climatology on the model column only and is not what colo3 uses; they differ by 33 %); the 1e-32 floors of SETCOEF on zero CO2/N2O/CH4 columns (never active with the WRF trace-gas inputs); and the cross-section species WX (all zero in WRF). NBUF is a metaparameter because RRTMINIT fixes it once from the model top, NLAYERS = kme + nint(p_top/(100 deltap)) - 1, i.e. NBUF = nint(p_top/(100 deltap)); 44 for the reference column with p_top = 177.6 hPa. Inputs are REWRITE-TARGET ops `input_<name>` that the consumer lowers (in the inline tests through a per-test expression_template_imports library extracted from the WRF dumps). Ozone (added 2026-09-06): the annual-mean O3DATA climatology of MM5ATM/O3PROF2 as the layer integral of a piecewise-constant profile, including WRF's one-layer shift (EqWeFiC FORTRAN_BUGS.md B5), and colo3. EqWeFiC, cited here for FORTRAN_BUGS.md, couplings/ and components/atmospheric_dynamics/wrf_arw/, is https://github.com/EarthSciML/EqWeFiC, where these components were developed and are coupled into a WRF column.",
@@ -82,6 +82,12 @@
     },
     {
      "ref": "./rrtm_ozone_climatology.esm"
+    },
+    {
+     "ref": "esm:std/interp.esm",
+     "only": [
+      "linear"
+     ]
     }
    ],
    "subsystems": {
@@ -246,10 +252,11 @@
      ],
      "description": "MM5ATM's standard-atmosphere temperature T_std(p): linear interpolation in pressure of the 60-point TPROF (K) vs PPROF (hPa) table (1000 hPa .. 0.10 hPa, stored with the pressure axis ascending), clamped beyond the ends -- the Fortran clamps at 0.10 hPa, the only end the buffer layers reach (above 1000 hPa it would extrapolate linearly, impossible above the model top). Spelled as the esm-spec 9.5.3 lowered form interp.linear(data, axis, p) rather than as a `function_tables` entry with `table_lookup`, because the Rust array interpreter of EarthSciAST (inline-test path) does not lower table_lookup (unevaluable_operator).",
      "body": {
-      "op": "fn",
-      "name": "interp.linear",
-      "args": [
-       {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "linear",
+      "bindings": {
+       "table": {
         "op": "const",
         "args": [],
         "value": [
@@ -315,7 +322,7 @@
          279.94
         ]
        },
-       {
+       "axis": {
         "op": "const",
         "args": [],
         "value": [
@@ -381,8 +388,9 @@
          1000.0
         ]
        },
-       "p"
-      ]
+       "x": "p",
+       "n": 60
+      }
      }
     },
     "climatology_layer_mean": {
@@ -2179,7 +2187,7 @@
     {
      "lhs": "o3_clim_integral",
      "rhs": {
-      "op": "aggregate",
+      "op": "faq",
       "args": [],
       "output_idx": [
        "L"

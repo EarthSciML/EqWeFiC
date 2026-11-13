@@ -1,0 +1,730 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "MosaicMesaEquilibrium",
+    "authors": [
+      "EqWeFiC"
+    ],
+    "description": "MOSAIC's MESA solid-liquid equilibrium of one size bin (WRF v4.8.0 chem/module_mosaic_therm.F, mesa_ptc) STATED AS THE PROBLEM an EarthSciIntegrator bounded `solve` node solves (EarthSciIntegrator D95, PR #74): the fifteen solid salt amounts `Mesa.e_salt` are ALGEBRAIC UNKNOWNS, constrained by `0 ~ g` with g = mesa_salt_equilibrium.esm's `g` (S_s - 1 where MOSAIC lets the salt exchange, 0 where it does not), and its bound e_salt >= 0 (`lb`, esm 2.1.0) makes it the mixed complementarity problem e_salt >= 0, g <= 0, e_salt g = 0 -- the equilibrium mesa_ptc approaches by explicit pseudo-time steps. The residual is assembled from the state exactly as couplings/mosaic_mesa_salt_rates.esm assembles it (mass balance, ions_to_electrolytes, ZSR water, MTEM activities, mesa_salt_equilibrium); that document carries the tests, at visited and at converged states, because the Rust CLI does not evaluate a document with an implicit equation (`unsupported_construct`, checked on be1fafe6d, on EarthSciAST main 3e1f9bb2f and on main 4059a0b18, which carries #706 bounds but still has no route from `esm test` to a nonlinear solver). This one is checked by `esm validate` (balanced: one array constraint for the one array algebraic unknown; on 4059a0b18 the `lb` is accepted and the only finding is the mounted mesa_salt_equilibrium.esm's unit `ng/m^3`, which the esm 2.0.0 flat unit table does not list). No solver is written here (CLAUDE.md): the run configuration that solves it is mosaic_mesa_equilibrium.run.json beside this file.\n\nSIGN AND PAIRING. The constraint is written `0 ~ g`, so its residual rhs - lhs is g, the pseudo-time rate of e_salt (EarthSciIntegrator run-config \u00a74.10: g_i paired with z_i, element by element over `salt`). A salt whose g is identically zero at the state (Ca(NO3)2, CaCl2, and the calcium switch-offs; every salt when the liquid has no water) is not moved by a pseudo-time step, so `ptc` keeps it at its warm start, which is MOSAIC's own behaviour: mesa_ptc starts every hand-off from no salt solid (do_full_deliquescence; checked on 2108 taped calls) and never moves such a salt. A semismooth `newton` would see a zero Jacobian row there, hence `ptc`.\n\nWHAT IS NOT AN UNKNOWN. CaSO4 and CaCO3 are insoluble: their solid comes with the bin (`elec_s_fixed`) and ions_to_electrolytes moves any new CaSO4 there; the acids and HHSO4 are never solid.\n\nEvery quantity carries the cell axes [lev, bin] (NLEV, NBIN, 1 by default) like the components it mounts, so this states the equilibrium of every size section of every grid cell at once; the bins are independent."
+  },
+  "metaparameters": {
+    "NLEV": {
+      "type": "integer",
+      "default": 1,
+      "description": "Grid cells (model levels); 1 for a single cell."
+    },
+    "NBIN": {
+      "type": "integer",
+      "default": 1,
+      "description": "MOSAIC size sections per cell; 1 for a single bin."
+    },
+    "NEL": {
+      "type": "integer",
+      "default": 22,
+      "description": "MOSAIC electrolytes."
+    },
+    "NAER": {
+      "type": "integer",
+      "default": 112,
+      "description": "MOSAIC aerosol species per bin (chem_opt = 170)."
+    }
+  },
+  "index_sets": {
+    "lev": {
+      "kind": "interval",
+      "size": "NLEV"
+    },
+    "bin": {
+      "kind": "interval",
+      "size": "NBIN"
+    },
+    "el": {
+      "kind": "interval",
+      "size": "NEL"
+    },
+    "solv": {
+      "kind": "interval",
+      "size": "NEL"
+    },
+    "aer": {
+      "kind": "interval",
+      "size": "NAER"
+    },
+    "salt": {
+      "kind": "interval",
+      "size": 15
+    },
+    "sp": {
+      "kind": "interval",
+      "size": 7
+    }
+  },
+  "models": {
+    "I2E": {
+      "ref": "../components/aerosol/mosaic/ions_to_electrolytes.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
+    },
+    "Zsr": {
+      "ref": "../components/aerosol/mosaic/aerosol_water_zsr.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
+    },
+    "Act": {
+      "ref": "../components/aerosol/mosaic/mtem_activities.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
+    },
+    "Eq": {
+      "ref": "../components/aerosol/mosaic/mesa_salt_equilibrium.esm",
+      "bindings": {
+        "NLEV": "NLEV",
+        "NBIN": "NBIN"
+      }
+    },
+    "Mesa": {
+      "variables": {
+        "t_k": {
+          "type": "parameter",
+          "units": "K",
+          "default": 298.0,
+          "description": "Temperature.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "a_w": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.8,
+          "description": "The bin's water activity ah2o_a (the Kelvin-lowered value aerosol_phase_state passes in), at which compute_activities' ZSR water is taken.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
+        },
+        "aer_t": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "aer"
+          ],
+          "default": 0.0,
+          "description": "Total species aer(:, jtotal)."
+        },
+        "elec_t": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "el"
+          ],
+          "default": 0.0,
+          "description": "Total electrolytes."
+        },
+        "log_gamz": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev",
+            "el",
+            "solv"
+          ],
+          "default": 0.0,
+          "description": "MTEM binary log10 activity coefficients at the cell's relative humidity (mtem_binary_log_gamma.esm; mtem_compute_log_gamz runs once per MOSAIC call, at ah2o, not ah2o_a)."
+        },
+        "keq_hso4": {
+          "type": "parameter",
+          "units": "mol/kg",
+          "default": 0.01,
+          "description": "Keq_ll(1) at the cell temperature.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "k_w": {
+          "type": "parameter",
+          "units": "mol^2/kg^2",
+          "default": 1e-14,
+          "description": "Keq_ll(3), water's ion product.",
+          "shape": [
+            "lev"
+          ]
+        },
+        "elec_s_fixed": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "el"
+          ],
+          "default": 0.0,
+          "description": "The solid electrolytes that are NOT unknowns of the equilibrium: CaSO4 and CaCO3 (insoluble, they come with the bin); zero for the acids and HHSO4, which are never solid. Its first fifteen entries (the salts) are not read."
+        },
+        "e_salt": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "salt"
+          ],
+          "default": 0.0,
+          "lb": 0,
+          "description": "THE UNKNOWNS: the solid amount of each of the fifteen soluble salts (electrolytes 1-15: (NH4)2SO4, (NH4)3H(SO4)2, NH4HSO4, NH4MSA, NH4NO3, NH4Cl, Na2SO4, Na3H(SO4)2, NaHSO4, NaMSA, NaNO3, NaCl, Ca(NO3)2, CaCl2, Ca(MSA)2). Algebraic: no equation defines it; `0 ~ g` constrains it, with the bound e_salt >= 0 declared here as `lb` (esm 2.1.0, EarthSciAST #706; EarthSciIntegrator #74 reads a solve unknown's bounds from the model, not the run configuration). Starting value 0, MOSAIC's (every hand-off starts with no salt solid)."
+        },
+        "elec_s": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "el"
+          ],
+          "description": "The solid electrolytes of the state: the unknowns for the fifteen salts, elec_s_fixed for the rest."
+        },
+        "g": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev",
+            "bin",
+            "salt"
+          ],
+          "default": 0.0,
+          "description": "The equilibrium residual paired with e_salt (coupled from Eq.g): S_s - 1 where MOSAIC lets the salt exchange, else 0."
+        },
+        "a_liq": {
+          "type": "parameter",
+          "units": "nmol/m^3",
+          "shape": [
+            "lev",
+            "bin",
+            "sp"
+          ],
+          "default": 0.0,
+          "description": "The liquid species as ions_to_electrolytes leaves them (coupled from I2E.a)."
+        },
+        "so4": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Liquid sulfate handed to compute_activities.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
+        },
+        "no3": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Liquid nitrate.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
+        },
+        "cl": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Liquid chloride.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
+        },
+        "nh4": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Liquid ammonium.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
+        },
+        "msa": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Liquid MSA.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
+        },
+        "na": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Liquid sodium.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
+        },
+        "ca": {
+          "type": "unknown",
+          "units": "nmol/m^3",
+          "description": "Liquid calcium.",
+          "shape": [
+            "lev",
+            "bin"
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": "elec_s",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "e"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "e": {
+                "from": "el"
+              }
+            },
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<=",
+                  "args": [
+                    "e",
+                    15
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "e_salt",
+                    "k",
+                    "b",
+                    "e"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "elec_s_fixed",
+                    "k",
+                    "b",
+                    "e"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": 0.0,
+          "rhs": "g"
+        },
+        {
+          "lhs": "so4",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                1
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "no3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                2
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "cl",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                3
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "nh4",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                4
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "msa",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                5
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "na",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                6
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "ca",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "a_liq",
+                "k",
+                "b",
+                7
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "coupling": [
+    {
+      "type": "variable_map",
+      "from": "Eq.a_l_state",
+      "to": "I2E.a_in",
+      "transform": "param_to_var",
+      "description": "the state's liquid by mass balance (totals less the solid's ions) into ions_to_electrolytes"
+    },
+    {
+      "type": "variable_map",
+      "from": "I2E.a",
+      "to": "Mesa.a_liq",
+      "transform": "param_to_var",
+      "description": "ions_to_electrolytes' liquid (clipped, CaSO4 removed) back to the pass, to be handed on species by species"
+    },
+    {
+      "type": "variable_map",
+      "from": "I2E.elec",
+      "to": "Zsr.elec",
+      "transform": "param_to_var",
+      "description": "the liquid electrolytes into the ZSR water (compute_activities' aerosol_water(jliquid))"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.a_w",
+      "to": "Zsr.a_w",
+      "transform": "param_to_var",
+      "description": "the bin's water activity ah2o_a"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.aer_t",
+      "to": "Zsr.aer_t",
+      "transform": "param_to_var",
+      "description": "the totals, for the kappa water of the non-electrolytes"
+    },
+    {
+      "type": "variable_map",
+      "from": "Zsr.water",
+      "to": "Act.water",
+      "transform": "param_to_var",
+      "description": "the water the activities are molalities in"
+    },
+    {
+      "type": "variable_map",
+      "from": "I2E.elec",
+      "to": "Act.elec",
+      "transform": "param_to_var",
+      "description": "the liquid electrolytes weight the MTEM mixing rule"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.so4",
+      "to": "Act.so4",
+      "transform": "param_to_var",
+      "description": "liquid so4 into compute_activities"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.no3",
+      "to": "Act.no3",
+      "transform": "param_to_var",
+      "description": "liquid no3 into compute_activities"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.cl",
+      "to": "Act.cl",
+      "transform": "param_to_var",
+      "description": "liquid cl into compute_activities"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.nh4",
+      "to": "Act.nh4",
+      "transform": "param_to_var",
+      "description": "liquid nh4 into compute_activities"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.msa",
+      "to": "Act.msa",
+      "transform": "param_to_var",
+      "description": "liquid msa into compute_activities"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.na",
+      "to": "Act.na",
+      "transform": "param_to_var",
+      "description": "liquid na into compute_activities"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.ca",
+      "to": "Act.ca",
+      "transform": "param_to_var",
+      "description": "liquid ca into compute_activities"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.log_gamz",
+      "to": "Act.log_gamz",
+      "transform": "param_to_var",
+      "description": "binary activity coefficients"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.keq_hso4",
+      "to": "Act.keq_hso4",
+      "transform": "param_to_var",
+      "description": "bisulfate dissociation constant"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.k_w",
+      "to": "Act.k_w",
+      "transform": "param_to_var",
+      "description": "water's ion product"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.t_k",
+      "to": "Eq.t_k",
+      "transform": "param_to_var",
+      "description": "the pass's t_k"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.aer_t",
+      "to": "Eq.aer_t",
+      "transform": "param_to_var",
+      "description": "the pass's aer_t"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.elec_t",
+      "to": "Eq.elec_t",
+      "transform": "param_to_var",
+      "description": "the pass's elec_t"
+    },
+    {
+      "type": "variable_map",
+      "from": "Mesa.elec_s",
+      "to": "Eq.elec_s",
+      "transform": "param_to_var",
+      "description": "the state: the unknowns with the fixed solids"
+    },
+    {
+      "type": "variable_map",
+      "from": "I2E.a",
+      "to": "Eq.a_l",
+      "transform": "param_to_var",
+      "description": "ions_to_electrolytes' liquid"
+    },
+    {
+      "type": "variable_map",
+      "from": "I2E.caso4",
+      "to": "Eq.caso4",
+      "transform": "param_to_var",
+      "description": "the CaSO4 ions_to_electrolytes moved to the solid"
+    },
+    {
+      "type": "variable_map",
+      "from": "I2E.elec",
+      "to": "Eq.elec_l",
+      "transform": "param_to_var",
+      "description": "the liquid electrolytes"
+    },
+    {
+      "type": "variable_map",
+      "from": "Zsr.water",
+      "to": "Eq.water",
+      "transform": "param_to_var",
+      "description": "the liquid water"
+    },
+    {
+      "type": "variable_map",
+      "from": "Act.activity",
+      "to": "Eq.activity",
+      "transform": "param_to_var",
+      "description": "the electrolyte activities"
+    },
+    {
+      "type": "variable_map",
+      "from": "Eq.g",
+      "to": "Mesa.g",
+      "transform": "param_to_var",
+      "description": "the equilibrium residual, constrained to zero (in complementarity with e_salt >= 0)"
+    }
+  ]
+}
