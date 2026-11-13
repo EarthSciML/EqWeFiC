@@ -434,8 +434,9 @@ def main():
                 mtc_tests(calls, rows), keep=lambda t: not t['id'].startswith('astem64_'))
     wt, cen = wet_tests(calls + hand)
     write_tests('astem_liquid_surface_equilibrium.esm', 'MosaicAstemLiquidSurfaceEquilibrium', wt)
+    # the 'astemmix_*' tests are tools/fill_astem_mix_tests.py's (mix.tape): keep them
     write_tests('astem_solid_surface_equilibrium.esm', 'MosaicAstemSolidSurfaceEquilibrium',
-                dry_tests(calls + hand))
+                dry_tests(calls + hand), keep=lambda t: t['id'].startswith('astemmix_'))
 
 
 if __name__ == '__main__':
