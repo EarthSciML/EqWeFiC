@@ -649,6 +649,7 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
       step. Wet deposition over all 169 species was decided the same day:
       WetDepLS got a species axis (`spc`, metaparameters NSPEC/NGAS), and
       `couplings/wetdep_ls_column.esm` now binds all 169 on one mount, 18/18.)
+    - **CBM-Z chemistry column BUILT 2026-11-12: `couplings/cbmz_column.esm` (19470/19470; INVENTORY CBM-Z row). The scoping below is kept for its probes; on EarthSciAST main the lifted-assertion and reaction_systems-ref blockers are gone, and the lift works only through operator_compose with a translate entry per species (data/eqwefic/phase3_probes/cbmz_column/). Remaining: vertmx (ESD #53), Madronich j_col wiring, MOSAIC.**
     - **Scoping the CBM-Z chemistry column (2026-11-12, not built).** Probed
       on the `be1fafe6d` binary in `data/eqwefic/phase3_probes/lift_column/`:
       * **Pointwise lifting of a 0-D system over `lev` WORKS** through a
