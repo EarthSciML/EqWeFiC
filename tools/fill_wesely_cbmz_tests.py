@@ -7,6 +7,8 @@ step of the chem170 reference run (dumps/chem170_wrf, wesely hook in wesely_driv
 
   surface_resistance.esm   rc (= rcx) and srfres of every CBM-Z gas slot 2..65, in
                            parts of NSPEC = 10 (the last part overlaps the one before)
+  cbmz_velocity_assignment.esm  the 65 velocities dry_dep_driver hands vertmx (the
+                           chem_vertmx hook's ddvel) from wesely_driver's ddvel0d
   deposition_velocity.esm  vd (= ddvel0d) of every slot except 3 (sulf, which takes the
                            particle path through deppart; dry_dep_driver then gives it
                            HNO3's velocity anyway), in parts of NSPEC = 6, plus aer_res
@@ -99,7 +101,26 @@ def main(steps):
                                         "expected": float(v['aer_res_def']),
                                         "tolerance": {"rel": 1e-05}})
             dvm['tests'].append(t)
-    for path, doc in ((sr_path, sr), (dv_path, dv)):
+    as_path = f'{P}/cbmz_velocity_assignment.esm'
+    asg = json.load(open(as_path))
+    asm = asg['models']['WRFCBMZDryDepAssignment']
+    asm['tests'] = []
+    for step in steps:
+        v = esm_dump.load(f'{D}/esm_dump_wesely_{step}.json')['vars']
+        dd = esm_dump.load(f'{D}/esm_dump_chem_vertmx_{step}.json')['vars']['ddvel']
+        n = int(v['numgas'])
+        asm['tests'].append({
+            "id": f"cbmz_ddvel_step{step}",
+            "description": (f"chem170 reference run, step {step}: Wesely's ddvel0d of all {n} gas "
+                            "slots (wesely hook) in, the ddvel entering vertmx (chem_vertmx hook, "
+                            "same step) out. Single-precision values passed through unchanged, so "
+                            "every assertion is exact."),
+            "parameter_overrides": {"vd_wesely": [float(x) for x in v['ddvel0d']]},
+            "time_span": {"start": 0, "end": 0},
+            "assertions": [{"variable": "vd", "time": 0.0, "coords": {"spc": s},
+                            "expected": float(dd[s - 1]),
+                            "tolerance": {"abs": 0.0, "rel": 0.0}} for s in range(1, n + 1)]})
+    for path, doc in ((sr_path, sr), (dv_path, dv), (as_path, asg)):
         with open(path, 'w') as f:
             json.dump(doc, f, indent=2)
             f.write('\n')
