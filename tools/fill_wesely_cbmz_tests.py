@@ -3,7 +3,7 @@
 
 The Wesely components were filled from the RADM2 run (chem_opt = 101); their per-gas
 tables now carry a CBM-Z row (wesely_data.esm, mech = 2).  This writes, for each chosen
-step of the chem170 reference run (dumps/chem170_wrf, wesely hook in wesely_driver):
+call of the dry-deposition hooks (call N is model step ktau N+2) of the chem170 reference run (dumps/chem170_wrf, wesely hook in wesely_driver):
 
   surface_resistance.esm   rc (= rcx) and srfres of every CBM-Z gas slot 2..65, in
                            parts of NSPEC = 10 (the last part overlaps the one before)
@@ -32,7 +32,7 @@ D = '/projects/illinois/eng/cee/ctessum/ctessum/data/eqwefic/dumps/chem170_wrf'
 REF = ("Reference: the chem_opt = 170 (CBMZ_MOSAIC_KPP) em_scm_xy reference run "
        "(data/eqwefic/chem170_scm/run.sh, dumps/chem170_wrf; GNU gfortran REAL*4; fork "
        "ctessum-claude/WRF branch earthsciml-instrumented-chem170, wesely hook in "
-       "wesely_driver) at model step {step}, column (its, jts): iland {iland}, iseason "
+       "wesely_driver) at its call {step}, which is model step ktau = {ktau} (wesely_driver is not called at the first two steps, so the dry-deposition hooks' call N is ktau N+2 while cbmz_kpp's call N is ktau N), column (its, jts): iland {iland}, iseason "
        "{iseason}, ta {ta:.2f} K, rad {rad:.1f} W/m2, rh {rh:.1f} %, {wet}. Mechanism row 2 "
        "of wesely_data (the CBM-Z gas slots). Single-precision reference, rel 1e-5.")
 
@@ -60,7 +60,7 @@ def main(steps):
         v = esm_dump.load(f'{D}/esm_dump_wesely_{step}.json')['vars']
         numgas = int(v['numgas'])
         wet = ', '.join(n for n in ('rainflag', 'wetflag', 'highnh3') if v[n]) or 'dry'
-        ref = REF.format(step=step, iland=int(v['iland']), iseason=int(v['iseason']),
+        ref = REF.format(step=step, ktau=int(v['ktau']), iland=int(v['iland']), iseason=int(v['iseason']),
                          ta=float(v['ta']), rad=float(v['rad']), rh=float(v['rhchem']),
                          wet=wet)
         for i, sl in enumerate(parts(list(range(2, numgas + 1)), 10), 1):
@@ -111,9 +111,10 @@ def main(steps):
         n = int(v['numgas'])
         asm['tests'].append({
             "id": f"cbmz_ddvel_step{step}",
-            "description": (f"chem170 reference run, step {step}: Wesely's ddvel0d of all {n} gas "
+            "description": (f"chem170 reference run, call {step} of the dry-deposition hooks (model "
+                            f"step ktau = {int(v['ktau'])}): Wesely's ddvel0d of all {n} gas "
                             "slots (wesely hook) in, the ddvel entering vertmx (chem_vertmx hook, "
-                            "same step) out. Single-precision values passed through unchanged, so "
+                            "same call) out. Single-precision values passed through unchanged, so "
                             "every assertion is exact."),
             "parameter_overrides": {"vd_wesely": [float(x) for x in v['ddvel0d']]},
             "time_span": {"start": 0, "end": 0},
