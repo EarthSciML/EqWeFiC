@@ -107,6 +107,28 @@ match nothing here and are NOT reused -- see `data/eqwefic/notes/photolysis_diag
 gas mechanism
 (`chem/KPP/mechanisms/radm2` → `reaction_systems`), wet scavenging.
 
+**Later target: a MOSAIC + VBS `chem_opt` for secondary organic aerosol**
+(added 2026-11-14 at the user's request). `chem_opt = 170` carries the eight
+SORGAM SOA gas/aerosol pairs (ARO1 ... LIM2, `*_a01..a08`) but forms no SOA:
+in the reference run every SOA aerosol bin stays at its 1e-16 floor while the
+ARO1 gas reaches 2.5e-4 ppmv (`dumps/chem170_full`, calls 810 and 2101), and
+`module_mosaic2_driver.F:816-817` hard-codes `msoa_flag1 = 0  ! for testing`
+(not yet confirmed to be the path chem_opt = 170 takes). WRF v4.8 pairs MOSAIC
+with a volatility basis set (VBS) only under a SAPRC-99 or MOZART gas phase,
+never under CBM-Z: 198 (SAPRC-99, 4-bin MOSAIC, VBS-2), **204** (SAPRC-99,
+8-bin MOSAIC, VBS-2), 203 (204 + aqueous chemistry) and 202 (MOZART, 4-bin
+MOSAIC, aqueous, VBS-9). Proposed order, to be decided when the work starts:
+**204 first** -- same 8 sections as 170, so the MOSAIC inorganic components,
+section moving, coagulation, nucleation, dry deposition and the column
+couplings carry over with `NBIN = 8`, and no cloud chemistry. What is new:
+the SAPRC-99 mechanism (`chem/KPP/mechanisms/saprc99_mosaic_8bin_vbs2`, a
+`reaction_systems` translation like CBM-Z's), the VBS gas-phase aging and SOA
+yields, MOSAIC's SOA partitioning (`module_mosaic_therm.F` `equilibrium` /
+`soap` / `spfcn` -- an equilibrium solve, so written as its residual per the
+solver rule), the SOA emissions and host mapping, and a new reference capture
+with VOC-rich initial conditions (cf. `ESM_RICH_IC`). Then 203 for aqueous
+SOA. Inventory row: INVENTORY.md "MOSAIC + VBS SOA".
+
 Fire (EqAtmFire): the fire code is NCAR's **Community Fire Behavior Model**
 (`NCAR/fire_behavior`, the `phys/fire_behavior` submodule of WRF 4.8, pushed
 2026-09-04), not openwfm/WRF-SFIRE (WRF 4.4 base, last commit 2026-05-01).
