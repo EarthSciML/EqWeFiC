@@ -44,8 +44,8 @@ from replay_column import KPP2CHEM, DENS2CON_A, kpp_indices, chem_names  # noqa:
 
 DOC = os.path.join(HERE, "..", "couplings", "cbmz_column.esm")
 STEPS = [(364, "local noon of the first day, the strongest photochemistry and emissions of the run"),
-         (790, "an evening shower: WSM6 rain, so wetdep_ls removes sulf at every rainy layer"),
-         (810, "the same shower twenty minutes on, the rain easing"),
+         (1026, "a late-evening shower at its peak: WSM6 rain, so wetdep_ls removes sulf at every rainy layer"),
+         (1046, "the same shower twenty minutes on, the rain easing"),
          (1080, "local midnight: every photolysis frequency zero and Gunther dark"),
          (1621, "the second morning, an aged state after a day of emissions and chemistry")]
 PHOTO = {"j_o31d": 1, "j_o33p": 2, "j_no2": 3, "j_no3o": 5, "j_hno2": 6, "j_hno3": 7, "j_hno4": 8,
