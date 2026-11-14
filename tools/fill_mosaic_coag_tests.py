@@ -49,15 +49,18 @@ CASES = [
 ]
 
 
+# The component is written on the cell axes (lev, bin, cq); each case is one cell,
+# so every input carries a leading lev axis of size 1 (and q a trailing cq axis of
+# size 1), and the splitting-table references broadcast over lev.
 def const3(a: np.ndarray) -> dict:
-    return {"op": "faq", "output_idx": ["i", "j", "k"], "args": [],
-            "ranges": {"i": {"from": "bin"}, "j": {"from": "bin"}, "k": {"from": "bin"}},
+    return {"op": "faq", "output_idx": ["l", "i", "j", "k"], "args": [],
+            "ranges": {"l": {"from": "lev"}, "i": {"from": "bin"}, "j": {"from": "bin"}, "k": {"from": "bin"}},
             "expr": {"op": "index", "args": [{"op": "const", "args": [], "value": a.tolist()}, "i", "j", "k"]}}
 
 
 def const2(a: np.ndarray) -> dict:
-    return {"op": "faq", "output_idx": ["i", "j"], "args": [],
-            "ranges": {"i": {"from": "bin"}, "j": {"from": "bin"}},
+    return {"op": "faq", "output_idx": ["l", "i", "j"], "args": [],
+            "ranges": {"l": {"from": "lev"}, "i": {"from": "bin"}, "j": {"from": "bin"}},
             "expr": {"op": "index", "args": [{"op": "const", "args": [], "value": a.tolist()}, "i", "j"]}}
 
 
@@ -101,16 +104,17 @@ def main(dump_dir: str, replay_dir: str) -> None:
             asserts.append({"variable": "floss", "time": 0.0, "reduce": "Linf_error", "expected": 0.0,
                             "tolerance": {"abs": 1e-12, "rel": 0.0}, "reference": const2(floss)})
             for b in range(nbin):
-                asserts.append({"variable": "dnum_dt", "coords": {"bin": b + 1}, "time": 0.0, "expected": float(dn[b]),
+                asserts.append({"variable": "dnum_dt", "coords": {"lev": 1, "bin": b + 1}, "time": 0.0, "expected": float(dn[b]),
                                 "tolerance": {"rel": 1e-9, "abs": 0.0}})
         floor = 1e-9 * float(np.abs(dq).max())
         for b in range(nbin):
-            asserts.append({"variable": "dq_dt", "coords": {"bin": b + 1}, "time": 0.0, "expected": float(dq[b]),
+            asserts.append({"variable": "dq_dt", "coords": {"lev": 1, "bin": b + 1, "cq": 1}, "time": 0.0, "expected": float(dq[b]),
                             "tolerance": {"rel": 1e-9, "abs": floor}})
         tests.append({
             "id": f"coag_s{step}_lev{lev}_{comp}",
             "description": desc,
-            "parameter_overrides": {"dp_dry": dp.tolist(), "cbr": cbr.tolist(), "num": num.tolist(), "q": q.tolist()},
+            "parameter_overrides": {"dp_dry": [dp.tolist()], "cbr": [cbr.tolist()], "num": [num.tolist()],
+                                    "q": [[[x] for x in q.tolist()]]},
             "time_span": {"start": 0, "end": 1},
             "assertions": asserts,
         })

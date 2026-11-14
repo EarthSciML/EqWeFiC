@@ -65,7 +65,7 @@ def case_test(v, rep, step, lev, b1, regime, flags, kind, edit_note=None):
     assert np.array_equal(rs[rows, k], v["rsub_therm"][rows, k]), (step, lev, b1, "nucleation touched this bin")
     dist = rep["coag_distrib_replay"][b, :, k]
     po = {
-        "r": rs[mp, k].tolist(), "mw": v["mw_aer"].tolist(), "dens": v["dens_aer"].tolist(),
+        "r": [[rs[mp, k].tolist()]], "mw": v["mw_aer"].tolist(), "dens": v["dens_aer"].tolist(),
         "n_in": float(rs[npt, k]), "water_in": float(rs[wp, k]), "hysw_in": float(rs[hp, k]),
         "mass_in": float(v["aqmassdry_sub"][b, k]), "vol_in": float(v["aqvoldry_sub"][b, k]),
         "rho_in": float(v["adrydens_sub"][b, k]), "cair": float(v["cairclm"][k]),
@@ -86,9 +86,11 @@ def case_test(v, rep, step, lev, b1, regime, flags, kind, edit_note=None):
         {"variable": "water", "time": 0.0, "expected": float(dist[12]), "tolerance": tol if dist[12] else exact},
         {"variable": "vol_dry", "time": 0.0, "expected": float(dist[13]), "tolerance": tol},
     ]
+    for x in a:  # the component is on the cell axes (lev, bin): each case is one cell, r is [1][1][comp]
+        x["coords"] = {"lev": 1, "bin": 1}
     for l, name in enumerate(COMP):
         x = float(dist[1 + l])
-        a.append({"variable": "q_comp", "coords": {"comp": l + 1}, "time": 0.0, "expected": x,
+        a.append({"variable": "q_comp", "coords": {"lev": 1, "bin": 1, "comp": l + 1}, "time": 0.0, "expected": x,
                   "tolerance": tol if x else exact})
     common = (f"Reference: the em_scm_xy chem_opt = 170 column (data/eqwefic/chem170_scm, reference namelist "
               f"unchanged), MOSAIC coagulation capture dumps/chem170_mosaic_coag (WRF fork earthsciml-instrumented-chem170 "
