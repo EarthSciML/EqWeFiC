@@ -16,10 +16,12 @@ The three parts reuse the fill scripts of the columns this one joins:
 and the join adds the exchange: ASTEM's gas tendencies (GasParticle's Rates.dgas, expected
 from the tape) and nucleation's H2SO4/NH3 uptake (the nucleation replay) handed back to
 CBM-Z's H2SO4, HNO3, HCl and NH3 by factgas*conv/conv1a, and ASTEM's condensation added to the
-aerosol components. ASTEM's rates have a reference only on the levels whose eight fluxes were all
-formed at the state (fill_mosaic_column_tests' `clean`); on every other level the four
-exchanging gases' column tendencies, their exchange terms and the summed aerosol tendency are
-not asserted (the other 62 gases are, everywhere).
+aerosol components. ASTEM's per-section rates at the state come from the per-section replay
+(kernels/astem_section_driver, fill_mosaic_column_tests.section_refs): a section has a reference
+where its flux was formed at the state (not after its own absorb/degas edit) and is not
+excluded for a solver decision or a stale mesa_ptc water; Join.dr_dt is asserted on those
+sections. A level's exchange (and so the four exchanging gases' column tendencies) needs all its
+sections; on the other levels those are not asserted (the other 62 gases are, everywhere).
 
     python3 tools/fill_chem170_column_tests.py
 """
@@ -82,7 +84,8 @@ def build(step, what, calls_by, cz_states):
                                              X=X, vdot_key="vdot_rconst_replay")
     # --- MOSAIC gas-particle part: the in-model tape at the state
     v = load(f"{DUMPS}/esm_dump_mosaic_{step}.json")["vars"]
-    po_m, asr_m, census = fmc.build(step - 1, calls_by[step - 1], v, skip_unconverged_state=True)
+    sec = fmc.sec_tape.read_sec(fmc.SEC_DIR / f"lev_{step}.tape")
+    po_m, asr_m, census = fmc.build(step - 1, calls_by[step - 1], v, skip_unconverged_state=True, sec=sec)
     # --- MOSAIC aerosol chemistry at the state's rsub
     m = dict(v)
     m["rsub_therm"] = np.load(f"{REPLAY}/rsub_S_{step}.npy")
@@ -110,6 +113,7 @@ def build(step, what, calls_by, cz_states):
         elif a["variable"] == "Rates.daer":
             daer[(c["lev"], c["bin"], c["gas"])] = (a["expected"], a.get("tolerance", {}).get("abs", 0.0))
     clean = sorted({k for (k, g) in dgas})
+    nsec = len({(k, b) for (k, b, g) in daer})
 
     asr = []
 
@@ -134,13 +138,14 @@ def build(step, what, calls_by, cz_states):
             scale = (fl / conv1a[k - 1] + 1e-9 * abs(nu)) * FACTGAS * conv[k - 1]
             exch[n][k] = (val, scale)
             put(f"Join.aerosol_{n}", val, REL, scale, lev=k)
-    # aerosol: the aerosol-chemistry column's dr_dt plus ASTEM's condensation, on the clean levels
+    # aerosol: the aerosol-chemistry column's dr_dt plus ASTEM's condensation, on every section whose
+    # ASTEM rates are known at the state
     for a in ta["assertions"]:
         if a["variable"] != "Column.dr_dt":
             continue
         c = a["coords"]
         k, b, comp = c["lev"], c["bin"], c["comp"]
-        if k not in clean:
+        if (k, b, 1) not in daer:
             continue
         add, addfl = 0.0, 0.0
         for g, cc in COMP_OF_GAS.items():
@@ -192,12 +197,15 @@ def build(step, what, calls_by, cz_states):
             "the MESA solid on path 6, dp_wet. Expected values, all at that one state, real64: CBM-Z's Vdot with RCONST "
             "recomputed at the state (kernels/cbmz_driver), conv times the emissions_driver increment over dt, vertmx "
             "with K = 0 (Romberg dt -> 0) and wetdep_ls (sulf) replayed at the state; ASTEM's phase state, "
-            "thermodynamics and rates from the in-model tape (fill_mosaic_column_tests.py's selection); nucleation, "
+            "thermodynamics from the in-model tape and ASTEM's per-section rates at the state from the per-section "
+            "replay (kernels/astem_section_driver: every section's flux formed at the first sub-step's state, the "
+            "model's own flux routines; fill_mosaic_column_tests.py's selection); nucleation, "
             "coagulation and aerosol dry deposition replayed at the state's rsub (chem170_full/replay_joint.py: "
             f"nucleation fires at {nnuc} of {nlev} levels); and the join -- ASTEM's dgas and nucleation's uptake handed "
-            "back to H2SO4, HNO3, HCl and NH3, ASTEM's condensation added to the components -- on the "
-            f"{len(clean)} levels whose eight ASTEM fluxes were formed at the state (levels {clean}); there the four "
-            "exchanging gases' column tendencies are asserted with the exchange in them, elsewhere not at all. "
+            "back to H2SO4, HNO3, HCl and NH3 on the "
+            f"{len(clean)} levels whose eight ASTEM fluxes are known at the state (levels {clean}), where the four "
+            "exchanging gases' column tendencies are asserted with the exchange in them (elsewhere not at all), and "
+            f"ASTEM's condensation added to the components on the {nsec} sections whose rates are known. "
             f"Census of the gas-particle part: {dict(sorted((str(a), b) for a, b in census.items()))}. Tolerances: "
             "the three parts' own (rel 1e-10 and the deposition bound for CBM-Z, rel 1e-9 and the parts' floors for "
             "MOSAIC), rel 1e-9 plus the parts' floors on the join. Filled by tools/fill_chem170_column_tests.py.")

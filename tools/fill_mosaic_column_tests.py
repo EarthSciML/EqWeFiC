@@ -22,9 +22,17 @@ What is asserted, per bin: the branch and jaerosolstate; on every bin whose MESA
 any) converged, the water and the five Kelvin factors; on the analytic branches the solid
 electrolytes; on a bin ASTEM formed a liquid flux for at its own state, the liquid ions,
 the H+/NH4+/NO3-/Cl- molalities, gam(HNO3), gam(HCl), gam_ratio and the NH4NO3/NH4Cl
-activities ASTEM reads; kg of HNO3/HCl/NH3; and on every level whose eight fluxes were all
-formed at one state (tools/fill_mosaic_astem_rates_tests.py `clean`), each bin's rates and
-the gas tendencies and balances. Never: a quantity the Fortran left from a state it had
+activities ASTEM reads; kg of HNO3/HCl/NH3; each bin's rates at the state, and on every level
+where all of them are known the gas tendencies and balances.
+
+The rates' references are the per-section replay (SEC_DIR, written by its run_all.sh with the WRF
+fork's kernels/astem_section_driver): in the model a section's flux routine can edit the gas
+before the next section forms its flux, so the in-model tape has a later section's flux at a
+state that is not the sub-step's. The replay re-forms every section's flux, with the model's own
+routines, at the first sub-step's state (the tape's SVT gas and SVB section, checked equal), once
+with the model's own state edits and once with them skipped. A section's reference is its
+replayed flux where the two are bit-identical (the flux did not follow its own edit); a
+section whose gas was not edited before it reproduces the in-model flux exactly (asserted). Never: a quantity the Fortran left from a state it had
 moved off (a mesa_ptc call that hit its 80-pass cap updates the solid after its last water;
 compute_activities' stale gam_ratio in the sulfate-poor regime without NH4NO3), or ASTEM's
 solver decisions (see the astem rates fill script).
@@ -40,6 +48,10 @@ DOC = ROOT / 'couplings' / 'mosaic_column.esm'
 sys.path.insert(0, str(ROOT / 'tools'))
 from esm_dump import load  # noqa: E402
 from esm_compact_json import dumps  # noqa: E402
+
+SEC_DIR = Path('/projects/illinois/eng/cee/ctessum/ctessum/data/eqwefic/chem170_full/astem_persection')
+sys.path.insert(0, str(SEC_DIR))
+import sec_tape  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location('far', ROOT / 'tools' / 'fill_mosaic_astem_rates_tests.py')
 far = importlib.util.module_from_spec(_spec)
@@ -72,7 +84,30 @@ def A(var, val, t, **coords):
     return a
 
 
-def build(step, call_of_lev, v, skip_unconverged_state=False):
+def section_refs(r, sb):
+    """Per-section reference fluxes at the state from the per-section replay of one level.
+
+    r: the replay of the level (sec_tape.read_sec); sb: the in-model tape's first sub-step.
+    A section's reference is its replay FXO with the state edits skipped (tag 2), and only where
+    the flux fields are bit-identical to the replay with the edits (tag 1, the model's own
+    code path): there the model formed that section's flux at the state, and the edit, if any,
+    came after it.  The loaded state must be the tape's (SVB), and every section whose gas was
+    not edited before it (FXI gas = SVT gas) must reproduce the in-model flux exactly."""
+    assert r['svt']['gas'] == sb['gas']
+    ref, why = {}, {}
+    for b, fx in sb['fxo'].items():
+        assert r['svb'][b] == sb['bins'][b], 'replay state is not the tape state'
+        r1, r2 = r[1][b], r[2][b]
+        if sb['fxi'][b]['gas'] == sb['gas']:
+            assert sec_tape.same_flux(fx, r1), 'replay does not reproduce the in-model flux'
+        if sec_tape.same_flux(r1, r2):
+            ref[b] = r2
+        else:
+            why[b] = 'flux formed after its own state edit (absorb/degas_tiny, degas_solid)'
+    return ref, why
+
+
+def build(step, call_of_lev, v, skip_unconverged_state=False, sec=None):
     """One test: the whole column at tape step `step` (model step step + 1). With
     skip_unconverged_state, jaerosolstate is not asserted on a bin whose mesa_ptc call hit its 80-pass
     cap (outcome 3): there it is the solver's stopping point, which CLAUDE.md says not to assert."""
@@ -165,27 +200,39 @@ def build(step, call_of_lev, v, skip_unconverged_state=False):
                 else:
                     census['gam_ratio_stale'] += 1
 
-        # ---- the rates, where all eight fluxes were formed at one state
-        if not far.clean(sb):
-            census['level_edited_between_bins'] += 1
-            continue
-        bad = None
-        for b in sorted(sb['fxo']):
-            _, why = far.bin_branch(c, sb, b)
+        # ---- the rates: each section's flux at the state (the per-section replay, see SEC_DIR), and
+        # the level's gas tendencies and balances where every section's flux is known
+        if sec is None:
+            if not far.clean(sb):
+                census['level_edited_between_bins'] += 1
+                continue
+            ref = dict(sb['fxo'])
+        else:
+            ref, why_not = section_refs(sec[k], sb)
+            for b, why in why_not.items():
+                census['bin_rate_skipped:' + why] += 1
+        sbr = dict(sb, fxo=ref)
+        ok = {}
+        for b in sorted(ref):
+            _, why = far.bin_branch(c, sbr, b)
+            p = int(v['ps_sc_c2'][SC['path'], b - 1, k - 1])
+            if not why and p >= 6 and (p // 10 % 10 == 3 or (int(ref[b]['route']) in (2, 4)
+                                                         and ref[b]['water'] != sb['bins'][b]['water'])):
+                why = 'mesa_ptc water stale (unconverged or snapped)'
             if why:
-                bad = why
-        unconv = [b for b in range(1, NBIN + 1) if int(v['ps_sc_c2'][SC['path'], b - 1, k - 1]) >= 6
-                  and (int(v['ps_sc_c2'][SC['path'], b - 1, k - 1]) // 10 % 10 == 3
-                       or (int(sb['fxo'][b]['route']) in (2, 4)
-                           and sb['fxo'][b]['water'] != sb['bins'][b]['water']))]
-        if bad or unconv:
+                census['bin_rate_skipped:' + why] += 1
+            else:
+                ok[b] = ref[b]
+        complete = len(ok) == len(sb['fxo'])
+        if sec is None and not complete:
+            bad = next((far.bin_branch(c, sbr, b)[1] for b in sorted(ref) if far.bin_branch(c, sbr, b)[1]), None)
             census['level_excluded:' + (bad or 'mesa_ptc water stale (unconverged or snapped)')] += 1
             continue
-        census['levels_with_rates'] += 1
         g = sb['gas']
         sums = {n: [0.0, 0.0] for n in far.GASES}
-        for b in range(1, NBIN + 1):
-            fx, kg = sb['fxo'][b], c['bins'][b]['kg']
+        for b in sorted(ok):
+            fx, kg = ok[b], c['bins'][b]['kg']
+            census['bins_with_rates'] += 1
             for gname, i in (('h2so4', 0), ('msa', 4)):
                 x = g[i] * kg[i]
                 asr.append(A('Rates.daer', x, {'rel': REL, 'abs': 1e-12 * abs(x)}, lev=k, bin=b, gas=i + 1))
@@ -195,6 +242,10 @@ def build(step, call_of_lev, v, skip_unconverged_state=False):
                 asr.append(A('Rates.daer', x, {'rel': REL, 'abs': fl}, lev=k, bin=b, gas=far.GAX[gname]))
                 sums[gname][0] += x
                 sums[gname][1] += fl
+        if not complete:
+            census['level_sums_skipped'] += 1
+            continue
+        census['levels_with_rates'] += 1
         for gname in far.GASES:
             x, fl = sums[gname]
             asr.append(A('Rates.dgas', -x, {'rel': REL, 'abs': fl}, lev=k, gas=far.GAX[gname]))
@@ -212,7 +263,8 @@ def main():
     tests = []
     for st in steps:
         v = load(d / 'dumps' / 'chem170_mosaic_astem' / f'esm_dump_mosaic_{st + 1}.json')['vars']
-        po, asr, census = build(st, by[st], v, skip_unconverged_state=True)
+        sec = sec_tape.read_sec(SEC_DIR / f'col_{st + 1}.tape')
+        po, asr, census = build(st, by[st], v, skip_unconverged_state=True, sec=sec)
         print(f'step {st}: {len(asr)} assertions;', dict(sorted(census.items(), key=str)))
         desc = (f"The whole chem_opt = 170 column (59 levels x 8 sections), model step {st + 1}, at the state ASTEM's first "
                 "semi-volatile sub-step forms its fluxes at (after ASTEM_non_volatiles and its phase-state recompute). "
@@ -227,9 +279,13 @@ def main():
                 "hit its 80-pass cap (there they are the solver's stopping point, which CLAUDE.md says not to assert, and "
                 "the cap's last step moves the solid after the last water, so the Fortran's water is not the state's); "
                 "the solid electrolytes on the analytic branches, kg; on a bin ASTEM formed a liquid flux for at its own "
-                "state the liquid ions, molalities, gam(HNO3), gam(HCl), gam_ratio and the NH4NO3/NH4Cl activities; and on "
-                "a level whose eight fluxes were all formed at one state, each bin's rates and the gas tendencies and "
-                "balances (as couplings/mosaic_astem_rates.esm, now with the phase state and activities COMPUTED). "
+                "state the liquid ions, molalities, gam(HNO3), gam(HCl), gam_ratio and the NH4NO3/NH4Cl activities; each "
+                "bin's rates at the state, from the per-section replay (kernels/astem_section_driver: every section's "
+                "flux formed by the model's own flux routines at the first sub-step's state, so a flux the model formed "
+                "after an earlier section edited the gas is re-formed at the state), on every bin whose flux did not "
+                "follow its own state edit (absorb/degas_tiny, degas_solid) and is not excluded for an ASTEM solver "
+                "decision or a stale mesa_ptc water; and on a level where all its bins have rates, the gas tendencies "
+                "and balances (as couplings/mosaic_astem_rates.esm, now with the phase state and activities COMPUTED). "
                 "rel 1e-9, flags exactly.")
         tests.append({'id': f'column_s{st + 1}', 'description': desc, 'parameter_overrides': po,
                       'time_span': {'start': 0, 'end': 0}, 'tolerance': TEST_TOL, 'assertions': asr})
