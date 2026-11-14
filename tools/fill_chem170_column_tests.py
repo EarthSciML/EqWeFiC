@@ -58,7 +58,7 @@ fmc = mod("fmc", f"{HERE}/fill_mosaic_column_tests.py")
 fac = mod("fac", f"{HERE}/fill_mosaic_aerchem_column_tests.py")
 
 STEPS = [(364, "local noon of the first day: the strongest photochemistry and emissions; nucleation at the levels the replay finds"),
-         (790, "an evening shower: WSM6 rain, so wetdep_ls removes sulf at every rainy layer")]
+         (1026, "a late-evening shower at its peak: WSM6 rain, so wetdep_ls removes sulf at every rainy layer")]
 REL = 1e-9
 FACTGAS, CM3_PER_M3, NMOL_PER_MOL, FACTDENS = 1.0e6, 1.0e6, 1.0e9, 28966.0
 EXCH = {"H2SO4": 1, "HNO3": 2, "HCl": 3, "NH3": 4}      # ASTEM gas axis
