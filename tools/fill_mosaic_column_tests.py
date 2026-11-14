@@ -72,8 +72,10 @@ def A(var, val, t, **coords):
     return a
 
 
-def build(step, call_of_lev, v):
-    """One test: the whole column at tape step `step` (model step step + 1)."""
+def build(step, call_of_lev, v, skip_unconverged_state=False):
+    """One test: the whole column at tape step `step` (model step step + 1). With
+    skip_unconverged_state, jaerosolstate is not asserted on a bin whose mesa_ptc call hit its 80-pass
+    cap (outcome 3): there it is the solver's stopping point, which CLAUDE.md says not to assert."""
     po = collections.defaultdict(list)
     asr = []
     census = collections.Counter()
@@ -109,7 +111,10 @@ def build(step, call_of_lev, v):
             census[('path', path, outcome)] += 1
             co = dict(lev=k, bin=b)
             asr.append(A('Ps.path', path, EXACT, **co))
-            asr.append(A('Ps.state', S['jaerosolstate'], EXACT, **co))
+            if skip_unconverged_state and path == 6 and outcome == 3:
+                census['state_skipped_unconverged'] += 1
+            else:
+                asr.append(A('Ps.state', S['jaerosolstate'], EXACT, **co))
             asr.append(A('Column.mesa', 1.0 if path == 6 else 0.0, EXACT, **co))
             fx = sb['fxo'].get(b)
             # mesa_ptc's water and Kelvin factors belong to the liquid of its last mesa_flux_salt

@@ -48,14 +48,17 @@ def tol(expected, scale):
     return OD([("rel", REL), ("abs", float(FLOOR * scale))])
 
 
-def build(s):
-    m = esm_dump.load(W + f"esm_dump_mosaic_{s}.json")["vars"]
-    dd = esm_dump.load(W + f"esm_dump_mosaic_drydep_{s}.json")["vars"]
-    vx = esm_dump.load(W + f"esm_dump_chem_vertmx_{s}.json")["vars"]
-    assert int(dd["ktau"]) == int(m["ktau"]) + 2 == int(vx["ktau"])
-    nuc = esm_dump.load(R + f"nuc_{s}.json")["vars"]
-    coag = esm_dump.load(R + f"coag_{s}.json")["vars"]
-    dep = esm_dump.load(R + f"dd_{s}.json")["vars"]
+def build(s, m=None, dd=None, vx=None, nuc=None, coag=None, dep=None, desc_in=None):
+    """One test at model step s. By default the chem170_wrf dumps and the aerchem64 replays; an
+    importer passes its own dumps (m with rsub_therm = its state) and replays, and its description."""
+    if m is None:
+        m = esm_dump.load(W + f"esm_dump_mosaic_{s}.json")["vars"]
+        dd = esm_dump.load(W + f"esm_dump_mosaic_drydep_{s}.json")["vars"]
+        vx = esm_dump.load(W + f"esm_dump_chem_vertmx_{s}.json")["vars"]
+        assert int(dd["ktau"]) == int(m["ktau"]) + 2 == int(vx["ktau"])
+        nuc = esm_dump.load(R + f"nuc_{s}.json")["vars"]
+        coag = esm_dump.load(R + f"coag_{s}.json")["vars"]
+        dep = esm_dump.load(R + f"dd_{s}.json")["vars"]
     rs = A(m["rsub_therm"])  # [235, 59], rows are 1-based rsub indices
     nlev = rs.shape[1]
     mptr = np.asarray(m["massptr_aer"], dtype=int)  # [10, 8]
@@ -163,6 +166,8 @@ def build(s):
             f"real64 replays of WRF's own routines at this one state (data/eqwefic/chem170_scm/aerchem64: nuc_{s}, coag_{s} with "
             f"nucleation skipped so coagulation sees rsub_therm, dd_{s}), summed as the coupling sums them; rel 1e-9 with an "
             f"absolute floor of 1e-9 of the largest term entering each assertion. Filled by tools/fill_mosaic_aerchem_column_tests.py.")
+    if desc_in is not None:
+        desc = desc_in
     return OD([("id", f"aerchem_s{s}"), ("description", desc), ("parameter_overrides", po),
                ("time_span", OD([("start", 0), ("end", 0)])), ("assertions", asr)])
 
