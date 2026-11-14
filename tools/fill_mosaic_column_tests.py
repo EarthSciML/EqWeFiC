@@ -212,7 +212,7 @@ def main():
     tests = []
     for st in steps:
         v = load(d / 'dumps' / 'chem170_mosaic_astem' / f'esm_dump_mosaic_{st + 1}.json')['vars']
-        po, asr, census = build(st, by[st], v)
+        po, asr, census = build(st, by[st], v, skip_unconverged_state=True)
         print(f'step {st}: {len(asr)} assertions;', dict(sorted(census.items(), key=str)))
         desc = (f"The whole chem_opt = 170 column (59 levels x 8 sections), model step {st + 1}, at the state ASTEM's first "
                 "semi-volatile sub-step forms its fluxes at (after ASTEM_non_volatiles and its phase-state recompute). "
@@ -223,8 +223,9 @@ def main():
                 "from the ASTEM capture's last aerosol_phase_state call (dumps/chem170_mosaic_astem, ps_*_c2, bit-identical "
                 "to the tape's SVB records). Expected, real64: "
                 f"census {dict(sorted(((str(k), n) for k, n in census.items())))}. "
-                "Per bin the branch and jaerosolstate (exactly), the water and the Kelvin factors (except where mesa_ptc hit "
-                "its 80-pass cap: it updates the solid after its last water, so the Fortran's water is not the state's), "
+                "Per bin the branch (exactly); jaerosolstate (exactly), the water and the Kelvin factors except where mesa_ptc "
+                "hit its 80-pass cap (there they are the solver's stopping point, which CLAUDE.md says not to assert, and "
+                "the cap's last step moves the solid after the last water, so the Fortran's water is not the state's); "
                 "the solid electrolytes on the analytic branches, kg; on a bin ASTEM formed a liquid flux for at its own "
                 "state the liquid ions, molalities, gam(HNO3), gam(HCl), gam_ratio and the NH4NO3/NH4Cl activities; and on "
                 "a level whose eight fluxes were all formed at one state, each bin's rates and the gas tendencies and "
