@@ -16,6 +16,13 @@ chem170_mosaic_astem_capture.md), real(kind=8) values:
 Inputs: the cell (T, p, RH, the gases after the non-volatile stage), and per
 bin the totals, number, dp_wet, water_a_hyst, and the two equilibrium states the solvers
 reached -- ah2o_a (Kelvin) and the solid electrolytes (MESA) -- as the Fortran left them.
+The electrolytes are COMPUTED (conform_electrolytes.esm, mounted as Conform, since 2026-11-14): its
+reference is the c2 call's electrolytes and totals, which conform_electrolytes had just formed and
+reproduces when handed them again (data/eqwefic/chem170_scm/conform64/idem).
+At the two solver states the document asserts the residuals at the iterate the Fortran stopped at,
+never the stopping point itself: the Kelvin residual aw0/K(ah2o_a) - ah2o_a on every bin whose
+Kelvin factors are asserted, and MESA's rates S - 1 on every path-6 bin whose last mesa_ptc pass
+formed them at the solid it exited with (the MESA tape of the c2 hand-offs, MESA_C2).
 Only numbers are written; the document's equations and structure are hand-authored.
 
 What is asserted, per bin: the branch and jaerosolstate; on every bin whose MESA call (if
@@ -32,7 +39,8 @@ state that is not the sub-step's. The replay re-forms every section's flux, with
 routines, at the first sub-step's state (the tape's SVT gas and SVB section, checked equal), once
 with the model's own state edits and once with them skipped. A section's reference is its
 replayed flux where the two are bit-identical (the flux did not follow its own edit); a
-section whose gas was not edited before it reproduces the in-model flux exactly (asserted). Never: a quantity the Fortran left from a state it had
+section whose gas was not edited before it reproduces the in-model flux exactly (asserted). An
+all-solid section whose flux followed degas_solid (a trace-solid clean-up) takes the edit-free flux. Never: a quantity the Fortran left from a state it had
 moved off (a mesa_ptc call that hit its 80-pass cap updates the solid after its last water;
 compute_activities' stale gam_ratio in the sulfate-poor regime without NH4NO3), or ASTEM's
 solver decisions (see the astem rates fill script).
@@ -52,6 +60,39 @@ from esm_compact_json import dumps  # noqa: E402
 SEC_DIR = Path('/projects/illinois/eng/cee/ctessum/ctessum/data/eqwefic/chem170_full/astem_persection')
 sys.path.insert(0, str(SEC_DIR))
 import sec_tape  # noqa: E402
+
+# MESA's rates at the solid mesa_ptc left: the MESA tape of every path-6 hand-off of the c2 call, replayed by
+# kernels/mosaic_therm_driver mode 5 (data/eqwefic/chem170_scm/mesa64/c2: make_c2_cases.py, run.sh,
+# verify_c2.py -- the replay's exit state is bit-identical to the dump's on every MESA field)
+MESA_C2 = Path('/projects/illinois/eng/cee/ctessum/ctessum/data/eqwefic/chem170_scm/mesa64/c2')
+sys.path.insert(0, str(MESA_C2.parent))
+import mesa_tape  # noqa: E402
+_mspec = importlib.util.spec_from_file_location('fmt', ROOT / 'tools' / 'fill_mosaic_mesa_tests.py')
+fmt = importlib.util.module_from_spec(_mspec)
+_mspec.loader.exec_module(fmt)
+AW0_F32 = 0.009999999776482582                # aerosol_phase_state's ah2o = rh_pc*0.01, 0.01 a default-REAL literal
+
+
+def mesa_last_pass(tag, step):
+    """{(lev, bin): (call, pass record)} of the last mesa_ptc pass of each path-6 c2 hand-off, kept only where
+    that pass formed its rate at the solid the routine exited with (its TOP solid is the exit solid, no step
+    followed, no salt snapped): there the rate is the one at the state the column is handed. Elsewhere mesa_ptc
+    left a solid it had moved off (the 80-pass cap, or a last-pass snap, N121)."""
+    idx = json.load(open(MESA_C2 / f'c2_{tag}_{step}.json'))
+    out = {}
+    for ch in sorted(MESA_C2.glob(f'c2_{tag}_{step}_*.tape')):
+        c0 = int(ch.stem.split('_')[-1]) * 100
+        tp = mesa_tape.read(str(ch))
+        for case in sorted({k[0] for k in tp}):
+            r = idx[c0 + case - 1]
+            c = tp[(case, max(k[1] for k in tp if k[0] == case))]
+            rec = c['its'][max(c['its'])]
+            if 'step' in rec or 'therm' not in rec or fmt.snapped(rec) or c['exit']['outcome'] == 3:
+                continue
+            if list(rec['top']['elec_s']) != list(c['exit']['elec_s']):
+                continue
+            out[(r['lev'], r['bin'])] = (c, rec)
+    return out
 
 _spec = importlib.util.spec_from_file_location('far', ROOT / 'tools' / 'fill_mosaic_astem_rates_tests.py')
 far = importlib.util.module_from_spec(_spec)
@@ -102,12 +143,25 @@ def section_refs(r, sb):
             assert sec_tape.same_flux(fx, r1), 'replay does not reproduce the in-model flux'
         if sec_tape.same_flux(r1, r2):
             ref[b] = r2
+        elif int(r1['route']) == 1 and int(r1['jphase']) == 1:
+            # An all-solid section whose flux followed degas_solid_nh4no3/nh4cl. That edit evaporates a TRACE
+            # solid (epercent <= ptol_mol_ASTEM) at once wherever the gas product is under Keq_sg, and the
+            # salt is then left inactive: a threshold clean-up of ASTEM's integrator, not a process (the solid
+            # rate already drives the same salt toward Keq_sg). So the flux at the state is the edit-free
+            # replay's, formed by the model's own ASTEM_flux_dry (2026-11-14: 15 of 15 such sections at step
+            # 1026 matched the document before this was accepted; data/eqwefic/conform_wire/tag2/).
+            ref[b] = r2
         else:
-            why[b] = 'flux formed after its own state edit (absorb/degas_tiny, degas_solid)'
+            why[b] = 'liquid flux formed after absorb_tiny/degas_tiny'
     return ref, why
 
 
-def build(step, call_of_lev, v, skip_unconverged_state=False, sec=None):
+def ain_rh(c, v, k):
+    """rh_pc of the cell, as aerosol_phase_state read it."""
+    return c['ain']['rh_pc']
+
+
+def build(step, call_of_lev, v, skip_unconverged_state=False, sec=None, mesa=None):
     """One test: the whole column at tape step `step` (model step step + 1). With
     skip_unconverged_state, jaerosolstate is not asserted on a bin whose mesa_ptc call hit its 80-pass
     cap (outcome 3): there it is the solver's stopping point, which CLAUDE.md says not to assert."""
@@ -129,12 +183,34 @@ def build(step, call_of_lev, v, skip_unconverged_state=False, sec=None):
             rows['num'].append(B['num_a'])
             rows['dp_wet'].append(B['dp_wet'])
             rows['aer_t'].append(v['ps_aert_in_c2'][:, b - 1, k - 1].tolist())
-            rows['elec_t'].append(v['ps_elet_in_c2'][:NEL, b - 1, k - 1].tolist())
             rows['water_hyst'].append(float(s[SC['hyst_in']]))
             rows['ah2o_a'].append(float(s[SC['ah2o_a']]))
             rows['elec_s_mesa'].append(list(S['E_s']))
         for n, r in rows.items():
             po[f'Column.{n}'].append(r)
+
+        # ---- per bin: conform_electrolytes at the state. Its input is the totals the c2 call was
+        # handed, which conform_electrolytes had just formed; re-conforming them reproduces the
+        # electrolytes and degasses nothing (chem170_scm/conform64/idem), so the c2 electrolytes and
+        # totals are its reference, with conform_electrolytes.esm's floor of 1e-12 of the bin's largest
+        # amount (the NH4Cl residue Cl - NaCl carries the cancellation of its two operands).
+        for b in range(1, NBIN + 1):
+            et = v['ps_elet_in_c2'][:NEL, b - 1, k - 1]
+            at = v['ps_aert_in_c2'][:, b - 1, k - 1]
+            fl = 1e-12 * max(float(max(abs(x) for x in et)), 1e-300)
+            for e in range(NEL):
+                asr.append(A('Conform.elec', et[e], {'rel': REL, 'abs': fl}, lev=k, bin=b, el=e + 1))
+            for s_, ia in enumerate((1, 2, 3, 4, 5, 108, 109)):
+                asr.append(A('Conform.a', at[ia - 1], {'rel': REL, 'abs': fl}, lev=k, bin=b, sp=s_ + 1))
+            asr.append(A('Conform.co3', at[106], {'rel': REL, 'abs': fl}, lev=k, bin=b))
+        # the gas after the last bin: what re-conforming degasses is a cancellation residue of the aerosol
+        # amounts, so the floor is 1e-12 of the level's largest amount
+        flg = 1e-12 * max(max(abs(float(x)) for x in sb['gas']),
+                          max(float(abs(v['ps_aert_in_c2'][ia - 1, b - 1, k - 1])) for b in range(1, NBIN + 1)
+                              for ia in (1, 2, 3, 4, 5, 108, 109)))
+        for g in (2, 3, 4):
+            x = float(sb['gas'][g - 1])
+            asr.append(A('Conform.g', x, {'rel': REL, 'abs': flg}, lev=k, bin=NBIN, gas=g))
 
         # ---- per bin: phase state, water, Kelvin, partition, activities, kg
         for b in range(1, NBIN + 1):
@@ -165,10 +241,32 @@ def build(step, call_of_lev, v, skip_unconverged_state=False, sec=None):
                 for g in range(5):
                     kv = float(v['ps_kel_c2'][g, b - 1, k - 1])
                     asr.append(A('Ps.kel', kv, tol(kv), lev=k, bin=b, gas=g + 1))
+                # the Kelvin equilibrium's residual aw0/K(ah2o_a) - ah2o_a at the iterate the Fortran stopped at
+                # (its K is K at that iterate; 1 on a solid exit, which leaves the previous iterate's K behind);
+                # the floor is the residual's sensitivity to K at rel 1e-9
+                aw0 = float(ain_rh(c, v, k)) * AW0_F32
+                kf = 1.0 if S['jaerosolstate'] == 1 else float(s[SC['kelvin']])
+                res = aw0 / kf - float(s[SC['ah2o_a']])
+                census['kelvin_residual'] += 1
+                asr.append(A('Ps.kelvin_residual', res, {'rel': REL, 'abs': REL * aw0}, **co))
+            if path == 6 and mesa is not None:
+                if (k, b) in mesa:
+                    mc_, rec = mesa[(k, b)]
+                    assert list(rec['top']['elec_s']) == list(S['E_s'])
+                    _, _, flux = fmt.rate_expected(mc_, rec)
+                    census['mesa_rate'] += 1
+                    for i_ in range(15):
+                        # near MESA's equilibrium S - 1 is small: floor 1e-12, i.e. S itself to 1e-12
+                        asr.append(A('Column.mesa_rate', flux[i_], {'rel': REL, 'abs': 1e-12}, lev=k, bin=b, salt=i_ + 1))
+                else:
+                    census['mesa_rate_skipped_moved_off'] += 1
             if path != 6:
+                # floor 1e-12 of the bin's largest electrolyte on every entry, as conform_electrolytes.esm's own tests:
+                # since the electrolytes are computed, a small salt formed from a residue (NH4Cl from Cl - NaCl)
+                # carries the cancellation of its operands, ~1e-17 absolute against amounts of order 1
                 fl = 1e-12 * max(max(abs(x) for x in S['E_t']), 1e-300)
                 for e in range(NEL):
-                    asr.append(A('Column.elec_s', S['E_s'][e], tol(S['E_s'][e], fl if S['E_s'][e] == 0 else 0.0), lev=k, bin=b, el=e + 1))
+                    asr.append(A('Column.elec_s', S['E_s'][e], tol(S['E_s'][e], fl), lev=k, bin=b, el=e + 1))
             kg = B['kg']
             for gname, i in (('hno3', 1), ('hcl', 2), ('nh3', 3)):
                 asr.append(A(f'Rates.kg_{gname}', kg[i], tol(kg[i]), **co))
@@ -264,7 +362,8 @@ def main():
     for st in steps:
         v = load(d / 'dumps' / 'chem170_mosaic_astem' / f'esm_dump_mosaic_{st + 1}.json')['vars']
         sec = sec_tape.read_sec(SEC_DIR / f'col_{st + 1}.tape')
-        po, asr, census = build(st, by[st], v, skip_unconverged_state=True, sec=sec)
+        po, asr, census = build(st, by[st], v, skip_unconverged_state=True, sec=sec,
+                                mesa=mesa_last_pass('astem', st + 1))
         print(f'step {st}: {len(asr)} assertions;', dict(sorted(census.items(), key=str)))
         desc = (f"The whole chem_opt = 170 column (59 levels x 8 sections), model step {st + 1}, at the state ASTEM's first "
                 "semi-volatile sub-step forms its fluxes at (after ASTEM_non_volatiles and its phase-state recompute). "
@@ -275,6 +374,11 @@ def main():
                 "from the ASTEM capture's last aerosol_phase_state call (dumps/chem170_mosaic_astem, ps_*_c2, bit-identical "
                 "to the tape's SVB records). Expected, real64: "
                 f"census {dict(sorted(((str(k), n) for k, n in census.items())))}. "
+                "The electrolytes are computed by conform_electrolytes (Conform) from the totals; its electrolytes, "
+                "totals and the gas after the last bin are asserted against the c2 call's (conform_electrolytes is "
+                "idempotent there). At the two solver states: the Kelvin residual aw0/K - ah2o_a at the Fortran's last "
+                "iterate, and MESA's rates S - 1 at the solid mesa_ptc exited with, from the MESA tape of the c2 "
+                "hand-offs (chem170_scm/mesa64/c2), where its last pass formed them there. "
                 "Per bin the branch (exactly); jaerosolstate (exactly), the water and the Kelvin factors except where mesa_ptc "
                 "hit its 80-pass cap (there they are the solver's stopping point, which CLAUDE.md says not to assert, and "
                 "the cap's last step moves the solid after the last water, so the Fortran's water is not the state's); "
@@ -283,7 +387,7 @@ def main():
                 "bin's rates at the state, from the per-section replay (kernels/astem_section_driver: every section's "
                 "flux formed by the model's own flux routines at the first sub-step's state, so a flux the model formed "
                 "after an earlier section edited the gas is re-formed at the state), on every bin whose flux did not "
-                "follow its own state edit (absorb/degas_tiny, degas_solid) and is not excluded for an ASTEM solver "
+                "follow absorb_tiny/degas_tiny (an all-solid section after degas_solid takes the edit-free flux) and is not excluded for an ASTEM solver "
                 "decision or a stale mesa_ptc water; and on a level where all its bins have rates, the gas tendencies "
                 "and balances (as couplings/mosaic_astem_rates.esm, now with the phase state and activities COMPUTED). "
                 "rel 1e-9, flags exactly.")

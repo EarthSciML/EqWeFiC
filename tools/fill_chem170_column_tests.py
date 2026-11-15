@@ -85,7 +85,8 @@ def build(step, what, calls_by, cz_states):
     # --- MOSAIC gas-particle part: the in-model tape at the state
     v = load(f"{DUMPS}/esm_dump_mosaic_{step}.json")["vars"]
     sec = fmc.sec_tape.read_sec(fmc.SEC_DIR / f"lev_{step}.tape")
-    po_m, asr_m, census = fmc.build(step - 1, calls_by[step - 1], v, skip_unconverged_state=True, sec=sec)
+    po_m, asr_m, census = fmc.build(step - 1, calls_by[step - 1], v, skip_unconverged_state=True, sec=sec,
+                                    mesa=fmc.mesa_last_pass('full', step))
     # --- MOSAIC aerosol chemistry at the state's rsub
     m = dict(v)
     m["rsub_therm"] = np.load(f"{REPLAY}/rsub_S_{step}.npy")
@@ -194,7 +195,9 @@ def build(step, what, calls_by, cz_states):
             "sub-step (SVT), every other gas KPP's output of the step; CBM-Z's four exchanging gases are put in molec/cm3 "
             "by inverting the document's own down chain, so ASTEM is handed the tape's gases. Inputs the Fortran's "
             "solvers decided are taken as the Fortran left them, as in couplings/mosaic_column.esm: ah2o_a (Kelvin), "
-            "the MESA solid on path 6, dp_wet. Expected values, all at that one state, real64: CBM-Z's Vdot with RCONST "
+            "the MESA solid on path 6, dp_wet; the electrolytes are computed from the totals (conform_electrolytes), and "
+            "the two solver states are checked by their residuals at the Fortran's last iterate (Kelvin) and its exit "
+            "solid (MESA's rates, chem170_scm/mesa64/c2). Expected values, all at that one state, real64: CBM-Z's Vdot with RCONST "
             "recomputed at the state (kernels/cbmz_driver), conv times the emissions_driver increment over dt, vertmx "
             "with K = 0 (Romberg dt -> 0) and wetdep_ls (sulf) replayed at the state; ASTEM's phase state, "
             "thermodynamics from the in-model tape and ASTEM's per-section rates at the state from the per-section "
