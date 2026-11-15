@@ -2370,6 +2370,13 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     dynamics.
 3.2 **EqAtmChem.esm**: EqWeather + emissions + RADM2 + deposition +
     photolysis, compared with a WRF-Chem `chem_opt=1` SCM-like run.
+    - **2026-11-14, first step on the chem_opt = 170 column**: `couplings/eqatmchem_scm.esm`
+      (103457/103457) drives the joint chemistry column from a meteorological column state
+      (WRFColumnGeometry + `wrf_chem_interface/chem_met_state.esm`); one-way, met state prescribed
+      at the step. Found B34 (chem temperature from moist theta), N128 (stale alt at chem time),
+      N129. Next: a Noah column to replace the prescribed surface fields, then the met tendencies
+      of this column (eqweather_scm's suite with Noah), then Madronich j-values on the model grid,
+      then vertmix. Notes: `data/eqwefic/notes/eqatmchem_scm.md`.
 3.3 **EqAtmFire.esm**: EqWeather + the fire_behavior (CFBM) components via the
     `wildlandfire.esm`-style coupling, compared with a **real-data WRF 4.8 + CFBM
     simulation of the Last Chance Fire (eastern Colorado, 2012-06-25)** with the
