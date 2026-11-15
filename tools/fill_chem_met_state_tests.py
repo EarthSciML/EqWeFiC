@@ -7,7 +7,7 @@ meteorology hooks and a one-minute history.  The wrfout frame S is the state aft
 chem_driver sees at the end of step S (p + pb reproduces KPP's p_phy exactly).
 
 Inputs:  theta_m = THM + t0, p = P + PB, qv, qr from frame S; alt from the emissions dump of call S
-         (chem_driver's grid%alt -- NOT 1/rho of the frame's geopotential, FORTRAN_BUGS N129).
+         (chem_driver's grid%alt -- NOT 1/rho of the frame's geopotential, FORTRAN_BUGS N128).
 Expected: cbmz_kpp call S (temp, rho_phy, c_m, fix) and wesely call S-2 (= ktau S: rhchem and the
          flags) where that call was dumped.
 
