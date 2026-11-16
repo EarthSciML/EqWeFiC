@@ -18,7 +18,7 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=${1:-/tmp/esm-cost-$$}
 SNAP=${REPO}-costsnap.$$   # unique per run: two concurrent sweeps must not share one
 ESM=$REPO/esm
-export ESD_ROOT=${ESD_ROOT:-$(dirname "$REPO")/EarthSciDiscretizations-main-85963d7}   # pinned ESD main (2026-11-11); see CLAUDE.md
+export ESD_ROOT=${ESD_ROOT:-$(dirname "$REPO")/EarthSciDiscretizations-main-431bd46}   # pinned ESD main (2026-11-16); see CLAUDE.md
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD)
 git -C "$REPO" worktree prune
