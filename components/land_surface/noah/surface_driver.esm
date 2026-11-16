@@ -1,0 +1,2852 @@
+{
+ "esm": "1.2.0",
+ "metadata": {
+  "name": "NoahSurfaceDriver",
+  "description": "The per-point glue between the atmosphere, the surface layer and Noah's SFLX in WRF's Noah driver, SUBROUTINE lsm of phys/module_sf_noahdrv.F (WRF 4.8, sf_surface_physics = 2), together with the few lines of SUBROUTINE SFLX (module_sf_noahlsm.F) that select the surface properties and form the surface humidity: everything a Noah column needs besides its process components (soil_veg_parameters, potential_evaporation, canopy_resistance, evapotranspiration, soil_heat, soil_moisture). FORCING (the driver's preamble, lines 'PSFC = P8W3D(I,1,J)' to 'PRCP = RAINBL(I,J)/DT'): the pressure at the lowest model level is the mean of the two lowest interface pressures, sfcprs = (p_sfc + p_w2)/2; the humidities are converted from mixing ratios to SPECIFIC humidities, q2 = qv/(1 + qv) and q2sat = qgh/(1 + qgh), where qgh is the surface layer's saturation mixing ratio at the lowest level (sfclayrev's QGH, which is how the surface layer hands Noah its saturation humidity); the slope of the saturation humidity is Bolton's, dqsdt2 = q2sat a2 (a3 - a4)/(sfctmp - a4)^2 with the driver's A2 = 17.67, A3 = 273.15, A4 = 29.65 (= wrf.svp2, wrf.svpt0, wrf.svp3); the lowest-level potential temperature is referenced to the SURFACE pressure, th2 = sfctmp (p0/sfcprs)^kappa/(p0/p_sfc)^kappa with kappa = R_d/cp; the downward longwave is scaled by the emissivity ENTERING the step and the net shortwave by the albedo entering the step (WRF's EMISS and ALBEDO fields, i.e. the previous step's values), lwdn = glw emiss_in, solnet = swdown (1 - albedo_in); and the precipitation rate is the step's accumulated grid-scale rain over the step, prcp = rainbl/dt_rain. SURFACE PROPERTIES (SFLX, snow-free branch 'IF (SNEQV == 0.0)'): albedo = alb, emissi = embrd and z0 = z0brd, the greenness-selected background values of REDPRM (soil_veg_parameters). The SNOW branch (SNFRAC, ALCALC, SNOWZ0, CSNOW, SNOW_NEW and SNOPAC) is transcribed in the snow_* components but is NOT selected here: `snow_branch_active` reports whether WRF would have taken it (a pack, sneqv > 1e-7 m, or precipitation that SFLX classes as snowfall or freezing rain), and a consumer that mounts this component asserts it zero. SURFACE HUMIDITY (SFLX after NOPAC): q1 = q2 + eta_kinematic cp/rch, the specific humidity at the surface that sustains the evapotranspiration flux through the bulk transfer coefficient rch = rho cp_penman ch, with the module's cp = 1004.5 in the numerator (PENMAN's rch carries cp = 1004.6, FORTRAN_BUGS N88, so the two do not cancel exactly); the driver hands the surface layer its MIXING ratio, qsfc = q1/(1 - q1). The driver's remaining assignments are renames (TSK = T1, HFX = SHEAT, QFX = ETA_KINEMATIC, LH = ETA, GRDFLX = SSOIL, ZNT = Z0) and belong on a consumer's coupling edges, not here. NOT TRANSCRIBED: the urban (sf_urban_physics) and sea-ice paths, the MYJ surface-layer test on CHKLOWQ, FASDAS, and irrigation.",
+  "authors": [
+   "EqWeFiC"
+  ],
+  "license": "MIT",
+  "tags": [
+   "wrf",
+   "land-surface",
+   "noah",
+   "driver-interface"
+  ]
+ },
+ "models": {
+  "NoahSurfaceDriver": {
+   "subsystems": {
+    "wrf": {
+     "ref": "../../../lib/wrf_constants.esm"
+    },
+    "par": {
+     "ref": "./noah_parameters.esm"
+    }
+   },
+   "variables": {
+    "t_air": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "Air temperature of the lowest model layer, WRF's T3D(I,1,J)."
+    },
+    "qv_air": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.01,
+     "description": "Water-vapour MIXING ratio of the lowest model layer, WRF's QV3D(I,1,J)."
+    },
+    "p_sfc": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 100000.0,
+     "description": "Pressure at the lowest model interface (the ground), WRF's P8W3D(I,1,J) = PSFC."
+    },
+    "p_w2": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 99000.0,
+     "description": "Pressure at the second model interface, WRF's P8W3D(I,2,J)."
+    },
+    "glw": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 400.0,
+     "description": "Downward longwave radiation at the surface, WRF's GLW."
+    },
+    "swdown": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Downward shortwave radiation at the surface, WRF's SWDOWN (Noah's SOLDN)."
+    },
+    "albedo_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.17,
+     "description": "Surface albedo ENTERING the step, WRF's ALBEDO(I,J): the albedo SFLX returned on the previous step."
+    },
+    "emiss_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.985,
+     "description": "Surface emissivity ENTERING the step, WRF's EMISS(I,J): the emissivity SFLX returned on the previous step."
+    },
+    "rainbl": {
+     "type": "parameter",
+     "units": "kg/m^2",
+     "default": 0.0,
+     "description": "Liquid-water depth of the precipitation reaching the ground over the step, WRF's RAINBL (mm, i.e. kg/m^2)."
+    },
+    "dt_rain": {
+     "type": "parameter",
+     "units": "s",
+     "default": 60.0,
+     "description": "The step over which rainbl accumulated, WRF's DT. A parameter of the forcing, not an integrator step: prcp is a rate a consumer that integrates the column supplies directly."
+    },
+    "qgh": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.02,
+     "description": "Saturation MIXING ratio at the lowest model level, from the surface-layer scheme (sfclayrev's qgh)."
+    },
+    "alb": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.17,
+     "description": "Snow-free background albedo selected by greenness, from soil_veg_parameters."
+    },
+    "embrd": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.985,
+     "description": "Snow-free background emissivity selected by greenness, from soil_veg_parameters."
+    },
+    "z0brd": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.15,
+     "description": "Snow-free background roughness length selected by greenness, from soil_veg_parameters."
+    },
+    "t1_in": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "Skin temperature ENTERING the step, WRF's TSK, which SFLX tests against freezing to class liquid precipitation as freezing rain."
+    },
+    "sneqv": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Snow water equivalent of the pack, WRF's SNOW/1000. Read only by the branch indicator."
+    },
+    "ffrozp": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Frozen fraction of the precipitation, WRF's FFROZP (the microphysics' SR, or 1/0 by sfctmp <= 273.15 when it supplies none). Read only by the branch indicator."
+    },
+    "eta_kinematic": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 0.0,
+     "description": "Total evapotranspiration as a mass flux, from the evapotranspiration component."
+    },
+    "rch": {
+     "type": "parameter",
+     "units": "W/(m^2*K)",
+     "default": 10.0,
+     "description": "Bulk heat-transfer coefficient in energy units, rho cp_penman ch, from the potential-evaporation component."
+    },
+    "sfcprs": {
+     "type": "unknown",
+     "units": "Pa",
+     "description": "Pressure at the lowest model level, WRF's SFCPRS, the mean of the two lowest interface pressures."
+    },
+    "sfctmp": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Air temperature at the lowest model level, WRF's SFCTMP."
+    },
+    "q2": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "SPECIFIC humidity at the lowest model level, WRF's Q2K = qv/(1 + qv)."
+    },
+    "q2sat": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Saturation SPECIFIC humidity at the lowest model level, WRF's Q2SAT = qgh/(1 + qgh)."
+    },
+    "dqsdt2": {
+     "type": "unknown",
+     "units": "kg/(kg*K)",
+     "description": "Slope of the saturation specific humidity with temperature, q2sat a2 (a3 - a4)/(sfctmp - a4)^2 (Bolton), WRF's DQSDT2."
+    },
+    "th2": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Potential temperature of the lowest model level referenced to the SURFACE pressure, sfctmp (p0/sfcprs)^kappa/(p0/p_sfc)^kappa, WRF's TH2."
+    },
+    "lwdn": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Absorbed downward longwave radiation, glw emiss_in, WRF's LWDN."
+    },
+    "solnet": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Net (absorbed) shortwave radiation, swdown (1 - albedo_in), WRF's SOLNET."
+    },
+    "fdown": {
+     "type": "unknown",
+     "units": "W/m^2",
+     "description": "Total absorbed downward radiation, solnet + lwdn, SFLX's FDOWN."
+    },
+    "prcp": {
+     "type": "unknown",
+     "units": "kg/(m^2*s)",
+     "description": "Precipitation rate reaching the ground, rainbl/dt_rain, WRF's PRCP."
+    },
+    "albedo": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface albedo SFLX returns: the background value on a snow-free surface."
+    },
+    "emissi": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Surface emissivity SFLX uses and returns: the background value on a snow-free surface."
+    },
+    "z0": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Roughness length SFLX returns (WRF's ZNT on exit): the background value on a snow-free surface."
+    },
+    "snowing": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Indicator for SFLX's SNOWNG: precipitation reaching the ground with a frozen fraction above one half."
+    },
+    "freezing_rain": {
+     "type": "unknown",
+     "units": "1",
+     "description": "Indicator for SFLX's FRZGRA: liquid precipitation onto a skin at or below freezing (par.t0 = 273.15 K)."
+    },
+    "snow_branch_active": {
+     "type": "unknown",
+     "units": "1",
+     "description": "1 where WRF would take SFLX's snow branch (a pack above 1e-7 m water equivalent, or snowfall or freezing rain this step), which this component does not select; a consumer asserts it 0."
+    },
+    "q1": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Surface specific humidity, q2 + eta_kinematic cp/rch, SFLX's Q1."
+    },
+    "qsfc": {
+     "type": "unknown",
+     "units": "kg/kg",
+     "description": "Surface MIXING ratio the driver hands the surface layer for the next step, q1/(1 - q1), WRF's QSFC."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "sfcprs",
+     "rhs": {
+      "op": "*",
+      "args": [
+       0.5,
+       {
+        "op": "+",
+        "args": [
+         "p_sfc",
+         "p_w2"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "sfctmp",
+     "rhs": "t_air"
+    },
+    {
+     "lhs": "q2",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "qv_air",
+       {
+        "op": "+",
+        "args": [
+         1.0,
+         "qv_air"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "q2sat",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "qgh",
+       {
+        "op": "+",
+        "args": [
+         1.0,
+         "qgh"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "dqsdt2",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "q2sat",
+           "wrf.svp2"
+          ]
+         },
+         {
+          "op": "-",
+          "args": [
+           "wrf.svpt0",
+           "wrf.svp3"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "^",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           "sfctmp",
+           "wrf.svp3"
+          ]
+         },
+         2
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "th2",
+     "rhs": {
+      "op": "/",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         "sfctmp",
+         {
+          "op": "^",
+          "args": [
+           {
+            "op": "/",
+            "args": [
+             "wrf.p1000mb",
+             "sfcprs"
+            ]
+           },
+           "wrf.rcp"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "^",
+        "args": [
+         {
+          "op": "/",
+          "args": [
+           "wrf.p1000mb",
+           "p_sfc"
+          ]
+         },
+         "wrf.rcp"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "lwdn",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "glw",
+       "emiss_in"
+      ]
+     }
+    },
+    {
+     "lhs": "solnet",
+     "rhs": {
+      "op": "*",
+      "args": [
+       "swdown",
+       {
+        "op": "-",
+        "args": [
+         1.0,
+         "albedo_in"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "fdown",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "solnet",
+       "lwdn"
+      ]
+     }
+    },
+    {
+     "lhs": "prcp",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "rainbl",
+       "dt_rain"
+      ]
+     }
+    },
+    {
+     "lhs": "albedo",
+     "rhs": "alb"
+    },
+    {
+     "lhs": "emissi",
+     "rhs": "embrd"
+    },
+    {
+     "lhs": "z0",
+     "rhs": "z0brd"
+    },
+    {
+     "lhs": "snowing",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "and",
+        "args": [
+         {
+          "op": ">",
+          "args": [
+           "prcp",
+           0.0
+          ]
+         },
+         {
+          "op": ">",
+          "args": [
+           "ffrozp",
+           0.5
+          ]
+         }
+        ]
+       },
+       1.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "freezing_rain",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "and",
+        "args": [
+         {
+          "op": "and",
+          "args": [
+           {
+            "op": ">",
+            "args": [
+             "prcp",
+             0.0
+            ]
+           },
+           {
+            "op": "<=",
+            "args": [
+             "ffrozp",
+             0.5
+            ]
+           }
+          ]
+         },
+         {
+          "op": "<=",
+          "args": [
+           "t1_in",
+           "par.t0"
+          ]
+         }
+        ]
+       },
+       1.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "snow_branch_active",
+     "rhs": {
+      "op": "ifelse",
+      "args": [
+       {
+        "op": "or",
+        "args": [
+         {
+          "op": ">",
+          "args": [
+           "sneqv",
+           1e-07
+          ]
+         },
+         {
+          "op": ">",
+          "args": [
+           {
+            "op": "+",
+            "args": [
+             "snowing",
+             "freezing_rain"
+            ]
+           },
+           0.0
+          ]
+         }
+        ]
+       },
+       1.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "lhs": "q1",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "q2",
+       {
+        "op": "/",
+        "args": [
+         {
+          "op": "*",
+          "args": [
+           "eta_kinematic",
+           "wrf.cp"
+          ]
+         },
+         "rch"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "qsfc",
+     "rhs": {
+      "op": "/",
+      "args": [
+       "q1",
+       {
+        "op": "-",
+        "args": [
+         1.0,
+         "q1"
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "tests": [
+     {
+       "id": "chem170_scm_step1",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 1 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 299.7296142578125,
+         "qv_air": 0.014000000432133675,
+         "p_sfc": 99999.78125,
+         "p_w2": 99285.1875,
+         "glw": 400.5568542480469,
+         "swdown": 83.75596618652344,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.0224913302809,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 293.0,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 3.0701608162704465e-07,
+         "rch": 0.024321563028787355
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.013806705363094807,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.021996596828103065,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0012975001009181142,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 300.0362854003906,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 394.5484924316406,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 69.51744842529297,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 464.0659408569336,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.026486715016641432,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step60",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 60 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 297.8214111328125,
+         "qv_air": 0.014403413981199265,
+         "p_sfc": 99973.859375,
+         "p_w2": 99258.984375,
+         "glw": 402.3813171386719,
+         "swdown": 64.72686004638672,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.020008789375424385,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 297.3065490722656,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 1.6360816604354883e-06,
+         "rch": 0.34607737440065345
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.014198900200426579,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.01961629092693329,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0011736198794096708,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 298.1263427734375,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 396.3456115722656,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 53.72329330444336,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 450.068904876709,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.018947676484208812,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step230",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 230 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 300.14801025390625,
+         "qv_air": 0.015054740943014622,
+         "p_sfc": 99978.8515625,
+         "p_w2": 99263.5078125,
+         "glw": 409.9925537109375,
+         "swdown": 689.7186279296875,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.02307838387787342,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 309.23431396484375,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 0.00010324558728502776,
+         "rch": 14.699092998016136
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.01483145821839571,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.022557785734534264,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0013264893786981702,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 300.4555358886719,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 403.8426818847656,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 572.4664306640625,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 976.3091125488281,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.02188700868275481,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step364",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 364 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 301.68988037109375,
+         "qv_air": 0.015295722521841526,
+         "p_sfc": 99987.25,
+         "p_w2": 99271.75,
+         "glw": 449.5272216796875,
+         "swdown": 495.4375305175781,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0001536252530058846,
+         "dt_rain": 60.0,
+         "qgh": 0.025342216715216637,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 308.3092041015625,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 8.443374461659214e-05,
+         "rch": 14.2568254433333
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015065288171172142,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.024715861305594444,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0014369646087288857,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 301.9989929199219,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 442.7843322753906,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 411.213134765625,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 853.9974670410156,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 2.5604208531149197e-06,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.02101427708209599,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step601",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 601 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 299.3103332519531,
+         "qv_air": 0.015405739657580853,
+         "p_sfc": 99970.171875,
+         "p_w2": 99254.609375,
+         "glw": 412.29541015625,
+         "swdown": 248.477294921875,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.037895310670137405,
+         "dt_rain": 60.0,
+         "qgh": 0.021928513422608376,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 302.1735534667969,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 4.734318260691065e-05,
+         "rch": 11.125030914697573
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015172002837061882,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.02145797200500965,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0012696676421910524,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 299.6170959472656,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 406.1109924316406,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 206.23614501953125,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 612.3471374511719,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0006315885111689568,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.019446707985594454,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step639",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 639 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 299.25006103515625,
+         "qv_air": 0.015156453475356102,
+         "p_sfc": 99969.5625,
+         "p_w2": 99254.15625,
+         "glw": 415.1015625,
+         "swdown": 214.84182739257812,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.001176337362267077,
+         "dt_rain": 60.0,
+         "qgh": 0.021847808733582497,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 301.93975830078125,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 4.276345169555715e-05,
+         "rch": 10.706415528346097
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.014930164441466331,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.02138068713247776,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0012656603939831257,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 299.55670166015625,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 408.8750305175781,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 178.31871032714844,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 587.1937408447266,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 1.9605622583185323e-05,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.018942327720059243,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step689",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 689 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 299.45379638671875,
+         "qv_air": 0.015327111817896366,
+         "p_sfc": 99966.1640625,
+         "p_w2": 99250.6640625,
+         "glw": 415.0714416503906,
+         "swdown": 190.13648986816406,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.022122912108898163,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 301.7066650390625,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 3.725059696784102e-05,
+         "rch": 9.805459324103195
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015095737762749195,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.02164408378303051,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0012793182395398617,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 299.76068115234375,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 408.8453674316406,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 157.8132781982422,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 566.6586456298828,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.018911798124370098,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step918",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 918 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 298.3406066894531,
+         "qv_air": 0.015552760101854801,
+         "p_sfc": 99969.9453125,
+         "p_w2": 99254.2734375,
+         "glw": 406.3315734863281,
+         "swdown": 0.0,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.020660698413848877,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 296.5185546875,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 2.4375089862085797e-07,
+         "rch": 0.14251357324362676
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015314576216042042,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.0202424768358469,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0012064079055562615,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 298.64642333984375,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 400.2366027832031,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 400.2366027832031,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.017032642587489235,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step1080",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 1080 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 297.35552978515625,
+         "qv_air": 0.015511645004153252,
+         "p_sfc": 99970.96875,
+         "p_w2": 99255.3125,
+         "glw": 398.65728759765625,
+         "swdown": 0.0,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.0194412749260664,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 295.1018981933594,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 8.774194783495583e-08,
+         "rch": 0.11791475463723072
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015274709090590477,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.019070520997047424,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0011449416633695364,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 297.66033935546875,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 392.67742919921875,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 392.67742919921875,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.016022170991108094,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step1621",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 1621 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 299.1268310546875,
+         "qv_air": 0.016005568206310272,
+         "p_sfc": 99973.1875,
+         "p_w2": 99257.1875,
+         "glw": 400.0231628417969,
+         "swdown": 609.1930541992188,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.021682651713490486,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 307.5830383300781,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 8.242002325871939e-05,
+         "rch": 14.369566997367366
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015753425657749176,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.021222492679953575,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0012574450811371207,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 299.43359375,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 394.0228271484375,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 505.6302185058594,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 899.6530456542969,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.021514971108530793,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step1730",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 1730 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 300.72509765625,
+         "qv_air": 0.01574082300066948,
+         "p_sfc": 99978.109375,
+         "p_w2": 99262.296875,
+         "glw": 445.8453063964844,
+         "swdown": 416.8190612792969,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0005035671056248248,
+         "dt_rain": 60.0,
+         "qgh": 0.023904062807559967,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 306.3863830566406,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 6.820691497376451e-05,
+         "rch": 13.397118883033619
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.01549688819795847,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.02334599755704403,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0013670005137100816,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 301.03338623046875,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 439.1576232910156,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 345.9598083496094,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 785.117431640625,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 8.39278527564602e-06,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.020610961357219133,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step1801",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 1801 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 301.22955322265625,
+         "qv_air": 0.015595036558806896,
+         "p_sfc": 99980.28125,
+         "p_w2": 99264.5625,
+         "glw": 447.3926696777344,
+         "swdown": 399.1402893066406,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.00029788093524985015,
+         "dt_rain": 60.0,
+         "qgh": 0.024647098034620285,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 306.5345764160156,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 6.768584922316999e-05,
+         "rch": 13.471033454304882
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015355565585196018,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.024054231122136116,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.001403242815285921,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 301.538330078125,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 440.6817932128906,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 331.28643798828125,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 771.9682312011719,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 4.9646823754301295e-06,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.02040272368003,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step2101",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 2101 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 299.83258056640625,
+         "qv_air": 0.01569477654993534,
+         "p_sfc": 99985.6875,
+         "p_w2": 99269.875,
+         "glw": 415.31689453125,
+         "swdown": 239.7152862548828,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0020576203241944313,
+         "dt_rain": 60.0,
+         "qgh": 0.022636746987700462,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 302.6982116699219,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 4.3029325648401505e-05,
+         "rch": 10.548399258128587
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015452257357537746,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.022135667502880096,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0013047083048149943,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 300.13995361328125,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 409.087158203125,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 198.96368408203125,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 608.0508422851562,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 3.429367279750295e-05,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.019549841887295825,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step2134",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 2134 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 299.842041015625,
+         "qv_air": 0.015578532591462135,
+         "p_sfc": 99976.484375,
+         "p_w2": 99260.796875,
+         "glw": 414.4620361328125,
+         "swdown": 182.5268096923828,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.02265198715031147,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 301.7196350097656,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 3.4041977608370085e-05,
+         "rch": 9.261910040717257
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015339565463364124,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.02215023897588253,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0013054758310317993,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 300.1493835449219,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 408.2451171875,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 151.49725341796875,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 559.7423706054688,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.019031586478174115,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step2400",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 2400 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 298.59136962890625,
+         "qv_air": 0.015666335821151733,
+         "p_sfc": 99979.0546875,
+         "p_w2": 99263.3203125,
+         "glw": 396.8506774902344,
+         "swdown": 0.0,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.020980006083846092,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 295.437255859375,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 1.014379857238941e-07,
+         "rch": 0.12701797655912284
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015424687415361404,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.02054889127612114,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.001222386839799583,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 298.8974304199219,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 390.8979187011719,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 390.8979187011719,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.01622689242145535,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_scm_step2521",
+       "description": "Reference: WRF 4.8 em_scm_xy single-column run at chem_opt = 170 with Noah (data/eqwefic/chem170_scm, cu_physics = 16), the noah dump of step 2521 (ctessum-claude/WRF branch earthsciml-instrumented-chem170). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 297.6307373046875,
+         "qv_air": 0.01568790152668953,
+         "p_sfc": 99979.078125,
+         "p_w2": 99263.3125,
+         "glw": 393.44964599609375,
+         "swdown": 0.0,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.019773470237851143,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 294.5173034667969,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 2.3544289735230483e-08,
+         "rch": 0.11571418455619041
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.015445591881871223,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.019390061497688293,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0011617362033575773,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 297.93585205078125,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 387.54791259765625,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 387.54791259765625,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.01564997684236459,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_full_step362",
+       "description": "Reference: WRF 4.8 em_scm_xy FULL chem_opt = 170 column (cu_physics = 0; data/eqwefic/chem170_scm/run_full_met_sfc.sh, the same run as dumps/chem170_full_met, every noah dump byte-identical), the noah dump of step 362; the replay is kernels/noah_driver at WRF's dt = 60 s (data/eqwefic/noah_column/raw64_362_60.json). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 302.38128662109375,
+         "qv_air": 0.014946965500712395,
+         "p_sfc": 100013.6328125,
+         "p_w2": 99298.3671875,
+         "glw": 451.50079345703125,
+         "swdown": 461.3055725097656,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.02641572244465351,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 308.0150146484375,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 8.054735500112095e-05,
+         "rch": 13.687718756443516
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.014726844616234303,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.025735890492796898,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0014886916615068913,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 302.69091796875,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 444.7283020019531,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 382.88360595703125,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 827.6119079589844,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.02063796973052974,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_full_step364",
+       "description": "Reference: WRF 4.8 em_scm_xy FULL chem_opt = 170 column (cu_physics = 0; data/eqwefic/chem170_scm/run_full_met_sfc.sh, the same run as dumps/chem170_full_met, every noah dump byte-identical), the noah dump of step 364; the replay is kernels/noah_driver at WRF's dt = 60 s (data/eqwefic/noah_column/raw64_364_60.json). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 302.3961486816406,
+         "qv_air": 0.014949272386729717,
+         "p_sfc": 100013.7109375,
+         "p_w2": 99298.4453125,
+         "glw": 451.6425476074219,
+         "swdown": 453.51910400390625,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.0,
+         "dt_rain": 60.0,
+         "qgh": 0.026439379900693893,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 308.199951171875,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 7.939062034459741e-05,
+         "rch": 13.811529358871383
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.014729082584381104,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.025758344680070877,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0014898281078785658,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 302.7057800292969,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 444.867919921875,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 376.42083740234375,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 821.2887573242188,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.020503090376278867,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_full_step1024",
+       "description": "Reference: WRF 4.8 em_scm_xy FULL chem_opt = 170 column (cu_physics = 0; data/eqwefic/chem170_scm/run_full_met_sfc.sh, the same run as dumps/chem170_full_met, every noah dump byte-identical), the noah dump of step 1024; the replay is kernels/noah_driver at WRF's dt = 60 s (data/eqwefic/noah_column/raw64_1024_60.json). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 296.998046875,
+         "qv_air": 0.01665489561855793,
+         "p_sfc": 100099.09375,
+         "p_w2": 99382.1875,
+         "glw": 436.7086486816406,
+         "swdown": 0.0,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.16270436346530914,
+         "dt_rain": 60.0,
+         "qgh": 0.018990231677889824,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 297.2818603515625,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 5.835544337938585e-06,
+         "rch": 4.651348106130819
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.01638205535709858,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.018636323511600494,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.0011218677973374724,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 297.3026123046875,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 430.15802001953125,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 430.15802001953125,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0027117393910884857,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.01764229306748044,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     },
+     {
+       "id": "chem170_full_step1026",
+       "description": "Reference: WRF 4.8 em_scm_xy FULL chem_opt = 170 column (cu_physics = 0; data/eqwefic/chem170_scm/run_full_met_sfc.sh, the same run as dumps/chem170_full_met, every noah dump byte-identical), the noah dump of step 1026; the replay is kernels/noah_driver at WRF's dt = 60 s (data/eqwefic/noah_column/raw64_1026_60.json). Inputs are the dumped Noah-driver arguments (real32 values widened). The FORCING assertions (q2, q2sat, dqsdt2, th2, lwdn, solnet, prcp) are against the values WRF's driver formed in REAL32 and handed SFLX, so they hold to real32 round-off: worst relative difference 2.3e-7 (dqsdt2) over these tests, bound rel 1e-6. fdown is SFLX's solnet + lwdn of those same real32 arguments (the replay's FDOWN), so it carries their round-off too (rel 1e-6), and q1 is against that replay's q1 = q2k + eta_kinematic cp/rch with eta_kinematic and rch from the same replay: the component forms q2 from qv in real64 while the replay used WRF's real32 q2k, a 7e-8 relative difference in q2 that reaches q1 diluted, hence rel 2e-7. albedo_in is the step's albedo_out, which on this snow-free column is the background albedo at every step (solnet confirms it at every daytime step). snow_branch_active is asserted zero at zero tolerance: the column is snow-free, so every quantity here is on the branch this component selects.",
+       "parameter_overrides": {
+         "t_air": 296.94781494140625,
+         "qv_air": 0.01663203164935112,
+         "p_sfc": 100101.53125,
+         "p_w2": 99384.625,
+         "glw": 436.2867126464844,
+         "swdown": 0.0,
+         "albedo_in": 0.17000000178813934,
+         "emiss_in": 0.9850000143051147,
+         "rainbl": 0.16352596879005432,
+         "dt_rain": 60.0,
+         "qgh": 0.01893065869808197,
+         "alb": 0.17000000178813934,
+         "embrd": 0.9850000143051147,
+         "z0brd": 0.15000000596046448,
+         "t1_in": 297.19097900390625,
+         "sneqv": 0.0,
+         "ffrozp": 0.0,
+         "eta_kinematic": 6.078550420870894e-06,
+         "rch": 4.567946762642712
+       },
+       "time_span": {
+         "start": 0.0,
+         "end": 1.0
+       },
+       "assertions": [
+         {
+           "variable": "q2",
+           "time": 0.0,
+           "expected": 0.016359932720661163,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "q2sat",
+           "time": 0.0,
+           "expected": 0.018578946590423584,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "dqsdt2",
+           "time": 0.0,
+           "expected": 0.001118834363296628,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "th2",
+           "time": 0.0,
+           "expected": 297.2523498535156,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "lwdn",
+           "time": 0.0,
+           "expected": 429.742431640625,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "solnet",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-09
+           }
+         },
+         {
+           "variable": "fdown",
+           "time": 0.0,
+           "expected": 429.742431640625,
+           "tolerance": {
+             "rel": 1e-06
+           }
+         },
+         {
+           "variable": "prcp",
+           "time": 0.0,
+           "expected": 0.0027254328597337008,
+           "tolerance": {
+             "rel": 1e-06,
+             "abs": 1e-15
+           }
+         },
+         {
+           "variable": "snow_branch_active",
+           "time": 0.0,
+           "expected": 0.0,
+           "tolerance": {
+             "abs": 0.0,
+             "rel": 0.0
+           }
+         },
+         {
+           "variable": "q1",
+           "time": 0.0,
+           "expected": 0.01769661727830525,
+           "tolerance": {
+             "rel": 2e-07
+           }
+         }
+       ]
+     }
+   ]
+  }
+ }
+}
