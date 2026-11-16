@@ -2,7 +2,7 @@
   "esm": "1.2.0",
   "metadata": {
     "name": "EqAtmChemScm",
-    "description": "EqAtmChem-SCM, first Stage-3 step (PLAN.md 3.2): the chem_opt = 170 joint gas + aerosol column of couplings/chem170_column.esm DRIVEN BY A METEOROLOGICAL COLUMN STATE instead of by the fields WRF handed the chemistry. Every number the chemistry reads about the air -- temperature, pressure, density, number densities, layer heights, near-surface humidity, MOSAIC's temperature, pressure, molar density and relative humidity -- is computed here from one column state (theta_m, q_v, the condensates, phi', mu', w) through the same components the meteorology uses, and handed to every chemistry consumer from one place.\n\nWHAT IS MOUNTED. (1) Geo, the WRF-ARW column geometry (components/atmospheric_dynamics/wrf_arw/column_geometry.esm, the component couplings/eqweather_scm.esm mounts): pressure from the equation of state, the inverse dry density from the geopotential, layer heights and thicknesses, from theta_m, q_v, phi' and the hydrostatic base state. (2) ChemMet (components/gaschem/wrf_chem_interface/chem_met_state.esm): chem_prep's temperature and density, the KPP interface's C_M and FIX(H2O), wesely_driver's rhchem and dew/rain flags. (3) The whole joint chemistry column, by reference, mounted and wired exactly as couplings/chem170_column.esm mounts and wires it: the same 33 component mounts, its six coupling-library imports, its operator_compose, its Join model by ref, and its join edges through couplings/lib/chem170_join.esm.\n\nWHAT IS COUPLED (met -> chem; one source per field). Geo.theta_m and Geo.p -> ChemMet; ChemMet.T -> CBM-Z's T (and its rate constants through the CBM-Z column's own edges) and MOSAIC's host mapping t_phy; ChemMet.rho -> CBM-Z's rho -> the host mapping's rho_phy (the joint column's own edge); ChemMet.M_air -> C_M and FIX(indf_M); ChemMet.H2O -> FIX(indf_H2O); Geo.p -> CBM-Z's p and the host mapping's p_phy; Geo.z_w -> the column's z_at_w; the state's q_v -> ChemMet and the host mapping, q_c and w -> wet scavenging; ChemMet.rhchem and the flags -> Wesely. MOSAIC's cell state comes from the host mapping alone: Host.temp -> the gas-particle column's t_k and the aerosol-chemistry column's temp; Host.relhum -> both columns' relative humidity and rh_pc = 100 relhum; Host.ptot -> the aerosol-chemistry column's ptot and the gas-particle column's p_atm = ptot / 1.032e6 (MOSAIC's thermodynamic atmosphere, FORTRAN_BUGS N129); Host.cair -> the aerosol-chemistry column's cair. Geo.dz8w[1] -> aerosol dry deposition's dz1. The surface fields one value of which several chemistry processes read (ust -> Wesely and aerosol dry deposition) fan out from the state model.\n\nWHAT IS NOT COUPLED. The chemistry has no feedback on the meteorology in this configuration (aer_ra_feedback = 0, no cloud chemistry, wetscav_onoff = -1 removes species without touching the water), so the coupling is one way. STILL PRESCRIBED at the step, as parameters of EqAtmChemScm: the surface and scheme outputs the chemistry reads -- tsk (Noah), ust, rmol, znt (sfclayrev), gsw (Dudhia), the grid-scale rain of the step (WSM6) -- because the land surface of this column is Noah, which has no assembled column yet (PLAN.md item 4); the photolysis frequencies (Madronich is not closed for a cloudy column on the model grid); and the aerosol state's solver-decided inputs exactly as the joint column takes them. The meteorological state itself is prescribed, not integrated: no meteorological tendency is assembled here, because the meteorology of this column (Noah, and New Tiedtke off) is not the CASES-99 suite couplings/eqweather_scm.esm assembles.\n\nTWO WRF INCONSISTENCIES THE COUPLING HAS TO TAKE A SIDE ON. (a) FORTRAN_BUGS B34: WRF-Chem forms its temperature from the MOIST potential temperature (chem_prep reads grid%t_2 = theta_m - t0), 7.3 K too warm at the surface at step 364. ChemMet reproduces it (chem_theta_is_moist = 1). (b) FORTRAN_BUGS N128: at chem time WRF's alt is the inverse density of the start of the last RK stage, not the one the step's own geopotential and pressure imply; it differs from Geo.alpha_d by 1.3e-5 at noon and up to 2.5e-4 in the shower. `chem_alt_stale` = 1 hands the chemistry WRF's alt (alt_wrf, prescribed) so the column can be compared with the Fortran; 0 hands it the consistent density Geo computes. The tests run with 1 and assert the offset itself (d_alt).\n\nTESTS. Two steps of the joint column's reference run, local noon (364) and the evening shower (1026), with an empty time span (one right-hand-side evaluation at the given state). The meteorological state is wrfout frame S of data/eqwefic/chem170_scm/run_full_met.sh, a capture of the joint column's configuration with the meteorology hooks and a one-minute history whose 28 shared dumps are byte-identical to dumps/chem170_full_mosaic (chem170_full/check_full_met.py); the chemistry state and every chemistry expectation are the joint column's own (tools/fill_chem170_column_tests.py), read from couplings/chem170_column.esm @ 4725833. What is asserted: (i) the met -> chem fields this document computes, against what WRF handed the chemistry (KPP's TEMP, rho_phy, C_M, FIX(H2O), p_phy; MOSAIC's ptotclm, cairclm, relhumclm and temperature; wesely_driver's rhchem), rel 1e-6 -- they are WRF real32 values and are computed here in real64; (ii) every assertion of the joint column, at the joint column's expected values, with the tolerance widened from the joint column's real64 rel 1e-9 to the real32 convention rel 1e-5 and every absolute floor scaled by 1e9 (the CBM-Z floors, 1e-14 of each species' gross loss L X, become 1e-5 L X), because the chemistry now reads real64 recomputations of real32 inputs; the 401 joint assertions (of 102552) this moves beyond even that bound -- MTEM activity coefficients and nucleation, steep in the relative humidity, and a few radicals -- are left out and listed (data/eqwefic/eqatmchem_scm/skip_r32.json; notes/eqatmchem_scm.md). Filled by tools/fill_eqatmchem_scm_tests.py.",
+    "description": "EqAtmChem-SCM, first Stage-3 step (PLAN.md 3.2): the chem_opt = 170 joint gas + aerosol column of couplings/chem170_column.esm DRIVEN BY A METEOROLOGICAL COLUMN STATE instead of by the fields WRF handed the chemistry. Every number the chemistry reads about the air -- temperature, pressure, density, number densities, layer heights, near-surface humidity, MOSAIC's temperature, pressure, molar density and relative humidity -- is computed here from one column state (theta_m, q_v, the condensates, phi', mu', w) through the same components the meteorology uses, and handed to every chemistry consumer from one place.\n\nWHAT IS MOUNTED. (1) Geo, the WRF-ARW column geometry (components/atmospheric_dynamics/wrf_arw/column_geometry.esm, the component couplings/eqweather_scm.esm mounts): pressure from the equation of state, the inverse dry density from the geopotential, layer heights and thicknesses, from theta_m, q_v, phi' and the hydrostatic base state. (2) ChemMet (components/gaschem/wrf_chem_interface/chem_met_state.esm): chem_prep's temperature and density, the KPP interface's C_M and FIX(H2O), wesely_driver's rhchem and dew/rain flags. (3) The whole joint chemistry column, by reference, mounted and wired exactly as couplings/chem170_column.esm mounts and wires it: the same 33 component mounts, its six coupling-library imports, its operator_compose, its Join model by ref, and its join edges through couplings/lib/chem170_join.esm.\n\nWHAT IS COUPLED (met -> chem; one source per field). Geo.theta_m and Geo.p -> ChemMet; ChemMet.T -> CBM-Z's T (and its rate constants through the CBM-Z column's own edges) and MOSAIC's host mapping t_phy; ChemMet.rho -> CBM-Z's rho -> the host mapping's rho_phy (the joint column's own edge); ChemMet.M_air -> C_M and FIX(indf_M); ChemMet.H2O -> FIX(indf_H2O); Geo.p -> CBM-Z's p and the host mapping's p_phy; Geo.z_w -> the column's z_at_w; the state's q_v -> ChemMet and the host mapping, q_c and w -> wet scavenging; ChemMet.rhchem and the flags -> Wesely. MOSAIC's cell state comes from the host mapping alone: Host.temp -> the gas-particle column's t_k and the aerosol-chemistry column's temp; Host.relhum -> both columns' relative humidity and rh_pc = 100 relhum; Host.ptot -> the aerosol-chemistry column's ptot and the gas-particle column's p_atm (Host.p_atm = ptot / 1.032e6, MOSAIC's thermodynamic atmosphere, FORTRAN_BUGS N129); Host.cair -> the aerosol-chemistry column's cair. Geo.dz8w[1] -> aerosol dry deposition's dz1. The surface fields one value of which several chemistry processes read (ust -> Wesely and aerosol dry deposition) fan out from the state model.\n\nWHAT IS NOT COUPLED. The chemistry has no feedback on the meteorology in this configuration (aer_ra_feedback = 0, no cloud chemistry, wetscav_onoff = -1 removes species without touching the water), so the coupling is one way. STILL PRESCRIBED at the step, as parameters of EqAtmChemScm: the surface and scheme outputs the chemistry reads -- tsk (Noah), ust, rmol, znt (sfclayrev), gsw (Dudhia), the grid-scale rain of the step (WSM6) -- because the land surface of this column is Noah, which has no assembled column yet (PLAN.md item 4); the photolysis frequencies (Madronich is not closed for a cloudy column on the model grid); and the aerosol state's solver-decided inputs exactly as the joint column takes them. The meteorological state itself is prescribed, not integrated: no meteorological tendency is assembled here, because the meteorology of this column (Noah, and New Tiedtke off) is not the CASES-99 suite couplings/eqweather_scm.esm assembles.\n\nTWO WRF INCONSISTENCIES THE COUPLING HAS TO TAKE A SIDE ON. (a) FORTRAN_BUGS B34: WRF-Chem forms its temperature from the MOIST potential temperature (chem_prep reads grid%t_2 = theta_m - t0), 7.3 K too warm at the surface at step 364. ChemMet reproduces it (chem_theta_is_moist = 1). (b) FORTRAN_BUGS N128: at chem time WRF's alt is the inverse density of the start of the last RK stage, not the one the step's own geopotential and pressure imply; it differs from Geo.alpha_d by 1.3e-5 at noon and up to 2.5e-4 in the shower. `chem_alt_stale` = 1 hands the chemistry WRF's alt (alt_wrf, prescribed) so the column can be compared with the Fortran; 0 hands it the consistent density Geo computes. The tests run with 1 and assert the offset itself (d_alt).\n\nTESTS. Two steps of the joint column's reference run, local noon (364) and the evening shower (1026), with an empty time span (one right-hand-side evaluation at the given state). The meteorological state is wrfout frame S of data/eqwefic/chem170_scm/run_full_met.sh, a capture of the joint column's configuration with the meteorology hooks and a one-minute history whose 28 shared dumps are byte-identical to dumps/chem170_full_mosaic (chem170_full/check_full_met.py); the chemistry state and every chemistry expectation are the joint column's own (tools/fill_chem170_column_tests.py), read from couplings/chem170_column.esm @ 4725833. What is asserted: (i) the met -> chem fields this document computes, against what WRF handed the chemistry (KPP's TEMP, rho_phy, C_M, FIX(H2O), p_phy; MOSAIC's ptotclm, cairclm, relhumclm and temperature; wesely_driver's rhchem), rel 1e-6 -- they are WRF real32 values and are computed here in real64; (ii) every assertion of the joint column, at the joint column's expected values, with the tolerance widened from the joint column's real64 rel 1e-9 to the real32 convention rel 1e-5 and every absolute floor scaled by 1e9 (the CBM-Z floors, 1e-14 of each species' gross loss L X, become 1e-5 L X), because the chemistry now reads real64 recomputations of real32 inputs; the 401 joint assertions (of 102552) this moves beyond even that bound -- MTEM activity coefficients and nucleation, steep in the relative humidity, and a few radicals -- are left out and listed (data/eqwefic/eqatmchem_scm/skip_r32.json; notes/eqatmchem_scm.md). Filled by tools/fill_eqatmchem_scm_tests.py.",
     "authors": [
       "EqWeFiC"
     ],
@@ -498,12 +498,6 @@
           "default": 0.0,
           "description": "Convective rain of the step (grid%raincv_b), 0 with cu_physics = 0."
         },
-        "dyncm2_per_atm_mosaic_therm": {
-          "type": "parameter",
-          "units": "dyn/(cm^2*atm)",
-          "default": 1032000.0,
-          "description": "The 1.032d6 module_mosaic_therm converts ptotclm to atmospheres with (:254), not the standard 1.01325e6 its coagulation uses (FORTRAN_BUGS N129)."
-        },
         "pct": {
           "type": "parameter",
           "units": "percent",
@@ -537,15 +531,6 @@
           "default": 0.5,
           "description": "Receives Host.relhum (relhumclm)."
         },
-        "ptot_in": {
-          "type": "parameter",
-          "units": "dyn/cm^2",
-          "shape": [
-            "lev"
-          ],
-          "default": 1000000.0,
-          "description": "Receives Host.ptot (ptotclm)."
-        },
         "q_t": {
           "type": "unknown",
           "units": "kg/kg",
@@ -577,14 +562,6 @@
             "lev"
           ],
           "description": "MOSAIC's relative humidity in percent, 100 relhumclm (aerosol_phase_state's rh_pc)."
-        },
-        "p_atm": {
-          "type": "unknown",
-          "units": "atm",
-          "shape": [
-            "lev"
-          ],
-          "description": "MOSAIC's thermodynamic pressure ptotclm/1.032e6 (N129)."
         },
         "dz1": {
           "type": "unknown",
@@ -667,16 +644,6 @@
             "args": [
               "pct",
               "relhum_in"
-            ]
-          }
-        },
-        {
-          "lhs": "p_atm",
-          "rhs": {
-            "op": "/",
-            "args": [
-              "ptot_in",
-              "dyncm2_per_atm_mosaic_therm"
             ]
           }
         },
@@ -1488731,13 +1488698,6 @@
     },
     {
       "type": "variable_map",
-      "from": "Host.ptot",
-      "to": "EqAtmChemScm.ptot_in",
-      "transform": "param_to_var",
-      "description": "ptotclm, for p_atm"
-    },
-    {
-      "type": "variable_map",
       "from": "Host.cair",
       "to": "AerChem.cair",
       "transform": "param_to_var",
@@ -1488752,10 +1488712,10 @@
     },
     {
       "type": "variable_map",
-      "from": "EqAtmChemScm.p_atm",
+      "from": "Host.p_atm",
       "to": "GasParticle.p_atm",
       "transform": "param_to_var",
-      "description": "ptotclm/1.032e6 -> ASTEM"
+      "description": "ptotclm/1.032e6 (the host mapping's p_atm, N129) -> ASTEM"
     },
     {
       "type": "variable_map",
