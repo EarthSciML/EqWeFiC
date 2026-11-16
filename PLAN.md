@@ -711,14 +711,11 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
         on a `[lev, spc]` field is `unlowered_operator` (probe:
         `data/eqwefic/phase3_probes/species_axis/vertmix_2d_probe.esm`). A
         tracer variant of the rule (`varcoeff_face_laplacian_lev_flux_bc_tracer`,
-        `[lev, tracer]` with the axis renamed at the import edge) is on the
-        LOCAL ESD branch `eqwefic/column-tracer-diffusion` (be00bcf, worktree
-        `../EarthSciDiscretizations-tracerdiff`, not pushed), and the
-        species-axis vertmix that uses it is on the local EqWeFiC branch
-        `vertmix/species-axis` (fc1a80d, worktree `../EqWeFiC-vertmix-spc`):
-        2360/2360 against the real64 vertmx kernel, ten species per test. It
-        lands on `main` when the rule is on ESD `main` (the ESD PR still needs
-        a `problems/` driver and an AST conformance golden). Also found while
+        `[lev, tracer]` with the axis renamed at the import edge) is on ESD
+        `main`, and the species-axis vertmix that uses it was merged into
+        EqWeFiC `main` on 2026-11-16 (merge 1920da5, unit strings respelled
+        `ppmv` so `esm validate` passes): 2360/2360 against the real64 vertmx
+        kernel, ten species per test. Also found while
         writing it: on `be1fafe6d` a `makearray` region `[[1,1],[1,N]]` filled
         by a rank-1 `[N]` value silently makes the WHOLE array NaN (spec 4.3.2
         says singleton dimensions are excluded from the shape match); the rule
