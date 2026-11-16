@@ -1,0 +1,3862 @@
+{
+ "esm": "1.2.0",
+ "metadata": {
+  "name": "NoahColumn",
+  "description": "The Noah land-surface column of the chem_opt = 170 reference column (em_scm_xy, Kansas 1997-06-20, sf_sfclay_physics = 1, sf_surface_physics = 2): the revised MM5 surface layer (sfclayrev) and the snow-free, unfrozen Noah LSM (REDPRM, the driver's forcing, PENMAN, CANRES, EVAPO, SMFLX and SHFLX) mounted together over ONE soil column state that this document owns as ODE states -- soil temperature stc, total and unfrozen soil moisture smc and sh2o, and canopy water cmc -- so that the land surface is a memory here rather than a boundary condition read from a dump. WHAT IS COUPLED: the surface layer's exchange coefficient chs into PENMAN, CANRES and the surface closure as Noah's CH, and its saturation mixing ratio qgh into the driver's Q2SAT (couplings/lib/sfclayrev_noah.esm); Noah's processes to one another exactly in SFLX's order of hand-offs (couplings/lib/noah_column_processes.esm); the column state into every leaf through its mount-edge library (couplings/tests/noahcol_couple_soil_inputs.esm); and the four tendencies back into D(stc), D(smc), D(sh2o), D(cmc). The outputs a consumer reads are Heat.t1 (WRF's TSK), Heat.sheat (HFX), Et.eta_kinematic (QFX), Et.eta (LH), Heat.ssoil (GRDFLX), Drv.qsfc (QSFC), Drv.z0 (ZNT), Drv.albedo/Drv.emissi, and the surface layer's Sfc.ust and Sfc.rmol. WHAT IS LAGGED, as in WRF: the surface layer reads the skin temperature, surface mixing ratio, roughness and its own fluxes of the PREVIOUS step (tsk_in, qsfc_prev, znt_prev, hfx_prev, ...), and SFLX forms PENMAN's ground heat flux from the incoming skin temperature (Heat.ssoil_pre). In the dt -> 0 limit tsk_in = Heat.t1, which is an algebraic loop (t1 -> chs -> rch/epsca -> t1) that WRF breaks by lagging one step and that this document carries as a parameter; a consumer that integrates the column must lag it the same way or have the integrator solve it (no solver is written here). WHAT IS PRESCRIBED: the lowest atmospheric level (u1, v1, t_air, qv_air, p_air, p_sfc, p_w2, dz1), the surface radiation (glw, swdown, from radiation) and the step's rain (rainbl, from microphysics), the surface categories and greenness, and tbot. NOT MOUNTED: the frozen-soil phase change (couplings/lib/noah_soilwater_frozen.esm; the column stays above 293 K) and the snow pack (snow_branch_active asserted 0). Tests: four steps of the full column (362, 364 noon; 1024, 1026 night with rain and a full canopy), all at t = 0 with an EMPTY time_span; references and tolerance tiers in each test's description and tools/fill_noah_column_tests.py.",
+  "license": "MIT",
+  "tags": [
+   "coupling",
+   "wrf",
+   "land-surface",
+   "noah",
+   "sfclayrev",
+   "chem170",
+   "stage-3"
+  ]
+ },
+ "metaparameters": {
+  "NSOIL": {
+   "type": "integer",
+   "default": 4,
+   "description": "Number of Noah soil layers (WRF num_soil_layers = 4), bound into every soil mount edge, whose column axis is renamed soil/soil_nodes so the document can later sit beside an atmospheric lev (esm-spec 4.7 index_set_rename)."
+  }
+ },
+ "models": {
+  "Sfc": {
+   "ref": "../components/atmospheric_dynamics/sfclayrev/sfclayrev.esm"
+  },
+  "Veg": {
+   "ref": "../components/land_surface/noah/soil_veg_parameters.esm"
+  },
+  "Pen": {
+   "ref": "../components/land_surface/noah/potential_evaporation.esm"
+  },
+  "Can": {
+   "ref": "../components/land_surface/noah/canopy_resistance.esm",
+   "bindings": {
+    "NLEV": "NSOIL"
+   },
+   "index_set_rename": {
+    "lev": "soil",
+    "lev_nodes": "soil_nodes"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/noahcol_couple_soil_inputs.esm",
+     "only": [
+      "input_ze",
+      "input_sh2o"
+     ]
+    }
+   ]
+  },
+  "Et": {
+   "ref": "../components/land_surface/noah/evapotranspiration.esm",
+   "bindings": {
+    "NLEV": "NSOIL"
+   },
+   "index_set_rename": {
+    "lev": "soil",
+    "lev_nodes": "soil_nodes"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/noahcol_couple_soil_inputs.esm",
+     "only": [
+      "input_ze",
+      "input_sh2o",
+      "input_smc"
+     ]
+    }
+   ]
+  },
+  "Heat": {
+   "ref": "../components/land_surface/noah/soil_heat.esm",
+   "bindings": {
+    "NLEV": "NSOIL"
+   },
+   "index_set_rename": {
+    "lev": "soil",
+    "lev_nodes": "soil_nodes"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/noahcol_couple_soil_inputs.esm",
+     "only": [
+      "input_ze",
+      "input_stc",
+      "input_smc",
+      "input_sh2o"
+     ]
+    }
+   ]
+  },
+  "Sm": {
+   "ref": "../components/land_surface/noah/soil_moisture.esm",
+   "bindings": {
+    "NLEV": "NSOIL"
+   },
+   "index_set_rename": {
+    "lev": "soil",
+    "lev_nodes": "soil_nodes"
+   },
+   "expression_template_imports": [
+    {
+     "ref": "./tests/noahcol_couple_soil_inputs.esm",
+     "only": [
+      "input_ze",
+      "input_sh2o",
+      "input_smc",
+      "input_et"
+     ]
+    }
+   ]
+  },
+  "Drv": {
+   "ref": "../components/land_surface/noah/surface_driver.esm"
+  },
+  "NoahColumn": {
+   "variables": {
+    "stc": {
+     "type": "unknown",
+     "units": "K",
+     "description": "Soil temperature of each layer (WRF TSLB), an ODE state; D(stc) is the soil-heat component's dstc_dt. With smc, sh2o and cmc it is the land surface's memory in this document.",
+     "shape": [
+      "soil"
+     ]
+    },
+    "smc": {
+     "type": "unknown",
+     "units": "m^3/m^3",
+     "description": "Total volumetric soil moisture (WRF SMOIS), an ODE state; D(smc) is the soil-moisture component's dsmc_dt.",
+     "shape": [
+      "soil"
+     ]
+    },
+    "sh2o": {
+     "type": "unknown",
+     "units": "m^3/m^3",
+     "description": "Unfrozen volumetric soil water (WRF SH2O), an ODE state; D(sh2o) is the soil-moisture component's dsh2o_dt (no phase change is mounted: the column never reaches freezing).",
+     "shape": [
+      "soil"
+     ]
+    },
+    "cmc": {
+     "type": "unknown",
+     "units": "m",
+     "description": "Canopy-intercepted water (WRF CANWAT/1000), an ODE state; D(cmc) is the soil-moisture component's dcmc_dt."
+    },
+    "heat_dstc_dt_in": {
+     "type": "parameter",
+     "units": "K/s",
+     "default": 0.0,
+     "description": "Receives Heat.dstc_dt through the coupling.",
+     "shape": [
+      "soil"
+     ]
+    },
+    "sm_dsh2o_dt_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "default": 0.0,
+     "description": "Receives Sm.dsh2o_dt through the coupling.",
+     "shape": [
+      "soil"
+     ]
+    },
+    "sm_dsmc_dt_in": {
+     "type": "parameter",
+     "units": "1/s",
+     "default": 0.0,
+     "description": "Receives Sm.dsmc_dt through the coupling.",
+     "shape": [
+      "soil"
+     ]
+    },
+    "sm_dcmc_dt_in": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Receives Sm.dcmc_dt through the coupling."
+    },
+    "dstc_dt": {
+     "type": "unknown",
+     "units": "K/s",
+     "description": "Total tendency of the soil temperature: the soil heat flux divergence (no phase change, no snow).",
+     "shape": [
+      "soil"
+     ]
+    },
+    "dsh2o_dt": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Total tendency of the unfrozen soil water: Richards' transport, transpiration and soil evaporation.",
+     "shape": [
+      "soil"
+     ]
+    },
+    "dsmc_dt": {
+     "type": "unknown",
+     "units": "1/s",
+     "description": "Total tendency of the total soil moisture (= dsh2o_dt on unfrozen soil).",
+     "shape": [
+      "soil"
+     ]
+    },
+    "dcmc_dt": {
+     "type": "unknown",
+     "units": "m/s",
+     "description": "Tendency of the canopy water: interception minus canopy evaporation and drip."
+    },
+    "shdfac": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.5,
+     "description": "Green vegetation fraction, WRF's VEGFRA/100."
+    },
+    "soiltyp": {
+     "type": "parameter",
+     "units": "1",
+     "default": 4.0,
+     "description": "Soil category (STAS; 4 = silt loam)."
+    },
+    "vegtyp": {
+     "type": "parameter",
+     "units": "1",
+     "default": 2.0,
+     "description": "Vegetation category (USGS; 2 = dryland cropland and pasture)."
+    },
+    "slopetyp": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Slope category."
+    },
+    "shdmin": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Annual minimum green vegetation fraction, WRF's SHDMIN/100."
+    },
+    "shdmax": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Annual maximum green vegetation fraction, WRF's SHDMAX/100."
+    },
+    "tbot": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "Deep-soil temperature, WRF's TMN."
+    },
+    "z_deep": {
+     "type": "parameter",
+     "units": "m",
+     "default": 8.0,
+     "description": "Depth of tbot, |ZBOT_DATA|."
+    },
+    "z_root": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1.0,
+     "description": "Depth of the bottom of the root zone, |ZSOIL(NROOT)| = 1.0 m for NROOT = 3 (VEGPARM NROTBL of vegetation type 2) on the 0.1/0.3/0.6/1.0 m layers. Carried here rather than derived from Veg.nroot because a layer index read off a real-valued count is not an equation."
+    },
+    "dt_canopy": {
+     "type": "parameter",
+     "units": "s",
+     "default": 60.0,
+     "description": "Step over which the canopy reservoir may be drained (evapotranspiration's ec cap); set to the reference step."
+    },
+    "tsk_in": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "Skin temperature ENTERING the step, WRF's TSK: the previous step's diagnosed skin temperature. The surface layer reads it as its tsk and SFLX forms PENMAN's ground heat flux from it. LAGGED: in the dt -> 0 limit it is Heat.t1 itself, an algebraic loop through the surface layer's exchange coefficient (chs depends on tsk, t1 on chs) that WRF breaks by lagging; carried as a parameter here, and the measured difference tsk_in - Heat.t1 is in the test descriptions."
+    },
+    "swdown": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Downward shortwave at the surface, WRF's SWDOWN (from radiation)."
+    },
+    "glw": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 400.0,
+     "description": "Downward longwave at the surface, WRF's GLW (from radiation)."
+    },
+    "albedo_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.17,
+     "description": "Surface albedo entering the step (the previous step's SFLX albedo)."
+    },
+    "emiss_in": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.985,
+     "description": "Surface emissivity entering the step (the previous step's SFLX emissivity)."
+    },
+    "rainbl": {
+     "type": "parameter",
+     "units": "kg/m^2",
+     "default": 0.0,
+     "description": "Grid-scale rain reaching the ground over the step, WRF's RAINBL."
+    },
+    "dt_rain": {
+     "type": "parameter",
+     "units": "s",
+     "default": 60.0,
+     "description": "The step over which rainbl accumulated."
+    },
+    "sneqv": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Snow water equivalent (zero: snow-free column)."
+    },
+    "ffrozp": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Frozen fraction of the precipitation (WSM6's SR)."
+    },
+    "u1": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Zonal wind of the lowest model layer."
+    },
+    "v1": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.0,
+     "description": "Meridional wind of the lowest model layer."
+    },
+    "t_air": {
+     "type": "parameter",
+     "units": "K",
+     "default": 300.0,
+     "description": "Temperature of the lowest model layer, WRF's T3D(I,1,J)."
+    },
+    "qv_air": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.01,
+     "description": "Water-vapour mixing ratio of the lowest model layer."
+    },
+    "p_air": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 99500.0,
+     "description": "Pressure at the lowest model MASS level, WRF's P3D(I,1,J) (the surface layer's p1); not Noah's sfcprs, which is the mean of the two lowest interface pressures."
+    },
+    "p_sfc": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 100000.0,
+     "description": "Pressure at the ground, WRF's P8W(I,1,J) = PSFC."
+    },
+    "p_w2": {
+     "type": "parameter",
+     "units": "Pa",
+     "default": 99000.0,
+     "description": "Pressure at the second model interface, WRF's P8W(I,2,J)."
+    },
+    "dz1": {
+     "type": "parameter",
+     "units": "m",
+     "default": 60.0,
+     "description": "Thickness of the lowest model layer, WRF's DZ8W(I,1,J)."
+    },
+    "mavail": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.3,
+     "description": "Surface moisture availability seen by the surface layer."
+    },
+    "xland": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "Land mask (1 land)."
+    },
+    "lakemask": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "Lake mask."
+    },
+    "water_depth": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.0,
+     "description": "Water depth (shallow-water roughness option only)."
+    },
+    "dx": {
+     "type": "parameter",
+     "units": "m",
+     "default": 20000.0,
+     "description": "Grid length."
+    },
+    "isfflx": {
+     "type": "parameter",
+     "units": "1",
+     "default": 1.0,
+     "description": "sfclayrev isfflx."
+    },
+    "shalwater_z0": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "sfclayrev shalwater_z0."
+    },
+    "scm_force_flux": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "sfclayrev scm_force_flux."
+    },
+    "isftcflx": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "sfclayrev isftcflx."
+    },
+    "iz0tlnd": {
+     "type": "parameter",
+     "units": "1",
+     "default": 0.0,
+     "description": "sfclayrev iz0tlnd."
+    },
+    "pblh_prev": {
+     "type": "parameter",
+     "units": "m",
+     "default": 1000.0,
+     "description": "PBL height of the previous step."
+    },
+    "znt_prev": {
+     "type": "parameter",
+     "units": "m",
+     "default": 0.15,
+     "description": "Roughness length entering the step (Noah's z0 of the previous step)."
+    },
+    "ust_prev": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.3,
+     "description": "Friction velocity of the previous step."
+    },
+    "mol_prev": {
+     "type": "parameter",
+     "units": "K",
+     "default": 0.0,
+     "description": "Temperature scale of the previous step."
+    },
+    "qsfc_prev": {
+     "type": "parameter",
+     "units": "kg/kg",
+     "default": 0.02,
+     "description": "Surface mixing ratio entering the step (Noah's qsfc of the previous step)."
+    },
+    "hfx_prev": {
+     "type": "parameter",
+     "units": "W/m^2",
+     "default": 0.0,
+     "description": "Sensible heat flux of the previous step (Noah's sheat)."
+    },
+    "qfx_prev": {
+     "type": "parameter",
+     "units": "kg/(m^2*s)",
+     "default": 0.0,
+     "description": "Moisture flux of the previous step (Noah's eta_kinematic)."
+    },
+    "ustm_prev": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.3,
+     "description": "ustm of the previous step."
+    },
+    "chs_prev": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.01,
+     "description": "chs of the previous step."
+    },
+    "chs2_prev": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.01,
+     "description": "chs2 of the previous step."
+    },
+    "cqs2_prev": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 0.01,
+     "description": "cqs2 of the previous step."
+    }
+   },
+   "equations": [
+    {
+     "lhs": "dstc_dt",
+     "rhs": "heat_dstc_dt_in"
+    },
+    {
+     "lhs": "dsh2o_dt",
+     "rhs": "sm_dsh2o_dt_in"
+    },
+    {
+     "lhs": "dsmc_dt",
+     "rhs": "sm_dsmc_dt_in"
+    },
+    {
+     "lhs": "dcmc_dt",
+     "rhs": "sm_dcmc_dt_in"
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "stc"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dstc_dt"
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "stc"
+      ]
+     },
+     "rhs": 0.0
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "smc"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dsmc_dt"
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "smc"
+      ]
+     },
+     "rhs": 0.0
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "sh2o"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dsh2o_dt"
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "sh2o"
+      ]
+     },
+     "rhs": 0.0
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "cmc"
+      ],
+      "wrt": "t"
+     },
+     "rhs": "dcmc_dt"
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "cmc"
+      ]
+     },
+     "rhs": 0.0
+    }
+   ],
+   "tests": [
+    {
+     "id": "chem170_full_step362",
+     "description": "Step 362 of the FULL chem_opt = 170 column (em_scm_xy Kansas 1997-06-20, cu_physics = 0; data/eqwefic/chem170_scm/run_full_met_sfc.sh, the same run as dumps/chem170_full_met: every noah dump byte-identical), the step whose end state the chemistry sees. Inputs: the noah dump of step 362 and the sfclayrev dump of call 723 (row j = 1 of ktau 362; the surface layer is dumped per j-row call), real32 values widened; the soil column (stc, smc, sh2o, cmc) is the initial condition. References (tools/noah_column_replay.py): the surface layer is the real64 kernels/sfclayrev_driver with WRF's thirteen real32 constant arguments replaced by their exact decimal values (with WRF's real32 copies chs moves by 3.3e-08 relative here); Noah is the real64 kernels/noah_driver fed the SAME forcing this document forms -- the driver preamble rebuilt in real64 from the raw inputs and the exact-constant chs and qgh -- at ESM_DT = 1e-6 s for the fluxes and diagnostics (instantaneous: the soil state and the canopy are the initial ones) and at 0.01 s for the four tendencies (x_out - x)/dt (the minimum of the V: 1e-6 s loses the tendency to cancellation). The incoming skin temperature tsk_in is WRF's lagged TSK; it differs from the skin temperature this state diagnoses (Heat.t1) by -0.1685 K, which is the size of the algebraic loop WRF breaks by lagging. Snow-free and unfrozen: the snow branch and the supersaturation projection are asserted inactive at zero tolerance.",
+     "parameter_overrides": {
+      "shdfac": 0.5,
+      "soiltyp": 4.0,
+      "vegtyp": 2.0,
+      "slopetyp": 1.0,
+      "shdmin": 0.0,
+      "shdmax": 0.0,
+      "tbot": 300.0,
+      "z_deep": 8.0,
+      "z_root": 1.000000037252903,
+      "dt_canopy": 60.0,
+      "tsk_in": 308.0150146484375,
+      "swdown": 461.3055725097656,
+      "glw": 451.50079345703125,
+      "albedo_in": 0.17000000178813934,
+      "emiss_in": 0.9850000143051147,
+      "rainbl": 0.0,
+      "dt_rain": 60.0,
+      "sneqv": 0.0,
+      "ffrozp": 0.0,
+      "u1": 0.9938827753067017,
+      "v1": -0.14886654913425446,
+      "t_air": 302.38128662109375,
+      "qv_air": 0.014946965500712395,
+      "p_air": 99656.0,
+      "p_sfc": 100013.6328125,
+      "p_w2": 99298.3671875,
+      "dz1": 64.0624008178711,
+      "mavail": 0.30000001192092896,
+      "xland": 1.0,
+      "lakemask": 0.0,
+      "water_depth": 0.0,
+      "dx": 20000.0,
+      "isfflx": 1.0,
+      "shalwater_z0": 0.0,
+      "scm_force_flux": 0.0,
+      "isftcflx": 0.0,
+      "iz0tlnd": 0.0,
+      "pblh_prev": 1494.0108642578125,
+      "znt_prev": 0.15000000596046448,
+      "ust_prev": 0.25043267011642456,
+      "mol_prev": -0.9798890948295593,
+      "qsfc_prev": 0.020968420431017876,
+      "hfx_prev": 72.81501007080078,
+      "qfx_prev": 7.902727520558983e-05,
+      "ustm_prev": 0.1332964450120926,
+      "chs_prev": 0.0,
+      "chs2_prev": 0.0,
+      "cqs2_prev": 1494.0108642578125
+     },
+     "initial_conditions": {
+      "stc": [
+       302.07501220703125,
+       296.0892639160156,
+       294.0550842285156,
+       293.02203369140625
+      ],
+      "smc": [
+       0.29564368724823,
+       0.29851293563842773,
+       0.2989203631877899,
+       0.3000871241092682
+      ],
+      "sh2o": [
+       0.29564368724823,
+       0.29851293563842773,
+       0.2989203631877899,
+       0.3000871241092682
+      ],
+      "cmc": 0.0
+     },
+     "time_span": {
+      "start": 0,
+      "end": 0
+     },
+     "assertions": [
+      {
+       "variable": "Sfc.ust",
+       "time": 0.0,
+       "expected": 0.25083549106417125,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.ustm",
+       "time": 0.0,
+       "expected": 0.13346776707663421,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.rmol",
+       "time": 0.0,
+       "expected": -0.24885230034348405,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.zol",
+       "time": 0.0,
+       "expected": -7.971037904526757,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.mol",
+       "time": 0.0,
+       "expected": -0.9923004711036034,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "Sfc.br",
+       "time": 0.0,
+       "expected": -1.8906025009655234,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.wspd",
+       "time": 0.0,
+       "expected": 1.889319270256297,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.psim",
+       "time": 0.0,
+       "expected": 2.3604909833663212,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.psih",
+       "time": 0.0,
+       "expected": 3.2224302667821068,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.fm",
+       "time": 0.0,
+       "expected": 3.008011405786988,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.fh",
+       "time": 0.0,
+       "expected": 2.1460721223712023,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.gz1oz0",
+       "time": 0.0,
+       "expected": 5.368502389153309,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.cpm",
+       "time": 0.0,
+       "expected": 1016.5113816553561,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.chs",
+       "time": 0.0,
+       "expected": 0.011973358969524209,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.chs2",
+       "time": 0.0,
+       "expected": 0.06818384622167721,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.cqs2",
+       "time": 0.0,
+       "expected": 0.01306068619510428,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.qgh",
+       "time": 0.0,
+       "expected": 0.02641571106785165,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.flhc",
+       "time": 0.0,
+       "expected": 54.27602543417825,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.flqc",
+       "time": 0.0,
+       "expected": 0.004102309313778365,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.hfx",
+       "time": 0.0,
+       "expected": 288.95855482605725,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 0.00015
+       }
+      },
+      {
+       "variable": "Sfc.qfx",
+       "time": 0.0,
+       "expected": 2.4701870643088833e-05,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.lh",
+       "time": 0.0,
+       "expected": 61.75467660772208,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.qsfc",
+       "time": 0.0,
+       "expected": 0.020968420431017876,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.znt",
+       "time": 0.0,
+       "expected": 0.15000000596046448,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.u10",
+       "time": 0.0,
+       "expected": 0.8842025395889341,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.v10",
+       "time": 0.0,
+       "expected": -0.13243833586282808,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.th2",
+       "time": 0.0,
+       "expected": 304.3525322414991,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.t2",
+       "time": 0.0,
+       "expected": 304.3643864672242,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.q2",
+       "time": 0.0,
+       "expected": 0.015448263195605234,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.regime",
+       "time": 0.0,
+       "expected": 4.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Heat.t1",
+       "time": 0.0,
+       "expected": 308.18348626153244,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.sheat",
+       "time": 0.0,
+       "expected": 75.17308799237736,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.ssoil",
+       "time": 0.0,
+       "expected": -48.549227009312425,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.ssoil_pre",
+       "time": 0.0,
+       "expected": 47.21024013498752,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Heat.yy",
+       "time": 0.0,
+       "expected": 310.63435189478344,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.zz1",
+       "time": 0.0,
+       "expected": 1.401223875463503,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.rch",
+       "time": 0.0,
+       "expected": 13.687725469318936,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.rr",
+       "time": 0.0,
+       "expected": 1.4472099220946726,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.epsca",
+       "time": 0.0,
+       "expected": 24.388387331561823,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.etp_energy",
+       "time": 0.0,
+       "expected": 333.82155043383403,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Can.rcs",
+       "time": 0.0,
+       "expected": 0.4760674517319364,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rct",
+       "time": 0.0,
+       "expected": 0.9692869240701198,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rcq",
+       "time": 0.0,
+       "expected": 0.7147566665091778,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rcsoil",
+       "time": 0.0,
+       "expected": 0.7770668712771162,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rc",
+       "time": 0.0,
+       "expected": 27.477310143043177,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.pc",
+       "time": 0.0,
+       "expected": 0.91542627234364,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.edir",
+       "time": 0.0,
+       "expected": 48.65448235795472,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.ec",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.ett",
+       "time": 0.0,
+       "expected": 152.79450877080959,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.eta",
+       "time": 0.0,
+       "expected": 201.4489911287643,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.eta_kinematic",
+       "time": 0.0,
+       "expected": 8.054737750050552e-05,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.beta",
+       "time": 0.0,
+       "expected": 0.6034631103563011,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.fdown",
+       "time": 0.0,
+       "expected": 827.6119123721733,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.q1",
+       "time": 0.0,
+       "expected": 0.020637967739863313,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.albedo",
+       "time": 0.0,
+       "expected": 0.17000000178813934,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Drv.emissi",
+       "time": 0.0,
+       "expected": 0.9850000143051147,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Drv.z0",
+       "time": 0.0,
+       "expected": 0.15000000596046448,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Et.et",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            13.957372806432142,
+            46.29682136592322,
+            92.54031459845419,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-06,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dstc_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.00016007688827812672,
+            1.0120601245944272e-05,
+            2.5340398224216187e-06,
+            1.1129714039270766e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 1e-09,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dsh2o_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -1.8787696398625542e-07,
+            -9.614490315001945e-08,
+            -6.107949701572579e-08,
+            3.2165048402532648e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-11,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dsmc_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -1.8787696398625542e-07,
+            -9.614490315001945e-08,
+            -6.107949701572579e-08,
+            3.2165048402532648e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-11,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dcmc_dt",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 3e-14,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Drv.snow_branch_active",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Sm.supersaturation_active",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      }
+     ]
+    },
+    {
+     "id": "chem170_full_step364",
+     "description": "Step 364 of the FULL chem_opt = 170 column (em_scm_xy Kansas 1997-06-20, cu_physics = 0; data/eqwefic/chem170_scm/run_full_met_sfc.sh, the same run as dumps/chem170_full_met: every noah dump byte-identical), the step whose end state the chemistry sees. Inputs: the noah dump of step 364 and the sfclayrev dump of call 727 (row j = 1 of ktau 364; the surface layer is dumped per j-row call), real32 values widened; the soil column (stc, smc, sh2o, cmc) is the initial condition. References (tools/noah_column_replay.py): the surface layer is the real64 kernels/sfclayrev_driver with WRF's thirteen real32 constant arguments replaced by their exact decimal values (with WRF's real32 copies chs moves by 3.3e-08 relative here); Noah is the real64 kernels/noah_driver fed the SAME forcing this document forms -- the driver preamble rebuilt in real64 from the raw inputs and the exact-constant chs and qgh -- at ESM_DT = 1e-6 s for the fluxes and diagnostics (instantaneous: the soil state and the canopy are the initial ones) and at 0.01 s for the four tendencies (x_out - x)/dt (the minimum of the V: 1e-6 s loses the tendency to cancellation). The incoming skin temperature tsk_in is WRF's lagged TSK; it differs from the skin temperature this state diagnoses (Heat.t1) by +0.1512 K, which is the size of the algebraic loop WRF breaks by lagging. Snow-free and unfrozen: the snow branch and the supersaturation projection are asserted inactive at zero tolerance.",
+     "parameter_overrides": {
+      "shdfac": 0.5,
+      "soiltyp": 4.0,
+      "vegtyp": 2.0,
+      "slopetyp": 1.0,
+      "shdmin": 0.0,
+      "shdmax": 0.0,
+      "tbot": 300.0,
+      "z_deep": 8.0,
+      "z_root": 1.000000037252903,
+      "dt_canopy": 60.0,
+      "tsk_in": 308.199951171875,
+      "swdown": 453.51910400390625,
+      "glw": 451.6425476074219,
+      "albedo_in": 0.17000000178813934,
+      "emiss_in": 0.9850000143051147,
+      "rainbl": 0.0,
+      "dt_rain": 60.0,
+      "sneqv": 0.0,
+      "ffrozp": 0.0,
+      "u1": 0.9957566261291504,
+      "v1": -0.1496257185935974,
+      "t_air": 302.3961486816406,
+      "qv_air": 0.014949272386729717,
+      "p_air": 99656.078125,
+      "p_sfc": 100013.7109375,
+      "p_w2": 99298.4453125,
+      "dz1": 64.06602478027344,
+      "mavail": 0.30000001192092896,
+      "xland": 1.0,
+      "lakemask": 0.0,
+      "water_depth": 0.0,
+      "dx": 20000.0,
+      "isfflx": 1.0,
+      "shalwater_z0": 0.0,
+      "scm_force_flux": 0.0,
+      "isftcflx": 0.0,
+      "iz0tlnd": 0.0,
+      "pblh_prev": 1495.9940185546875,
+      "znt_prev": 0.15000000596046448,
+      "ust_prev": 0.25225597620010376,
+      "mol_prev": -1.026438593864441,
+      "qsfc_prev": 0.021041303873062134,
+      "hfx_prev": 75.79630279541016,
+      "qfx_prev": 8.065002475632355e-05,
+      "ustm_prev": 0.13379433751106262,
+      "chs_prev": 0.0,
+      "chs2_prev": 0.0,
+      "cqs2_prev": 2.2855417728424072
+     },
+     "initial_conditions": {
+      "stc": [
+       302.09417724609375,
+       296.0904846191406,
+       294.0553894042969,
+       293.02215576171875
+      ],
+      "smc": [
+       0.2956211566925049,
+       0.2985013723373413,
+       0.29891303181648254,
+       0.30008748173713684
+      ],
+      "sh2o": [
+       0.2956211566925049,
+       0.2985013723373413,
+       0.29891303181648254,
+       0.30008748173713684
+      ],
+      "cmc": 0.0
+     },
+     "time_span": {
+      "start": 0,
+      "end": 0
+     },
+     "assertions": [
+      {
+       "variable": "Sfc.ust",
+       "time": 0.0,
+       "expected": 0.2531041354183397,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.ustm",
+       "time": 0.0,
+       "expected": 0.13398098278601214,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.rmol",
+       "time": 0.0,
+       "expected": -0.25116803951940825,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.zol",
+       "time": 0.0,
+       "expected": -8.045668921931554,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.mol",
+       "time": 0.0,
+       "expected": -1.0267252697263922,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "Sfc.br",
+       "time": 0.0,
+       "expected": -1.9108325129329493,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.wspd",
+       "time": 0.0,
+       "expected": 1.9059260874553596,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.psim",
+       "time": 0.0,
+       "expected": 2.3665364587250735,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.psih",
+       "time": 0.0,
+       "expected": 3.2281915497238876,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.fm",
+       "time": 0.0,
+       "expected": 3.002022234424587,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.fh",
+       "time": 0.0,
+       "expected": 2.140367143425773,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.gz1oz0",
+       "time": 0.0,
+       "expected": 5.3685586931496605,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.cpm",
+       "time": 0.0,
+       "expected": 1016.5132354689872,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.chs",
+       "time": 0.0,
+       "expected": 0.012082261262239723,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.chs2",
+       "time": 0.0,
+       "expected": 0.06900171794045593,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.cqs2",
+       "time": 0.0,
+       "expected": 0.013176944394098477,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.qgh",
+       "time": 0.0,
+       "expected": 0.026439373514208865,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.flhc",
+       "time": 0.0,
+       "expected": 54.91026158752762,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.flqc",
+       "time": 0.0,
+       "expected": 0.004139415414411075,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.hfx",
+       "time": 0.0,
+       "expected": 301.67272609828785,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 0.00015
+       }
+      },
+      {
+       "variable": "Sfc.qfx",
+       "time": 0.0,
+       "expected": 2.521744903960202e-05,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.lh",
+       "time": 0.0,
+       "expected": 63.04362259900505,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.qsfc",
+       "time": 0.0,
+       "expected": 0.021041303873062134,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.znt",
+       "time": 0.0,
+       "expected": 0.15000000596046448,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.u10",
+       "time": 0.0,
+       "expected": 0.8859647370084089,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.v10",
+       "time": 0.0,
+       "expected": -0.13312802239518032,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.th2",
+       "time": 0.0,
+       "expected": 304.42176368028043,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.t2",
+       "time": 0.0,
+       "expected": 304.4336885471521,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.q2",
+       "time": 0.0,
+       "expected": 0.015455371821271404,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.regime",
+       "time": 0.0,
+       "expected": 4.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Heat.t1",
+       "time": 0.0,
+       "expected": 308.0487428486777,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.sheat",
+       "time": 0.0,
+       "expected": 73.78676243552108,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.ssoil",
+       "time": 0.0,
+       "expected": -47.32435473025867,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.ssoil_pre",
+       "time": 0.0,
+       "expected": 48.52609417026628,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Heat.yy",
+       "time": 0.0,
+       "expected": 310.422828917243,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.zz1",
+       "time": 0.0,
+       "expected": 1.3987001281162612,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.rch",
+       "time": 0.0,
+       "expected": 13.81153387294089,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.rr",
+       "time": 0.0,
+       "expected": 1.4432658267823901,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.epsca",
+       "time": 0.0,
+       "expected": 23.848859970897475,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.etp_energy",
+       "time": 0.0,
+       "expected": 329.3893373190746,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Can.rcs",
+       "time": 0.0,
+       "expected": 0.4718611861885582,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rct",
+       "time": 0.0,
+       "expected": 0.969078202830255,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rcq",
+       "time": 0.0,
+       "expected": 0.7143823984088793,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rcsoil",
+       "time": 0.0,
+       "expected": 0.7770302014652105,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rc",
+       "time": 0.0,
+       "expected": 27.744055444810787,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.pc",
+       "time": 0.0,
+       "expected": 0.9141634077433649,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.edir",
+       "time": 0.0,
+       "expected": 47.99826645571522,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.ec",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.ett",
+       "time": 0.0,
+       "expected": 150.557839538967,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.eta",
+       "time": 0.0,
+       "expected": 198.5561059946822,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.eta_kinematic",
+       "time": 0.0,
+       "expected": 7.939068612342351e-05,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.beta",
+       "time": 0.0,
+       "expected": 0.6028006480438796,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.fdown",
+       "time": 0.0,
+       "expected": 821.2887713663958,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.q1",
+       "time": 0.0,
+       "expected": 0.02050309399713881,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.albedo",
+       "time": 0.0,
+       "expected": 0.17000000178813934,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Drv.emissi",
+       "time": 0.0,
+       "expected": 0.9850000143051147,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Drv.z0",
+       "time": 0.0,
+       "expected": 0.15000000596046448,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Et.et",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            13.747536515766686,
+            45.61998484134942,
+            91.1903181818509,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-06,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dstc_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.00015458031157322694,
+            1.0168776043428807e-05,
+            2.5354381705255946e-06,
+            1.113062353397254e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 1e-09,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dsh2o_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -1.8402966373010088e-07,
+            -9.53386924962274e-08,
+            -6.018097686855128e-08,
+            3.2074842781781854e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-11,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dsmc_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -1.8402966373010088e-07,
+            -9.53386924962274e-08,
+            -6.018097686855128e-08,
+            3.2074842781781854e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-11,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dcmc_dt",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 3e-14,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Drv.snow_branch_active",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Sm.supersaturation_active",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      }
+     ]
+    },
+    {
+     "id": "chem170_full_step1024",
+     "description": "Step 1024 of the FULL chem_opt = 170 column (em_scm_xy Kansas 1997-06-20, cu_physics = 0; data/eqwefic/chem170_scm/run_full_met_sfc.sh, the same run as dumps/chem170_full_met: every noah dump byte-identical), the step whose end state the chemistry sees. Inputs: the noah dump of step 1024 and the sfclayrev dump of call 2047 (row j = 1 of ktau 1024; the surface layer is dumped per j-row call), real32 values widened; the soil column (stc, smc, sh2o, cmc) is the initial condition. References (tools/noah_column_replay.py): the surface layer is the real64 kernels/sfclayrev_driver with WRF's thirteen real32 constant arguments replaced by their exact decimal values (with WRF's real32 copies chs moves by 3.4e-08 relative here); Noah is the real64 kernels/noah_driver fed the SAME forcing this document forms -- the driver preamble rebuilt in real64 from the raw inputs and the exact-constant chs and qgh -- at ESM_DT = 1e-6 s for the fluxes and diagnostics (instantaneous: the soil state and the canopy are the initial ones) and at 0.01 s for the four tendencies (x_out - x)/dt (the minimum of the V: 1e-6 s loses the tendency to cancellation). The incoming skin temperature tsk_in is WRF's lagged TSK; it differs from the skin temperature this state diagnoses (Heat.t1) by +0.0465 K, which is the size of the algebraic loop WRF breaks by lagging. Snow-free and unfrozen: the snow branch and the supersaturation projection are asserted inactive at zero tolerance.",
+     "parameter_overrides": {
+      "shdfac": 0.5,
+      "soiltyp": 4.0,
+      "vegtyp": 2.0,
+      "slopetyp": 1.0,
+      "shdmin": 0.0,
+      "shdmax": 0.0,
+      "tbot": 300.0,
+      "z_deep": 8.0,
+      "z_root": 1.000000037252903,
+      "dt_canopy": 60.0,
+      "tsk_in": 297.2818603515625,
+      "swdown": 0.0,
+      "glw": 436.7086486816406,
+      "albedo_in": 0.17000000178813934,
+      "emiss_in": 0.9850000143051147,
+      "rainbl": 0.16270436346530914,
+      "dt_rain": 60.0,
+      "sneqv": 0.0,
+      "ffrozp": 0.0,
+      "u1": -0.10502028465270996,
+      "v1": -0.7338277101516724,
+      "t_air": 296.998046875,
+      "qv_air": 0.01665489561855793,
+      "p_air": 99740.640625,
+      "p_sfc": 100099.09375,
+      "p_w2": 99382.1875,
+      "dz1": 63.044647216796875,
+      "mavail": 0.30000001192092896,
+      "xland": 1.0,
+      "lakemask": 0.0,
+      "water_depth": 0.0,
+      "dx": 20000.0,
+      "isfflx": 1.0,
+      "shalwater_z0": 0.0,
+      "scm_force_flux": 0.0,
+      "isftcflx": 0.0,
+      "iz0tlnd": 0.0,
+      "pblh_prev": 33.147865295410156,
+      "znt_prev": 0.15000000596046448,
+      "ust_prev": 0.08771499991416931,
+      "mol_prev": -0.000679500459227711,
+      "qsfc_prev": 0.01789485290646553,
+      "hfx_prev": -0.2265089601278305,
+      "qfx_prev": 5.574650913331425e-06,
+      "ustm_prev": 0.07415293157100677,
+      "chs_prev": 0.0,
+      "chs2_prev": 0.0,
+      "cqs2_prev": 0.0
+     },
+     "initial_conditions": {
+      "stc": [
+       300.08551025390625,
+       296.4503479003906,
+       294.1669006347656,
+       293.06243896484375
+      ],
+      "smc": [
+       0.29870927333831787,
+       0.29673415422439575,
+       0.2981833815574646,
+       0.30018946528434753
+      ],
+      "sh2o": [
+       0.29870927333831787,
+       0.29673415422439575,
+       0.2981833815574646,
+       0.30018946528434753
+      ],
+      "cmc": 0.0004116528434678912
+     },
+     "time_span": {
+      "start": 0,
+      "end": 0
+     },
+     "assertions": [
+      {
+       "variable": "Sfc.ust",
+       "time": 0.0,
+       "expected": 0.08688017947190405,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.ustm",
+       "time": 0.0,
+       "expected": 0.07343095720349167,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.rmol",
+       "time": 0.0,
+       "expected": -0.044111757783035464,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.zol",
+       "time": 0.0,
+       "expected": -1.3905051037721323,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.mol",
+       "time": 0.0,
+       "expected": 0.002526558233487099,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "Sfc.br",
+       "time": 0.0,
+       "expected": -0.27473353401771555,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.wspd",
+       "time": 0.0,
+       "expected": 0.8772755408076286,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.psim",
+       "time": 0.0,
+       "expected": 1.2743627875703791,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.psih",
+       "time": 0.0,
+       "expected": 2.066497823923007,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.fm",
+       "time": 0.0,
+       "expected": 4.078200385010637,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.fh",
+       "time": 0.0,
+       "expected": 3.28606534865801,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.gz1oz0",
+       "time": 0.0,
+       "expected": 5.352563172581017,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.cpm",
+       "time": 0.0,
+       "expected": 1017.8838743185083,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.chs",
+       "time": 0.0,
+       "expected": 0.003996959489094143,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.chs2",
+       "time": 0.0,
+       "expected": 0.015812728994782102,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.cqs2",
+       "time": 0.0,
+       "expected": 0.004595905516911966,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.qgh",
+       "time": 0.0,
+       "expected": 0.01899022259223325,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.flhc",
+       "time": 0.0,
+       "expected": 12.514663431601633,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.flqc",
+       "time": 0.0,
+       "expected": 0.0013940150216257897,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.hfx",
+       "time": 0.0,
+       "expected": -0.25975546368721786,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 0.00015
+       }
+      },
+      {
+       "variable": "Sfc.qfx",
+       "time": 0.0,
+       "expected": 1.728519085517569e-06,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.lh",
+       "time": 0.0,
+       "expected": 4.321297713793923,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.qsfc",
+       "time": 0.0,
+       "expected": 0.01789485290646553,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.znt",
+       "time": 0.0,
+       "expected": 0.15000000596046448,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.u10",
+       "time": 0.0,
+       "expected": -0.09003459693796803,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.v10",
+       "time": 0.0,
+       "expected": -0.6291154354028212,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.th2",
+       "time": 0.0,
+       "expected": 297.21162771924634,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.t2",
+       "time": 0.0,
+       "expected": 297.29574599767824,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.q2",
+       "time": 0.0,
+       "expected": 0.016816488908394538,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.regime",
+       "time": 0.0,
+       "expected": 4.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Heat.t1",
+       "time": 0.0,
+       "expected": 297.2353936020412,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.sheat",
+       "time": 0.0,
+       "expected": -0.3126555704283999,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.ssoil",
+       "time": 0.0,
+       "expected": 22.75797835382373,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.ssoil_pre",
+       "time": 0.0,
+       "expected": -22.38694467091685,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Heat.yy",
+       "time": 0.0,
+       "expected": 296.19544865669855,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.zz1",
+       "time": 0.0,
+       "expected": 1.3648780286623254,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.rch",
+       "time": 0.0,
+       "expected": 4.651367696154356,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.rr",
+       "time": 0.0,
+       "expected": 4.7048161727126665,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.epsca",
+       "time": 0.0,
+       "expected": 5.075673094021661,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.etp_energy",
+       "time": 0.0,
+       "expected": 23.608821865772185,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Can.rcs",
+       "time": 0.0,
+       "expected": 0.008,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rct",
+       "time": 0.0,
+       "expected": 0.9983937438964844,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rcq",
+       "time": 0.0,
+       "expected": 0.9244562569491002,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rcsoil",
+       "time": 0.0,
+       "expected": 0.7746419989392995,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rc",
+       "time": 0.0,
+       "expected": 1231.2108244360304,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.pc",
+       "time": 0.0,
+       "expected": 0.3131556202111182,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.edir",
+       "time": 0.0,
+       "expected": 3.5413900897302457,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.ec",
+       "time": 0.0,
+       "expected": 10.710872929274608,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.ett",
+       "time": 0.0,
+       "expected": 0.3424475717453826,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.eta",
+       "time": 0.0,
+       "expected": 14.594710590750237,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.eta_kinematic",
+       "time": 0.0,
+       "expected": 5.835550016293577e-06,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.beta",
+       "time": 0.0,
+       "expected": 0.6181888564252963,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.fdown",
+       "time": 0.0,
+       "expected": 430.15802519858335,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.q1",
+       "time": 0.0,
+       "expected": 0.017642287844543112,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.albedo",
+       "time": 0.0,
+       "expected": 0.17000000178813934,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Drv.emissi",
+       "time": 0.0,
+       "expected": 0.9850000143051147,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Drv.z0",
+       "time": 0.0,
+       "expected": 0.15000000596046448,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Et.et",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.03542771803379264,
+            0.10080877954904387,
+            0.20621107416254614,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-06,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dstc_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -0.0001303419935538841,
+            2.565724344094633e-06,
+            2.8931026463396847e-06,
+            1.1511644970596535e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 1e-09,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dsh2o_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            1.243147094709407e-05,
+            3.515091551165028e-08,
+            -1.4192869102203076e-09,
+            2.259370468493671e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-11,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dsmc_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            1.243147094709407e-05,
+            3.515091551165028e-08,
+            -1.4192869102203076e-09,
+            2.259370468493671e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-11,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dcmc_dt",
+       "time": 0.0,
+       "expected": 1.351587059427676e-06,
+       "tolerance": {
+        "abs": 3e-14,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Drv.snow_branch_active",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Sm.supersaturation_active",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      }
+     ]
+    },
+    {
+     "id": "chem170_full_step1026",
+     "description": "Step 1026 of the FULL chem_opt = 170 column (em_scm_xy Kansas 1997-06-20, cu_physics = 0; data/eqwefic/chem170_scm/run_full_met_sfc.sh, the same run as dumps/chem170_full_met: every noah dump byte-identical), the step whose end state the chemistry sees. Inputs: the noah dump of step 1026 and the sfclayrev dump of call 2051 (row j = 1 of ktau 1026; the surface layer is dumped per j-row call), real32 values widened; the soil column (stc, smc, sh2o, cmc) is the initial condition. References (tools/noah_column_replay.py): the surface layer is the real64 kernels/sfclayrev_driver with WRF's thirteen real32 constant arguments replaced by their exact decimal values (with WRF's real32 copies chs moves by 3.7e-08 relative here); Noah is the real64 kernels/noah_driver fed the SAME forcing this document forms -- the driver preamble rebuilt in real64 from the raw inputs and the exact-constant chs and qgh -- at ESM_DT = 1e-6 s for the fluxes and diagnostics (instantaneous: the soil state and the canopy are the initial ones) and at 0.01 s for the four tendencies (x_out - x)/dt (the minimum of the V: 1e-6 s loses the tendency to cancellation). The incoming skin temperature tsk_in is WRF's lagged TSK; it differs from the skin temperature this state diagnoses (Heat.t1) by +0.0192 K, which is the size of the algebraic loop WRF breaks by lagging. Snow-free and unfrozen: the snow branch and the supersaturation projection are asserted inactive at zero tolerance.",
+     "parameter_overrides": {
+      "shdfac": 0.5,
+      "soiltyp": 4.0,
+      "vegtyp": 2.0,
+      "slopetyp": 1.0,
+      "shdmin": 0.0,
+      "shdmax": 0.0,
+      "tbot": 300.0,
+      "z_deep": 8.0,
+      "z_root": 1.000000037252903,
+      "dt_canopy": 60.0,
+      "tsk_in": 297.19097900390625,
+      "swdown": 0.0,
+      "glw": 436.2867126464844,
+      "albedo_in": 0.17000000178813934,
+      "emiss_in": 0.9850000143051147,
+      "rainbl": 0.16352596879005432,
+      "dt_rain": 60.0,
+      "sneqv": 0.0,
+      "ffrozp": 0.0,
+      "u1": -0.10494589805603027,
+      "v1": -0.7318786382675171,
+      "t_air": 296.94781494140625,
+      "qv_air": 0.01663203164935112,
+      "p_air": 99743.078125,
+      "p_sfc": 100101.53125,
+      "p_w2": 99384.625,
+      "dz1": 63.0323600769043,
+      "mavail": 0.30000001192092896,
+      "xland": 1.0,
+      "lakemask": 0.0,
+      "water_depth": 0.0,
+      "dx": 20000.0,
+      "isfflx": 1.0,
+      "shalwater_z0": 0.0,
+      "scm_force_flux": 0.0,
+      "isftcflx": 0.0,
+      "iz0tlnd": 0.0,
+      "pblh_prev": 33.168148040771484,
+      "znt_prev": 0.15000000596046448,
+      "ust_prev": 0.086210697889328,
+      "mol_prev": 0.005078922491520643,
+      "qsfc_prev": 0.0180144552141428,
+      "hfx_prev": -0.39268067479133606,
+      "qfx_prev": 6.074663360777777e-06,
+      "ustm_prev": 0.07285001873970032,
+      "chs_prev": 0.0,
+      "chs2_prev": 0.0,
+      "cqs2_prev": 0.0
+     },
+     "initial_conditions": {
+      "stc": [
+       300.06982421875,
+       296.4506530761719,
+       294.1672668457031,
+       293.06256103515625
+      ],
+      "smc": [
+       0.3007972538471222,
+       0.29674068093299866,
+       0.2981832027435303,
+       0.3001897633075714
+      ],
+      "sh2o": [
+       0.3007972538471222,
+       0.29674068093299866,
+       0.2981832027435303,
+       0.3001897633075714
+      ],
+      "cmc": 0.0005000000237487257
+     },
+     "time_span": {
+      "start": 0,
+      "end": 0
+     },
+     "assertions": [
+      {
+       "variable": "Sfc.ust",
+       "time": 0.0,
+       "expected": 0.08563725212514386,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.ustm",
+       "time": 0.0,
+       "expected": 0.07235044433346607,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.rmol",
+       "time": 0.0,
+       "expected": -0.041153513734691116,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.zol",
+       "time": 0.0,
+       "expected": -1.2970015480774384,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.mol",
+       "time": 0.0,
+       "expected": 0.007361019492434952,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 2e-06
+       }
+      },
+      {
+       "variable": "Sfc.br",
+       "time": 0.0,
+       "expected": -0.25516435464697534,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.wspd",
+       "time": 0.0,
+       "expected": 0.8753292139183755,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.psim",
+       "time": 0.0,
+       "expected": 1.2362626892888489,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.psih",
+       "time": 0.0,
+       "expected": 2.0194262149331363,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.fm",
+       "time": 0.0,
+       "expected": 4.116106491656411,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.fh",
+       "time": 0.0,
+       "expected": 3.3329429660121237,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.gz1oz0",
+       "time": 0.0,
+       "expected": 5.35236918094526,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.cpm",
+       "time": 0.0,
+       "expected": 1017.86550083258,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.chs",
+       "time": 0.0,
+       "expected": 0.003924513573183408,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.chs2",
+       "time": 0.0,
+       "expected": 0.015433124179951496,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.cqs2",
+       "time": 0.0,
+       "expected": 0.004525380615189106,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.qgh",
+       "time": 0.0,
+       "expected": 0.01893065197979723,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.flhc",
+       "time": 0.0,
+       "expected": 12.164427596132715,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.flqc",
+       "time": 0.0,
+       "expected": 0.0013690318678519608,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.hfx",
+       "time": 0.0,
+       "expected": -0.7461008524942249,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 0.00015
+       }
+      },
+      {
+       "variable": "Sfc.qfx",
+       "time": 0.0,
+       "expected": 1.8925819150693189e-06,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.lh",
+       "time": 0.0,
+       "expected": 4.7314547876732975,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.qsfc",
+       "time": 0.0,
+       "expected": 0.0180144552141428,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.znt",
+       "time": 0.0,
+       "expected": 0.15000000596046448,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.u10",
+       "time": 0.0,
+       "expected": -0.08980763196923414,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.v10",
+       "time": 0.0,
+       "expected": -0.6263063979554617,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.th2",
+       "time": 0.0,
+       "expected": 297.1456690589627,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.t2",
+       "time": 0.0,
+       "expected": 297.2318365952988,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.q2",
+       "time": 0.0,
+       "expected": 0.01681558588021235,
+       "tolerance": {
+        "rel": 5e-05
+       }
+      },
+      {
+       "variable": "Sfc.regime",
+       "time": 0.0,
+       "expected": 4.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Heat.t1",
+       "time": 0.0,
+       "expected": 297.1717565587478,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.sheat",
+       "time": 0.0,
+       "expected": -0.368011431689844,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.ssoil",
+       "time": 0.0,
+       "expected": 23.213426045120105,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.ssoil_pre",
+       "time": 0.0,
+       "expected": -23.059454895815374,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Heat.yy",
+       "time": 0.0,
+       "expected": 296.1096179758639,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Heat.zz1",
+       "time": 0.0,
+       "expected": 1.366498890826927,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.rch",
+       "time": 0.0,
+       "expected": 4.5680056930193516,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.rr",
+       "time": 0.0,
+       "expected": 4.784443392950714,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.epsca",
+       "time": 0.0,
+       "expected": 5.097058302980246,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Pen.etp_energy",
+       "time": 0.0,
+       "expected": 23.28339134566532,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Can.rcs",
+       "time": 0.0,
+       "expected": 0.008,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rct",
+       "time": 0.0,
+       "expected": 0.9982286505639553,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rcq",
+       "time": 0.0,
+       "expected": 0.9255496792965907,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rcsoil",
+       "time": 0.0,
+       "expected": 0.7754052190793576,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.rc",
+       "time": 0.0,
+       "expected": 1228.7490545967842,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Can.pc",
+       "time": 0.0,
+       "expected": 0.31604095858764164,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.edir",
+       "time": 0.0,
+       "expected": 3.560833272000892,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.ec",
+       "time": 0.0,
+       "expected": 11.64169567283266,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.ett",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.eta",
+       "time": 0.0,
+       "expected": 15.202528944833551,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.eta_kinematic",
+       "time": 0.0,
+       "expected": 6.07858014587507e-06,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Et.beta",
+       "time": 0.0,
+       "expected": 0.6529344767322228,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.fdown",
+       "time": 0.0,
+       "expected": 429.7424181979186,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.q1",
+       "time": 0.0,
+       "expected": 0.017696606580402577,
+       "tolerance": {
+        "rel": 5e-05,
+        "abs": 1e-12
+       }
+      },
+      {
+       "variable": "Drv.albedo",
+       "time": 0.0,
+       "expected": 0.17000000178813934,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Drv.emissi",
+       "time": 0.0,
+       "expected": 0.9850000143051147,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Drv.z0",
+       "time": 0.0,
+       "expected": 0.15000000596046448,
+       "tolerance": {
+        "rel": 1e-09
+       }
+      },
+      {
+       "variable": "Et.et",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-06,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dstc_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            -0.00013177785262996622,
+            2.552360456320457e-06,
+            2.8928013762197224e-06,
+            1.1512952369230334e-06
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 1e-09,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dsh2o_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            2.326780361161518e-05,
+            6.688508080721078e-08,
+            -1.2608969424121597e-09,
+            2.258876419247713e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-11,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dsmc_dt",
+       "time": 0.0,
+       "reduce": "Linf_error",
+       "expected": 0.0,
+       "reference": {
+        "op": "faq",
+        "output_idx": [
+         "k"
+        ],
+        "args": [],
+        "ranges": {
+         "k": {
+          "from": "soil"
+         }
+        },
+        "expr": {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            2.326780361161518e-05,
+            6.688508080721078e-08,
+            -1.2608969424121597e-09,
+            2.258876419247713e-09
+           ]
+          },
+          "k"
+         ]
+        }
+       },
+       "tolerance": {
+        "abs": 3e-11,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "dcmc_dt",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 3e-14,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Drv.snow_branch_active",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "Sm.supersaturation_active",
+       "time": 0.0,
+       "expected": 0.0,
+       "tolerance": {
+        "abs": 0.0,
+        "rel": 0.0
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "coupling": [
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.u1",
+   "to": "Sfc.u1",
+   "transform": "param_to_var",
+   "description": "u1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.v1",
+   "to": "Sfc.v1",
+   "transform": "param_to_var",
+   "description": "v1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.t_air",
+   "to": "Sfc.t1",
+   "transform": "param_to_var",
+   "description": "t_air into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.qv_air",
+   "to": "Sfc.qv1",
+   "transform": "param_to_var",
+   "description": "qv_air into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.p_air",
+   "to": "Sfc.p1",
+   "transform": "param_to_var",
+   "description": "p_air into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.dz1",
+   "to": "Sfc.dz1",
+   "transform": "param_to_var",
+   "description": "dz1 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.p_sfc",
+   "to": "Sfc.psfc",
+   "transform": "param_to_var",
+   "description": "p_sfc into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.mavail",
+   "to": "Sfc.mavail",
+   "transform": "param_to_var",
+   "description": "mavail into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.tsk_in",
+   "to": "Sfc.tsk",
+   "transform": "param_to_var",
+   "description": "tsk_in into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.xland",
+   "to": "Sfc.xland",
+   "transform": "param_to_var",
+   "description": "xland into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.lakemask",
+   "to": "Sfc.lakemask",
+   "transform": "param_to_var",
+   "description": "lakemask into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.water_depth",
+   "to": "Sfc.water_depth",
+   "transform": "param_to_var",
+   "description": "water_depth into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.dx",
+   "to": "Sfc.dx",
+   "transform": "param_to_var",
+   "description": "dx into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.isfflx",
+   "to": "Sfc.isfflx",
+   "transform": "param_to_var",
+   "description": "isfflx into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.shalwater_z0",
+   "to": "Sfc.shalwater_z0",
+   "transform": "param_to_var",
+   "description": "shalwater_z0 into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.scm_force_flux",
+   "to": "Sfc.scm_force_flux",
+   "transform": "param_to_var",
+   "description": "scm_force_flux into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.isftcflx",
+   "to": "Sfc.isftcflx",
+   "transform": "param_to_var",
+   "description": "isftcflx into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.iz0tlnd",
+   "to": "Sfc.iz0tlnd",
+   "transform": "param_to_var",
+   "description": "iz0tlnd into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.pblh_prev",
+   "to": "Sfc.pblh",
+   "transform": "param_to_var",
+   "description": "pblh_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.znt_prev",
+   "to": "Sfc.znt_in",
+   "transform": "param_to_var",
+   "description": "znt_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.ust_prev",
+   "to": "Sfc.ust_in",
+   "transform": "param_to_var",
+   "description": "ust_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.mol_prev",
+   "to": "Sfc.mol_in",
+   "transform": "param_to_var",
+   "description": "mol_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.qsfc_prev",
+   "to": "Sfc.qsfc_in",
+   "transform": "param_to_var",
+   "description": "qsfc_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.hfx_prev",
+   "to": "Sfc.hfx_in",
+   "transform": "param_to_var",
+   "description": "hfx_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.qfx_prev",
+   "to": "Sfc.qfx_in",
+   "transform": "param_to_var",
+   "description": "qfx_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.ustm_prev",
+   "to": "Sfc.ustm_in",
+   "transform": "param_to_var",
+   "description": "ustm_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.chs_prev",
+   "to": "Sfc.chs_in",
+   "transform": "param_to_var",
+   "description": "chs_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.chs2_prev",
+   "to": "Sfc.chs2_in",
+   "transform": "param_to_var",
+   "description": "chs2_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.cqs2_prev",
+   "to": "Sfc.cqs2_in",
+   "transform": "param_to_var",
+   "description": "cqs2_prev into the surface layer"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.t_air",
+   "to": "Drv.t_air",
+   "transform": "param_to_var",
+   "description": "t_air into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.qv_air",
+   "to": "Drv.qv_air",
+   "transform": "param_to_var",
+   "description": "qv_air into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.p_sfc",
+   "to": "Drv.p_sfc",
+   "transform": "param_to_var",
+   "description": "p_sfc into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.p_w2",
+   "to": "Drv.p_w2",
+   "transform": "param_to_var",
+   "description": "p_w2 into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.glw",
+   "to": "Drv.glw",
+   "transform": "param_to_var",
+   "description": "glw into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.swdown",
+   "to": "Drv.swdown",
+   "transform": "param_to_var",
+   "description": "swdown into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.albedo_in",
+   "to": "Drv.albedo_in",
+   "transform": "param_to_var",
+   "description": "albedo_in into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.emiss_in",
+   "to": "Drv.emiss_in",
+   "transform": "param_to_var",
+   "description": "emiss_in into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.rainbl",
+   "to": "Drv.rainbl",
+   "transform": "param_to_var",
+   "description": "rainbl into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.dt_rain",
+   "to": "Drv.dt_rain",
+   "transform": "param_to_var",
+   "description": "dt_rain into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.sneqv",
+   "to": "Drv.sneqv",
+   "transform": "param_to_var",
+   "description": "sneqv into the Noah driver forcing"
+  },
+  {
+   "type": "variable_map",
+   "from": "NoahColumn.ffrozp",
+   "to": "Drv.ffrozp",
+   "transform": "param_to_var",
+   "description": "ffrozp into the Noah driver forcing"
+  },
+  {
+   "type": "coupling_import",
+   "ref": "lib/sfclayrev_noah.esm",
+   "bind": {
+    "Sfc": "Sfc",
+    "Pen": "Pen",
+    "Can": "Can",
+    "Heat": "Heat",
+    "Drv": "Drv"
+   },
+   "description": "sfclayrev -> Noah: chs (Noah's CH) and qgh (the driver's Q2SAT)."
+  },
+  {
+   "type": "coupling_import",
+   "ref": "lib/noah_column_processes.esm",
+   "bind": {
+    "Col": "NoahColumn",
+    "Veg": "Veg",
+    "Pen": "Pen",
+    "Can": "Can",
+    "Et": "Et",
+    "Heat": "Heat",
+    "Sm": "Sm",
+    "Drv": "Drv"
+   },
+   "description": "Noah's SFLX processes on the one column state."
+  }
+ ]
+}
