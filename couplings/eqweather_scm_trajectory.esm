@@ -2,7 +2,7 @@
  "esm": "1.2.0",
  "metadata": {
   "name": "EqWeatherScmTrajectory",
-  "description": "EqWeather-SCM integrated over time: the first test in this repo that ADVANCES the coupled meteorology column and compares the result with the Fortran trajectory, where every other column test evaluates tendencies at one instant. The models and the 342 coupling edges are couplings/eqweather_scm.esm's, unchanged (24 mounts, 656 ODE states: u, v, w, phi', theta_m, the six moisture species, the four slab soil layers and the skin temperature); only the test differs. It lives in its own document because integrating costs ~15 min of CPU against ~1 min per instantaneous test, so the four t = 0 regimes stay cheap to run. KEEP THE TWO IN SYNC: any change to eqweather_scm.esm's models, coupling or EqWeatherScm equations must be copied here (factoring both into a shared coupling library is open; see data/eqwefic/notes/eqweather_trajectory.md). Why only one 60 s step: data/eqwefic/notes/eqweather_trajectory.md. In short, diffsol BDF stops at t = 103.6-104.0 s ('Exceeded maximum number of nonlinear solver failures (51)') at either reltol 1e-10 or 1e-6, and at 120.3 s with cal_cldfra switched off: the column carries switching surfaces the Fortran's operator splitting steps across but a Newton iteration cannot converge on, of which cal_cldfra's rh >= rhgrid jump at the ice-saturated top levels is one (minimal reproduction: data/eqwefic/phase3_probes/switching_surface/). Longer windows need event handling or regularised switches in EarthSciIntegrator, not edits to the components.",
+  "description": "EqWeather-SCM integrated over time: the first test in this repo that ADVANCES the coupled meteorology column and compares the result with the Fortran trajectory, where every other column test evaluates tendencies at one instant. The models are couplings/eqweather_scm.esm's (24 mounts, 656 ODE states: u, v, w, phi', theta_m, the six moisture species, the four slab soil layers and the skin temperature) plus Solar, the WRF solar geometry, which this document drives with the model clock so the sun moves over the step (eqweather_scm.esm evaluates one instant and prescribes cos zenith). Their coupling is the shared library couplings/lib/eqweather_scm_coupling.esm and the six scheme-pair libraries, imported by both documents, plus the four clock and sun edges below. It lives in its own document because integrating costs ~15 min of CPU against ~1 min per instantaneous test, so the four t = 0 regimes stay cheap to run. KEEP THE EqWeatherScm MODEL IN SYNC: its variables and equations are written out in both documents (only the coupling is shared), so a change to one must be copied to the other, except the clock (xtime0, julian0, xtime, julian, coszen_in, solcon_in), which is this document's alone. Why only one 60 s step: data/eqwefic/notes/eqweather_trajectory.md. In short, diffsol BDF stops at t = 103.6-104.0 s ('Exceeded maximum number of nonlinear solver failures (51)') at either reltol 1e-10 or 1e-6, and at 120.3 s with cal_cldfra switched off: the column carries switching surfaces the Fortran's operator splitting steps across but a Newton iteration cannot converge on, of which cal_cldfra's rh >= rhgrid jump at the ice-saturated top levels is one (minimal reproduction: data/eqwefic/phase3_probes/switching_surface/). Longer windows need event handling or regularised switches in EarthSciIntegrator, not edits to the components.",
   "license": "MIT",
   "tags": [
    "wrf",
@@ -396,6 +396,9 @@
      "ref": "./tests/scmstate_couple_wsm6_inputs.esm"
     }
    ]
+  },
+  "Solar": {
+   "ref": "../components/atmospheric_radiation/wrf_solar/wrf_solar_geometry.esm"
   },
   "EqWeatherScm": {
    "expression_template_imports": [],
@@ -1040,16 +1043,38 @@
      "units": "1",
      "description": "Surface emissivity (WRF emiss). Coupling source (variable_map param_to_var) for the mounted components."
     },
-    "csza0": {
+    "xtime0": {
+     "type": "parameter",
+     "units": "min",
+     "default": 1409.0,
+     "description": "WRF grid%xtime at t = 0, minutes since the 1999-10-22 19:00 UTC start of the em_scm_xy reference run: the step that starts from wrfout frame 1409 (18:29 UTC on the second day)."
+    },
+    "julian0": {
+     "type": "parameter",
+     "units": "day",
+     "default": 295.7701416015625,
+     "description": "WRF grid%julian at t = 0, as the REAL*4 model carries it at xtime 1409 (the value components/atmospheric_radiation/wrf_solar's solar_scm_step1410 test reads from the dump)."
+    },
+    "xtime": {
+     "type": "unknown",
+     "units": "min",
+     "description": "Model time in minutes, xtime0 + t/60: the clock that drives the solar geometry, so the sun moves over the step (couplings/solar_diurnal.esm's clock, started at xtime0)."
+    },
+    "julian": {
+     "type": "unknown",
+     "units": "day",
+     "description": "Day of year, julian0 + t/86400."
+    },
+    "coszen_in": {
      "type": "parameter",
      "units": "1",
-     "default": 0.5617246031761169,
-     "description": "Prescribed: Cosine of the solar zenith angle (WRF coszen)."
+     "default": 0.0,
+     "description": "Coupling target: receives Solar.coszen."
     },
     "csza": {
      "type": "unknown",
      "units": "1",
-     "description": "Cosine of the solar zenith angle (WRF coszen). Coupling source (variable_map param_to_var) for the mounted components."
+     "description": "Cosine of the solar zenith angle (WRF coszen), Solar.coszen at the current model time xtime: it follows the sun over the step rather than holding the start-of-step value. Coupling source (variable_map param_to_var) for the mounted components."
     },
     "albedo0": {
      "type": "parameter",
@@ -1062,16 +1087,16 @@
      "units": "1",
      "description": "Surface albedo (WRF albedo). Coupling source (variable_map param_to_var) for the mounted components."
     },
-    "solcon0": {
+    "solcon_in": {
      "type": "parameter",
      "units": "W/m^2",
-     "default": 1384.34814453125,
-     "description": "Prescribed: Solar constant (WRF solcon)."
+     "default": 0.0,
+     "description": "Coupling target: receives Solar.solcon."
     },
     "solcon": {
      "type": "unknown",
      "units": "W/m^2",
-     "description": "Solar constant (WRF solcon). Coupling source (variable_map param_to_var) for the mounted components."
+     "description": "Eccentricity-corrected solar constant (WRF solcon), Solar.solcon at the current julian. Coupling source (variable_map param_to_var) for the mounted components."
     },
     "obscur0": {
      "type": "parameter",
@@ -2708,8 +2733,40 @@
      "rhs": "emiss0"
     },
     {
+     "lhs": "xtime",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "xtime0",
+       {
+        "op": "/",
+        "args": [
+         "t",
+         60.0
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": "julian",
+     "rhs": {
+      "op": "+",
+      "args": [
+       "julian0",
+       {
+        "op": "/",
+        "args": [
+         "t",
+         86400.0
+        ]
+       }
+      ]
+     }
+    },
+    {
      "lhs": "csza",
-     "rhs": "csza0"
+     "rhs": "coszen_in"
     },
     {
      "lhs": "albedo",
@@ -2717,7 +2774,7 @@
     },
     {
      "lhs": "solcon",
-     "rhs": "solcon0"
+     "rhs": "solcon_in"
     },
     {
      "lhs": "obscur",
@@ -3598,7 +3655,7 @@
    "tests": [
     {
      "id": "eqweather_scm_traj_step1410_60s",
-     "description": "ONE WRF STEP INTEGRATED: the step-1410 column of couplings/eqweather_scm.esm (initial state = wrfout frame 1409 of the em_scm_xy reference run, 18:29 UTC, bitwise the same initial_conditions and parameter_overrides as that document's step-1410 test) advanced by diffsol BDF from t = 0 to 60 s at the runner's default solver tolerance, and compared at t = 60 s with WRF. REFERENCES, all from real32 WRF (../WRF/main/wrf.exe): (1) data/eqwefic/scm_ref_perstep, the reference namelist rerun with 1-min history, bitwise equal to data/eqwefic/scm_ref at every hourly frame; t = 60 s is frame 1410. (2) data/eqwefic/scm_ref_dtsens, restarts from the 18:29 state at dt = 60/30/15/6 s (dt = 60 reproduces (1) bitwise). WRF's dt -> 0 limit is estimated by the first-order extrapolation (15 X6 - 6 X15)/9; its uncertainty, taken as the spread between that and (30 X15 - 15 X30)/15, is u 1.8e-4 m/s, v 3.6e-5 m/s, theta_m 4.2e-4 K, q_v 1.7e-8 kg/kg. Numbers transcribed by tools/fill_eqweather_scm_trajectory.py. WHY THE dt -> 0 LIMIT: the document is a continuous ODE, so its trajectory converges to WRF's as WRF's step shrinks, not to WRF at dt = 60 s. WRF's own splitting error after one step (|X(dt=6) - X(dt=60)|, Linf over the column) is u 2.8e-3, v 9.8e-4, theta_m 3.4e-3 K, q_v 4.5e-7, w 6.1e-5 (1.0e-4 at dt = 30), phi' 1.6e-2, TSK and TSLB 5.8e-4, against a one-step signal of u 1.6e-2, v 1.4e-2, theta_m 1.7e-2, q_v 2.0e-5, phi' 0.43, TSK 8.2e-3. MEASURED (Linf, ESM minus reference at t = 60 s; against WRF dt = 60 / dt = 6 / dt -> 0): u 3.0e-3 / 2.4e-4 / 1.7e-4; v 1.1e-3 / 2.6e-4 / 2.2e-4; theta_m 4.1e-3 / 7.1e-4 / 3.2e-4; q_v 5.1e-7 / 6.6e-8 / 2.4e-8; w 7.5e-5 / 1.0e-4 / 1.2e-4; phi' 8.7e-3 / 8.9e-3 / 1.5e-2; T_s and T_sk 4.0e-4 / 9.8e-4 / 1.2e-3; q_i 6.8e-13 / 3.4e-12 / 4.3e-12. So u, v, theta_m and q_v are 10-20x closer to WRF's dt -> 0 limit than to WRF's own dt = 60 answer, and within ~1-2x the extrapolation's own uncertainty: they are asserted against the dt -> 0 limit at 2-3x the measured residual (u 4e-4, v 5e-4, theta_m 1e-3, q_v 5e-8), every one of them several times TIGHTER than WRF's splitting error, so the test would fail against the dt = 60 answer and pins the continuous limit. w, phi', q_i, T_s and T_sk do not converge that way and are asserted against WRF at its own dt = 60 s, at about 1.5x the WRF dt spread: w and phi' carry the undamped vertical acoustic mode (this document has no acoustic sub-step or off-centring, so it is a different mode amplitude, not a convergence), w abs 1.5e-4 and phi' abs 2e-2; q_i is trace cirrus (<= 2.1e-9) at abs 5e-12; T_s and T_sk at abs 8e-4 K sit closer to WRF dt = 60 than to its dt -> 0 limit (4.0e-4 against 1.2e-3), for two measured reasons (data/eqwefic/notes/eqweather_trajectory.md, 2026-11-20): (1) the cos zenith below is held at WRF's START-of-step value for the whole minute, which is exactly the forcing of WRF at dt = 60 s, while the sun is setting (WRF's coszen falls 4.6e-6 /s); letting csza follow WRF's own coszen over the minute moves T_sk by -3.1e-4 K and T_s's Linf against WRF dt = 60 from 4.0e-4 to 9.3e-5 K, and leaves u, v, theta_m and q_v unchanged; (2) WRF's TSK and TSLB(1) are not in the asymptotic regime of the first-order dt -> 0 extrapolation: they are non-monotonic in dt (dt = 30 is warmer than dt = 60) because the slab's own explicit soil sub-step is dt/NSOIL with NSOIL = 1 + int(0.025 dt/s) (module_sf_slab.F:463), i.e. 30, 30, 15 and 6 s for dt = 60, 30, 15, 6, so dt = 60 and dt = 30 share one sub-step (TSK within 6e-5 K) and the cooling only starts below it; the extrapolated limit for these two variables is therefore not a reference, and they are asserted against WRF at dt = 60 s. q_c is asserted to stay at zero to 1e-20 (WRF has no cloud water anywhere). Prescribed for the whole minute, as in the t = 0 test: cos zenith, psfc and the surface layer's previous-step fields (ust_prev, mol_prev, ...). Over 60 s cos zenith moves ~1e-3 relative; not separated from the residuals above. MEASURED 10/10 on ./esm 00808ba51 (ESD_ROOT main-431bd46), 2026-11-20, load 10-14 on 20 cores: 860 s wall, 990 s CPU, peak 408 MB, almost all of it the finite-difference Jacobian (2 x 656 + 1 right-hand-side evaluations) and its refreshes; a run at --reltol 1e-6 was not faster.",
+     "description": "ONE WRF STEP INTEGRATED: the step-1410 column of couplings/eqweather_scm.esm (initial state = wrfout frame 1409 of the em_scm_xy reference run, 18:29 UTC, bitwise the same initial_conditions and parameter_overrides as that document's step-1410 test) advanced by diffsol BDF from t = 0 to 60 s at the runner's default solver tolerance, and compared at t = 60 s with WRF. REFERENCES, all from real32 WRF (../WRF/main/wrf.exe): (1) data/eqwefic/scm_ref_perstep, the reference namelist rerun with 1-min history, bitwise equal to data/eqwefic/scm_ref at every hourly frame; t = 60 s is frame 1410. (2) data/eqwefic/scm_ref_dtsens, restarts from the 18:29 state at dt = 60/30/15/6 s (dt = 60 reproduces (1) bitwise). WRF's dt -> 0 limit is estimated by the first-order extrapolation (15 X6 - 6 X15)/9; its uncertainty, taken as the spread between that and (30 X15 - 15 X30)/15, is u 1.8e-4 m/s, v 3.6e-5 m/s, theta_m 4.2e-4 K, q_v 1.7e-8 kg/kg. Numbers transcribed by tools/fill_eqweather_scm_trajectory.py. WHY THE dt -> 0 LIMIT: the document is a continuous ODE, so its trajectory converges to WRF's as WRF's step shrinks, not to WRF at dt = 60 s. WRF's own splitting error after one step (|X(dt=6) - X(dt=60)|, Linf over the column) is u 2.8e-3, v 9.8e-4, theta_m 3.4e-3 K, q_v 4.5e-7, w 6.1e-5 (1.0e-4 at dt = 30), phi' 1.6e-2, TSK and TSLB 5.8e-4, against a one-step signal of u 1.6e-2, v 1.4e-2, theta_m 1.7e-2, q_v 2.0e-5, phi' 0.43, TSK 8.2e-3. MEASURED (Linf, ESM minus reference at t = 60 s; against WRF dt = 60 / dt = 6 / dt -> 0): u 3.0e-3 / 2.4e-4 / 1.7e-4; v 1.1e-3 / 2.6e-4 / 2.2e-4; theta_m 4.1e-3 / 7.1e-4 / 3.2e-4; q_v 5.1e-7 / 6.6e-8 / 2.4e-8; w 7.5e-5 / 1.0e-4 / 1.2e-4; phi' 8.7e-3 / 8.9e-3 / 1.5e-2; T_s and T_sk 4.0e-4 / 9.8e-4 / 1.2e-3; q_i 6.8e-13 / 3.4e-12 / 4.3e-12. So u, v, theta_m and q_v are 10-20x closer to WRF's dt -> 0 limit than to WRF's own dt = 60 answer, and within ~1-2x the extrapolation's own uncertainty: they are asserted against the dt -> 0 limit at 2-3x the measured residual (u 4e-4, v 5e-4, theta_m 1e-3, q_v 5e-8), every one of them several times TIGHTER than WRF's splitting error, so the test would fail against the dt = 60 answer and pins the continuous limit. w, phi', q_i, T_s and T_sk do not converge that way and are asserted against WRF at its own dt = 60 s, at about 1.5x the WRF dt spread: w and phi' carry the undamped vertical acoustic mode (this document has no acoustic sub-step or off-centring, so it is a different mode amplitude, not a convergence), w abs 1.5e-4 and phi' abs 2e-2; q_i is trace cirrus (<= 2.1e-9) at abs 5e-12; T_s and T_sk at abs 3e-4 K against WRF dt = 60 s, for a measured reason (data/eqwefic/notes/eqweather_trajectory.md, 2026-11-20): WRF's TSK and TSLB(1) are not in the asymptotic regime of the first-order dt -> 0 extrapolation. They are non-monotonic in dt (dt = 30 is warmer than dt = 60) because the slab's own explicit soil sub-step is dt/NSOIL with NSOIL = 1 + int(0.025 dt/s) (module_sf_slab.F:463), i.e. 30, 30, 15 and 6 s for dt = 60, 30, 15, 6, so dt = 60 and dt = 30 share one sub-step (TSK within 6e-5 K) and the cooling only starts below it; the extrapolated limit for these two is therefore not a reference. With the moving sun (below) the ESM's T_sk is +9.5e-5 K from WRF dt = 60, +3.4e-5 from dt = 30, +3.4e-4 from dt = 15 and +6.7e-4 from dt = 6, and T_s's Linf against dt = 60 is 9.5e-5 K; abs 3e-4 is about 3x that, and would FAIL with the cos zenith frozen at its start-of-step value (T_sk +4.0e-4 K), which is the forcing WRF itself uses at dt = 60 for the whole minute. q_c is asserted to stay at zero to 1e-20 (WRF has no cloud water anywhere). THE SUN MOVES: csza and solcon are the mounted solar geometry (Solar = components/atmospheric_radiation/wrf_solar/wrf_solar_geometry.esm) driven by the integrator's clock, xtime = 1409 + t/60 min and julian = 295.7701416 + t/86400 d (couplings/solar_diurnal.esm's clock started at this step), so over the minute cos zenith falls as WRF's does (-4.6e-6 /s, 0.6393 -> 0.6391), rather than holding WRF dt = 60's start-of-step value. The clock is pinned by four csza assertions at t = 0, 30, 45 and 54 s against WRF's COSZEN at the START of the last step of the dt = 60, 30, 15 and 6 runs (measured residual <= 1.6e-7, asserted at abs 5e-7; one 6 s step moves it 2.8e-5). Following the sun moved T_sk by -3.0e-4 K and T_s's Linf against dt = 60 from 4.0e-4 to 9.5e-5 K, and left u, v, theta_m, q_v, w, phi' and q_i unchanged to 3 digits. Still prescribed for the whole minute, as in the t = 0 test: psfc and the surface layer's previous-step fields (ust_prev, mol_prev, ...). MEASURED 14/14 on ./esm 00808ba51 (ESD_ROOT main-431bd46), 2026-11-20, load 10-14 on 20 cores: 897 s wall, 1003 s CPU, peak 414 MB, almost all of it the finite-difference Jacobian (2 x 656 + 1 right-hand-side evaluations) and its refreshes; a run at --reltol 1e-6 was not faster.",
      "parameter_overrides": {
       "psfc0": 97142.90625,
       "xland0": 1.0,
@@ -3627,9 +3684,11 @@
       "n2ovmr0": 3.1900000863060995e-07,
       "ch4vmr0": 1.7739999975674436e-06,
       "emiss0": 0.9200000166893005,
-      "csza0": 0.6393358707427979,
+      "Solar.gmt": 19.0,
+      "Solar.xlat": 37.599998474121094,
+      "Solar.xlong": -96.69999694824219,
+      "Solar.radt": 0.0,
       "albedo0": 0.20000000298023224,
-      "solcon0": 1385.0826416015625,
       "obscur0": 0.0,
       "cssca0": 9.999999747378752e-06,
       "icloud0": 1.0,
@@ -4841,7 +4900,7 @@
         }
        },
        "tolerance": {
-        "abs": 0.0008,
+        "abs": 0.0003,
         "rel": 0.0
        }
       },
@@ -4865,7 +4924,43 @@
        "time": 60.0,
        "expected": 288.545166015625,
        "tolerance": {
-        "abs": 0.0008,
+        "abs": 0.0003,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "csza",
+       "time": 0.0,
+       "expected": 0.6393358707427979,
+       "tolerance": {
+        "abs": 5e-07,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "csza",
+       "time": 30.0,
+       "expected": 0.6392000317573547,
+       "tolerance": {
+        "abs": 5e-07,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "csza",
+       "time": 45.0,
+       "expected": 0.6391304731369019,
+       "tolerance": {
+        "abs": 5e-07,
+        "rel": 0.0
+       }
+      },
+      {
+       "variable": "csza",
+       "time": 54.0,
+       "expected": 0.63908851146698,
+       "tolerance": {
+        "abs": 5e-07,
         "rel": 0.0
        }
       }
@@ -4960,6 +5055,34 @@
     "Pbl": "Pbl"
    },
    "description": "slab -> YSU: the land-surface hfx/qfx, which WRF's sfclayrev -> slab -> YSU order makes the values YSU sees."
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScm.xtime",
+   "to": "Solar.xtime",
+   "transform": "param_to_var",
+   "description": "the model clock into the solar geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "EqWeatherScm.julian",
+   "to": "Solar.julian",
+   "transform": "param_to_var",
+   "description": "the day of year into the solar geometry"
+  },
+  {
+   "type": "variable_map",
+   "from": "Solar.coszen",
+   "to": "EqWeatherScm.coszen_in",
+   "transform": "param_to_var",
+   "description": "the moving sun's zenith cosine back into the column"
+  },
+  {
+   "type": "variable_map",
+   "from": "Solar.solcon",
+   "to": "EqWeatherScm.solcon_in",
+   "transform": "param_to_var",
+   "description": "the solar constant back into the column"
   }
  ]
 }

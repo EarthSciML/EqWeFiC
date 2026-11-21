@@ -14,6 +14,10 @@ test description:
   ESM-vs-WRF difference is inside WRF's own dt spread and the extrapolation
   does not converge (w, phi': acoustic mode; q_i: trace; T_s, T_sk: see the
   description).
+- csza at t = 0, 30, 45, 54 s: WRF's COSZEN at 18:30 in the dt = 60 / 30 / 15 / 6
+  runs, i.e. calc_coszen at the START of each run's last step (xtime 1409 +
+  0, 30, 45, 54 s): four samples of the sun WRF moves, which pin the clock
+  that drives the document's mounted solar geometry.
 
 All are real32 WRF builds (../WRF/main/wrf.exe, em_scm_xy). The initial state
 (frame 1409) is the one couplings/eqweather_scm.esm's step-1410 test uses,
@@ -34,6 +38,7 @@ WRF = {"u": "U", "v": "V", "w": "W", "phi_p": "PH", "theta_m": "THM",
        "qv": "QVAPOR", "qi": "QICE", "T_s": "TSLB", "T_sk": "TSK"}
 OFFSET = {"theta_m": 300.0}  # THM is theta_m - 300
 DT0 = {"u", "v", "theta_m", "qv"}
+CSZA_DT = {0.0: 60, 30.0: 30, 45.0: 15, 54.0: 6}  # last step of run dt starts at 60 - dt
 
 
 def column(ds, name, frame):
@@ -49,6 +54,10 @@ def main():
     test = doc["models"]["EqWeatherScm"]["tests"][0]
     for a in test["assertions"]:
         v = a["variable"]
+        if v == "csza":
+            r = xr.open_dataset(DTSENS.format(CSZA_DT[a["time"]]))
+            a["expected"] = float(column(r, "COSZEN", 0))
+            continue
         if v not in WRF:
             continue
         w = WRF[v]
@@ -63,7 +72,7 @@ def main():
             a["reference"]["expr"]["args"][0]["value"] = [float(y) for y in np.atleast_1d(x)]
         else:
             a["expected"] = float(x)
-    json.dump(doc, open(DOC, "w"), indent=1)
+    open(DOC, "w").write(json.dumps(doc, indent=1, ensure_ascii=True) + "\n")
     sys.stdout.write("filled %d assertions\n" % len(test["assertions"]))
 
 
