@@ -26,7 +26,7 @@ DUMPS = f'{D}/dumps/chem170_full_met'
 WRFOUT = f'{D}/chem170_full/run_met/wrfout_d01_1997-06-20_12:00:00'
 ESM = 'couplings/eqatmchem_scm.esm'
 BASE = 'couplings/tests/chem170met_base_state_inputs.esm'
-JOINT_REV = '4725833'
+JOINT_REV = 'f74b936'
 T0 = 300.0
 REL_MET = 1e-6
 TIERS = (1e2, 1e4, 1e6, 1e8)
@@ -87,6 +87,36 @@ def write_base(v):
     with open(BASE, 'w') as f:
         json.dump(lib, f, indent=1)
         f.write('\n')
+
+
+def coupled_refs(S, dt):
+    """The reference of a skip_r32 assertion at the document's own met inputs (replay_coupled.py)."""
+    sys.path.insert(0, f'{D}/chem170_full/astem_persection')
+    sys.path.insert(0, f'{D}/chem170_full')
+    import sec_tape, replay_column as rc
+    R = f'{D}/eqatmchem_scm/replay_coupled'
+    nuc = arr(json.load(open(f'{R}/nuc_{S}.json'))['vars']['rate_newnuc_replay'])
+    kc = arr(json.load(open(f'{R}/kp_{S}.out.json'))['vars']['vdot_rconst_replay'])
+    k0 = arr(json.load(open(f'{D}/chem170_full/replay_mosaic/kp_{S}.out.json'))['vars']['vdot_rconst_replay'])
+    sec = sec_tape.read_sec(f'{R}/sec/lev_{S}.tape')
+    ind = rc.kpp_indices()
+    NUC = {'nuc_h2so4': 0, 'nuc_nh3': 1, 'nuc_so4a': 2, 'nuc_nh4a': 3, 'nuc_num': 4, 'dh2so4_dt': 0, 'dnh3_dt': 1}
+    ACT = {'Act.gam': 'gam', 'Act.activity': 'activity', 'Act.gam_ratio': 'gam_ratio'}
+
+    def ref(a):
+        v, c = a['variable'], a.get('coords') or {}
+        if v.startswith('AerChem.'):
+            n = v[len('AerChem.'):]
+            return float(nuc[NUC[n], c['lev'] - 1] / (dt if n.endswith('_dt') else 1.0))
+        if v in ACT:
+            x = sec[c['lev']][2][c['bin']][ACT[v]]
+            return float(x[c['el'] - 1] if 'el' in c else x)
+        if v.startswith('CBMZColumn.d'):   # the column tendency: chemistry moves, the other terms do not (radicals aloft)
+            sp, lev = v[len('CBMZColumn.d'):].split('_dt[')
+            i, k = ind[sp] - 1, int(lev.rstrip(']')) - 1
+            return float(a['expected'] + kc[i, k] - k0[i, k])
+        raise KeyError(v)
+    return ref
 
 
 def widen(t):
@@ -157,19 +187,27 @@ def main():
         asr = []
         for a in jt['assertions']:
             b = dict(a)
-            if mode == 'r32' and 'tolerance' in b:
+            # SecMove's bounds are already 1e-5 of each quantity's largest rate (not a near-zero floor): kept as they are
+            if mode == 'r32' and 'tolerance' in b and not b['variable'].startswith('SecMove.'):
                 b['tolerance'] = widen(b['tolerance'])
             asr.append(b)
         dropped = collections.Counter()
         if mode == 'r32' and SKIP:
+            # The joint assertions the widened bound does not cover are asserted instead against the same Fortran
+            # kernels re-run (real64) at the document's OWN met inputs (data/eqwefic/eqatmchem_scm/replay_coupled.py),
+            # at the joint column's own, unwidened tolerance: a measured sensitivity, not a branch flip.
             sk = {(x['variable'], json.dumps(x['coords'], sort_keys=True), x['expected'])
                   for x in json.load(open(SKIP)).get(f'eqatmchem_scm_step{S}', [])}
+            ja = {(a['variable'], json.dumps(a.get('coords'), sort_keys=True), a['expected']): a for a in jt['assertions']}
+            ref = coupled_refs(S, float(arr(mo['dtchem'])))
             kept = []
             for b in asr:
-                if (b['variable'], json.dumps(b.get('coords'), sort_keys=True), b['expected']) in sk:
+                key = (b['variable'], json.dumps(b.get('coords'), sort_keys=True), b['expected'])
+                if key in sk:
+                    b = dict(ja[key])
+                    b['expected'] = ref(b)
                     dropped[b['variable'].split('[')[0]] += 1
-                else:
-                    kept.append(b)
+                kept.append(b)
             asr = kept
         if mode == 'tiers':   # calibration only: every joint assertion again at its tolerance x F
             base = list(asr)
@@ -199,7 +237,7 @@ def main():
                             + ("assertions at their own tolerances." if mode == 'orig' else
                                f"assertions with rel raised to 1e-5 and every absolute floor scaled by {ABS_WIDEN:g} (the CBM-Z floors, 1e-14 of each species gross loss, become 1e-5 of it): the chemistry now reads "
                                "real64 recomputations of WRF's real32 meteorology instead of the real32 values the joint column's "
-                               "expectations were replayed at. NOT asserted: the " + f"{sum(dropped.values())} joint assertions that this moves beyond even that bound (" + json.dumps(dict(dropped)) + "; listed in data/eqwefic/eqatmchem_scm/skip_r32.json): MTEM activity coefficients and nucleation, steep in the relative humidity, and (at the shower step) a few radicals whose net tendency cancels below 1e-5 of the gross terms. They are a measured sensitivity to real32-vs-real64 meteorology, not a disagreement in the chemistry, which the joint column pins at rel 1e-9 against the real32 inputs.") +
+                               "expectations were replayed at. The " + f"{sum(dropped.values())} joint assertions this moves beyond even that bound (" + json.dumps(dict(dropped)) + "; data/eqwefic/eqatmchem_scm/skip_r32.json: MTEM activity coefficients and nucleation, steep in the relative humidity and temperature, and at the shower step a few radicals whose net tendency cancels below 1e-5 of the gross terms) are asserted at the joint column's own tolerance against the same Fortran kernels re-run in real64 at THIS document's met inputs (astem_section_driver, mosaic_subproc_driver, cbmz_driver; data/eqwefic/eqatmchem_scm/replay_coupled.py, 2026-11-20). There the document agrees to 3e-13 (activities), 5e-14 (nucleation) and 2e-11 (radicals), and the replays at WRF's inputs reproduce the joint expectations exactly, so every one is the kernels' sensitivity to the real32-vs-real64 meteorology (up to 7e-3 in nucleation, 0.53 in a cancelling C2O3 net tendency); none is a branch flip.") +
                             " Filled by tools/fill_eqatmchem_scm_tests.py."),
             'parameter_overrides': po,
             'initial_conditions': jt['initial_conditions'],
