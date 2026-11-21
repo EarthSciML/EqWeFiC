@@ -2466,6 +2466,24 @@ SW → RRTM LW → Noah → Tiedtke → GWDO):
     the smoke job 12344597 reproduces `runs/full`'s 16:10 state and dumps every
     scheme. Setup, columns and file layout: the note above.
 
+    **TODO once EarthSciIntegrator solves algebraic loops: the trajectory's
+    lagged surface-layer inputs (2026-11-21).** `couplings/eqweather_scm_trajectory.esm`
+    holds sfclayrev's previous-step inputs (`ust_prev`, `mol_prev`, `qsfc`,
+    `hfx`, `qfx`, `pblh`) at their restart values for the whole 60 s step, which is
+    WRF's behaviour at dt = 60 s. In the continuous limit WRF's
+    `ust = 0.5 ust_prev + 0.5 k wspd/psix` (sf_sfclayrev.F90:782) settles within
+    about two steps at the fixed point `ust = k wspd/psix`. That raises flhc, and it
+    is why the ESM's T_sk sits +8.74e-4 K above WRF's real64 dt → 0 limit
+    (holding ust_prev at its t = 0 fixed point removes 78 %; the rest is u*
+    following the wind over the minute). **Fix:** couple the `*_prev` inputs to the
+    current Sfc/Lsm values, making u* an algebraic loop (it also feeds psiq and
+    zol) for EarthSciIntegrator to solve, not a lag written in `.esm`. Then move the
+    T_s/T_sk assertions from WRF dt = 60 s to the real64 dt → 0 limit
+    (`data/eqwefic/scm_ref_dtsens_r8/`). `sfclayrev.esm`'s 618 assertions stay
+    as they are, since they pin the Fortran's one-step average. Until then the
+    test keeps the dt = 60 s semantics (decided 2026-11-21). Measurements:
+    `data/eqwefic/notes/eqweather_trajectory.md`, "Cause of the T_sk offset".
+
 ## 6. Test and authoring conventions (normative; summarized in CLAUDE.md)
 
 - Tendencies are observeds; assert at `time: 0.0`. Trajectory assertions only
