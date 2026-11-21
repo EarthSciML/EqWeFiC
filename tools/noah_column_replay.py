@@ -13,7 +13,14 @@ uninitialised scratch inputs) this
    coupled document is tested against: sfclayrev.esm documents that the real32 copies (svpt0 =
    273.1499939 K above all) move the kernel by up to 4e-6 relative, which would otherwise reach
    every Noah quantity through chs and bound the whole column at that level. The two replays'
-   difference, propagated through Noah, is reported rather than asserted;
+   difference, propagated through Noah, is reported rather than asserted. The second replay runs
+   the LITERAL-EXACT build of the kernel (kernels/build_sfclit: sf_sfclayrev.F90 compiled with
+   -fdefault-real-8 -fdefault-double-8, everything else as `make`). The CCPP kernel declares its
+   variables kind_phys but writes its literals in default real, so in the ordinary real64 build
+   `.33`, `.32` and `0.001` are still binary32 (0.330000013, 0.319999993, 0.00100000005). Those
+   moved br by 2.0e-5 and mol by 1.9e-4 relative at the night steps (thx - thgb cancellation, via
+   vconv**.33 in wspd), the offset first read as the zolri secant (2026-11-20). sfclayrev.esm writes
+   the decimals, which is the scheme as published;
 2. rebuilds the Noah SFLX arguments that the Noah driver (module_sf_noahdrv.F) forms from the
    atmosphere and the surface layer, IN REAL64, from the same raw inputs the coupled document
    reads (t3d1, qv3d1, p8w(1), sfcprs -> p8w(2), glw, swdown, the entering albedo and emissivity,
@@ -42,6 +49,7 @@ D = '/projects/illinois/eng/cee/ctessum/ctessum/data/eqwefic'
 DUMPS = f'{D}/dumps/chem170_full_met_sfc'
 OUT = f'{D}/noah_column'
 K = f'{D}/wrf-chem170/kernels/build'
+KL = f'{D}/wrf-chem170/kernels/build_sfclit'   # literal-exact sfclayrev (see the docstring)
 STEPS = (362, 364, 1024, 1026)
 DTS = ('1e-6', '1e-4', '0.01', '1', '60')
 
@@ -86,7 +94,7 @@ def main() -> None:
         subprocess.run([f'{K}/sfclayrev_driver', f'{OUT}/sfc_{S}.flat', f'{OUT}/sfc64_{S}.json'], check=True)
         sd['vars'].update({k: np.float64(v) for k, v in EXACT.items()})
         esm_dump.to_flat(sd, f'{OUT}/sfcx_{S}.flat')
-        subprocess.run([f'{K}/sfclayrev_driver', f'{OUT}/sfcx_{S}.flat', f'{OUT}/sfc64x_{S}.json'], check=True)
+        subprocess.run([f'{KL}/sfclayrev_driver', f'{OUT}/sfcx_{S}.flat', f'{OUT}/sfc64x_{S}.json'], check=True)
         sfc64 = esm_dump.load(f'{OUT}/sfc64x_{S}.json')['vars']
 
         nd = esm_dump.load(f'{DUMPS}/esm_dump_noah_{S}.json')

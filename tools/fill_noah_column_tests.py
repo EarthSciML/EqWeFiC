@@ -44,14 +44,12 @@ NOAH = {'Heat.t1': 't1_out', 'Heat.sheat': 'sheat', 'Heat.ssoil': 'ssoil', 'Heat
         'Can.rc': 'rc', 'Can.pc': 'pc', 'Et.edir': 'edir', 'Et.ec': 'ec', 'Et.ett': 'ett', 'Et.eta': 'eta',
         'Et.eta_kinematic': 'eta_kinematic', 'Et.beta': 'beta', 'Drv.fdown': 'fdown', 'Drv.q1': 'q1',
         'Drv.albedo': 'albedo_out', 'Drv.emissi': 'emissi_out', 'Drv.z0': 'z0_out'}
-# Tolerances (measured with --measure on esm 00808ba51; data/eqwefic/noah_column/run_measure.log).
-# The surface layer sets the floor: against the exact-constant replay it differs by <= 8e-7 relative
-# by day and up to 2.2e-5 (br, zol, rmol) by night, which is the sfclayrev transcription's own
-# offset (its tests carry rel 2e-5); mol and hfx pass through the small thx - thgb and reach 1.9e-4
-# relative at |hfx| = 0.26 W/m^2 (4.9e-5 W/m^2, 4.8e-7 K absolute). Everything in Noah that reads
-# chs inherits that: up to 1.6e-5 relative (sheat at night), 4e-9 by day. Hence rel 5e-5. The Noah
-# quantities that do NOT read the surface layer's outputs (CHS_FREE) are pinned at rel 1e-9.
-SFC_TOL = {'mol': {'rel': 5e-5, 'abs': 2e-6}, 'hfx': {'rel': 5e-5, 'abs': 1.5e-4}}
+# Tolerances (measured with --measure on esm 00808ba51; data/eqwefic/noah_column/run_measure_sfclit.log).
+# Against the LITERAL-EXACT surface-layer replay (tools/noah_column_replay.py) every Sfc output agrees to
+# <= 9e-13 relative and every Noah quantity to <= 3.1e-10 (sheat), so everything is at rel 1e-9.
+# (Until 2026-11-20 the reference kernel kept the CCPP source's default-real literals .33/.32/0.001 in
+# binary32, which put br/zol/rmol 2.2e-5 and mol/hfx 1.9e-4 off by night and held these at rel 5e-5;
+# that run is data/eqwefic/noah_column/run_measure.log.)
 CHS_FREE = {'Heat.ssoil_pre', 'Can.rcs', 'Can.rct', 'Can.rcq', 'Can.rcsoil', 'Can.rc', 'Drv.albedo', 'Drv.emissi', 'Drv.z0'}
 # tendencies (ESM_DT = 0.01 s): document variable -> (state in, state out)
 TEND = {'dstc_dt': ('stc', 'stc_out'), 'dsh2o_dt': ('sh2o', 'sh2o_out'), 'dsmc_dt': ('smc', 'smc_out')}
@@ -110,14 +108,14 @@ def main() -> None:
               'sh2o': [float(x) for x in n['sh2o']], 'cmc': f(n['cmc'])}
         A = []
         for name, key in SFC.items():
-            t = SFC_TOL.get(name, {'rel': 5e-5})
+            t = {'rel': 1e-9}
             A.append({'variable': f'Sfc.{name}', 'time': 0.0, 'expected': f(sx[key]), 'tolerance': tol(t)})
         A.append({'variable': 'Sfc.regime', 'time': 0.0, 'expected': f(sx['regime_out']), 'tolerance': {'abs': 0.0, 'rel': 0.0}})
         for name, key in NOAH.items():
-            t = {'rel': 1e-9} if name in CHS_FREE else {'rel': 5e-5, 'abs': 1e-12}
+            t = {'rel': 1e-9} if name in CHS_FREE else {'rel': 1e-9, 'abs': 1e-12}
             A.append({'variable': name, 'time': 0.0, 'expected': f(nf[key]), 'tolerance': tol(t)})
         A.append({'variable': 'Et.et', 'time': 0.0, 'reduce': 'Linf_error', 'expected': 0.0,
-                  'reference': const_col(nf['et']), 'tolerance': tol({'abs': 3e-6, 'rel': 0.0})})
+                  'reference': const_col(nf['et']), 'tolerance': tol({'abs': 1e-10, 'rel': 0.0})})
         h = 0.01
         tends = {}
         for var, (a, b) in TEND.items():
@@ -139,7 +137,8 @@ def main() -> None:
                 f"real32 values widened; the soil column (stc, smc, sh2o, cmc) is the initial condition. References "
                 f"(tools/noah_column_replay.py): the surface layer is the real64 kernels/sfclayrev_driver with WRF's "
                 f"thirteen real32 constant arguments replaced by their exact decimal values (with WRF's real32 copies "
-                f"chs moves by {c32:.1e} relative here); Noah is the real64 kernels/noah_driver fed the SAME forcing this "
+                f"chs moves by {c32:.1e} relative here), built literal-exact (kernels/build_sfclit: the CCPP source's "
+                f"default-real literals .33, .32 and 0.001 promoted to real64, as sfclayrev.esm writes them); Noah is the real64 kernels/noah_driver fed the SAME forcing this "
                 f"document forms -- the driver preamble rebuilt in real64 from the raw inputs and the exact-constant "
                 f"chs and qgh -- at ESM_DT = 1e-6 s for the fluxes and diagnostics (instantaneous: the soil state and the "
                 f"canopy are the initial ones) and at 0.01 s for the four tendencies (x_out - x)/dt (the minimum of the "
