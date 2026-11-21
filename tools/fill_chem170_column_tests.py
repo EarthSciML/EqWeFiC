@@ -65,6 +65,13 @@ REL = 1e-9
 FACTGAS, CM3_PER_M3, NMOL_PER_MOL, FACTDENS = 1.0e6, 1.0e6, 1.0e9, 28966.0
 EXCH = {"H2SO4": 1, "HNO3": 2, "HCl": 3, "NH3": 4}      # ASTEM gas axis
 COMP_OF_GAS = {1: 1, 2: 2, 3: 3, 4: 5}                  # gas -> rsub component (so4 no3 cl nh4)
+MSJ = f"{DATA}/chem170_full/movesect_joint"
+MS_TOL = 1e-5   # section moving: the bound of the component's own tests, 1e-5 of each quantity's largest rate
+# the dry volume (cm3) one mole of each condensing gas adds: mw_aer_mac/dens_aer_mac of the species it becomes
+# (so4, no3, cl, nh4, msa) plus its charge-balance H+ at 1 g/mol, 1 g/cm3 (calc_dry_n_wet_aerosol_props)
+VFAC = {1: 96.0 / 1.7999999523162842 + 2, 2: 62.0 / 1.7999999523162842 + 1, 3: 35.5 / 2.200000047683716 + 1,
+        4: 18.0 / 1.7999999523162842 - 1, 5: 95.0 / 1.7999999523162842 + 1}
+E15 = float(np.float32(1e-15))   # MOSAIC's 1.e-15 (ng/m3 -> g/cm3), a default-REAL literal
 
 
 def renamed(a, old, new):
@@ -141,19 +148,58 @@ def build(step, what, calls_by, cz_states):
             put(f"Join.aerosol_{n}", val, REL, scale, lev=k)
     # aerosol: the aerosol-chemistry column's dr_dt plus ASTEM's condensation, on every section whose
     # ASTEM rates are known at the state
+    # section moving (SecMove): WRF's own move_sections at the state, driven by ASTEM's rates there
+    # (chem170_full/replay_movesect_joint.py; the dt -> 0 limit by Richardson at delta = 1e-3, 2e-3, which
+    # agrees with the (5e-4, 1e-3) and (2e-3, 5e-3) limits to 1e-6 of each quantity's largest rate). It couples
+    # the sections of a level, so it has a reference only on the levels whose eight ASTEM rates are known.
+    ms = json.load(open(f"{MSJ}/ms_{step}.json"))
+    assert ms["levels"] == clean
+    R = np.asarray(ms["R"], dtype=float)
+    mp = np.asarray(v["massptr_aer"]).reshape(10, -1, order="F") - 1
+    nbin = mp.shape[1]
+    rows = {b: [int(mp[c, b - 1]) for c in range(10)] + [int(v["hyswptr_aer"][b - 1]) - 1,
+                                                          int(v["waterptr_aer"][b - 1]) - 1] for b in range(1, nbin + 1)}
+    npt = {b: int(v["numptr_aer"][b - 1]) - 1 for b in range(1, nbin + 1)}
+    msc = {m: MS_TOL * max(abs(R[rows[b][m - 1], k - 1]) for b in rows for k in clean) for m in range(1, 13)}
+    msc[0] = MS_TOL * max(abs(R[npt[b], k - 1]) for b in rows for k in clean)
+    # Join's own arithmetic is at the document's cairclm = rho_phy/factdens (Host.cair); the replay's growth is
+    # at the dump's real32 cairclm, which cancels in section moving (vdry and dvdt both carry it)
+    cair_doc = rho / FACTDENS
+    mass_cc, vol_cc = (np.asarray(ms[x], dtype=float) for x in ("mass_cc", "vol_cc"))
+    for k in range(1, nlev + 1):
+        for b in rows:
+            put("Join.drymass", mass_cc[b - 1, k - 1] / cair_doc[k - 1], REL, 0.0, lev=k, bin=b)
+            put("Join.drydens", mass_cc[b - 1, k - 1] / vol_cc[b - 1, k - 1], REL, 0.0, lev=k, bin=b)
+    ms_num, ms_q = {}, {}
+    for k in clean:
+        for b in rows:
+            terms = [daer[(k, b, g)][0] * VFAC[g] * E15 / cair_doc[k - 1] for g in range(1, 6)]
+            put("Join.dvdt", sum(terms), REL, REL * sum(abs(x) for x in terms), lev=k, bin=b)
+            ms_num[(k, b)] = R[npt[b], k - 1]
+            put("SecMove.dnum_dt", ms_num[(k, b)], 0.0, msc[0], lev=k, bin=b)
+            for m in range(1, 13):
+                ms_q[(k, b, m)] = R[rows[b][m - 1], k - 1]
+                put("SecMove.dq_dt", ms_q[(k, b, m)], 0.0, msc[m], lev=k, bin=b, cq=m)
     for a in ta["assertions"]:
-        if a["variable"] != "Column.dr_dt":
+        var = a["variable"]
+        c = a.get("coords", {})
+        if var in ("Column.dn_dt", "Column.dhysw_dt", "Column.dwater_dt") and c["lev"] in clean:
+            k, b = c["lev"], c["bin"]
+            add, m = {"Column.dn_dt": (ms_num[(k, b)], 0), "Column.dhysw_dt": (ms_q.get((k, b, 11)), 11),
+                      "Column.dwater_dt": (ms_q.get((k, b, 12)), 12)}[var]
+            put("Join." + var[len("Column."):], a["expected"] + add, REL, a.get("tolerance", {}).get("abs", 0.0) + msc[m], lev=k, bin=b)
+        if var != "Column.dr_dt":
             continue
-        c = a["coords"]
         k, b, comp = c["lev"], c["bin"], c["comp"]
-        if (k, b, 1) not in daer:
+        if k not in clean:      # section moving's transfer into the section has no reference off the clean levels
             continue
         add, addfl = 0.0, 0.0
         for g, cc in COMP_OF_GAS.items():
             if cc == comp:
                 x, fl = daer[(k, b, g)]
                 add, addfl = x / conv1a[k - 1], fl / conv1a[k - 1]
-        put("Join.dr_dt", a["expected"] + add, REL, a["tolerance"]["abs"] + addfl, lev=k, bin=b, comp=comp)
+        put("Join.dr_dt", a["expected"] + add + ms_q[(k, b, comp)], REL, a["tolerance"].get("abs", 0.0) + addfl + msc[comp],
+            lev=k, bin=b, comp=comp)
 
     # CBM-Z assertions: the four exchanging gases carry the exchange, and only where it is known
     # a radical in steady state (O3P, OH) has a net tendency that is the roundoff-level difference of
@@ -208,7 +254,14 @@ def build(step, what, calls_by, cz_states):
             "back to H2SO4, HNO3, HCl and NH3 on the "
             f"{len(clean)} levels whose eight ASTEM fluxes are known at the state (levels {clean}), where the four "
             "exchanging gases' column tendencies are asserted with the exchange in them (elsewhere not at all), and "
-            f"ASTEM's condensation added to the components on the {nsec} sections whose rates are known. "
+            f"ASTEM's condensation added to the components and section moving's transfer (SecMove, section_moving.esm, "
+            "growth dvdt formed by Join from ASTEM's daer) added to the components, number and waters on the eight sections "
+            "of those same levels: section moving couples a level's sections, so it has a reference only where all eight "
+            "ASTEM rates are known (Join.dr_dt is asserted there only). Its reference is WRF's own move_sections at the "
+            "state, driven by ASTEM's rates there (real64 movesect_driver with the entry state frozen, dt -> 0 by "
+            "Richardson at growth fractions 1e-3 and 2e-3; chem170_full/replay_movesect_joint.py), bounded at 1e-5 of each "
+            "quantity's largest rate on those levels, the component's own bound; Join's dry mass, density and dvdt at "
+            "rel 1e-9. "
             f"Census of the gas-particle part: {dict(sorted((str(a), b) for a, b in census.items()))}. Tolerances: "
             "the three parts' own (rel 1e-10 and the deposition bound for CBM-Z, rel 1e-9 and the parts' floors for "
             "MOSAIC), rel 1e-9 plus the parts' floors on the join. Filled by tools/fill_chem170_column_tests.py.")
